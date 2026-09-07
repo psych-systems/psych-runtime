@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // The preview deployment. Same static assets, same everything, on a
+  // workers.dev URL instead of the domain:
+  //
+  //   https://psychruntime-preview.<your-subdomain>.workers.dev
+  //
+  // It is a separate Worker rather than a Cloudflare "preview alias" of the
+  // production one, because an alias is tied to a version of the deployment
+  // that already exists in production, and the whole point here is to look at
+  // the site *before* anything is published to psychruntime.com.
+  //
+  // Build it with `pnpm build:preview`, never `pnpm build`: that is what adds
+  // the noindex robots rule, the response header and the preview strip. A
+  // preview built the production way is a second copy of the site competing
+  // with the real one in search results.
+  "name": "psychruntime-preview",
+  // Off, explicitly. Without this line Cloudflare enables
+  // <worker>.<subdomain>.workers.dev on every deploy and says so in a warning
+  // nobody reads twice. For production that is a second, crawlable copy of the
+  // whole site competing with psychruntime.com for its own search results; for
+  // the preview it is a second URL to confuse a reviewer. One hostname each.
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-09-01",
+  // `preview.psychruntime.com` is attached to this Worker as a custom domain,
+  // and deliberately not declared here as a route.
+  //
+  // Attaching it is a one-time DNS record and certificate, not something every
+  // deploy should re-assert, and declaring it would make every deploy need
+  // Zone > Workers Routes: Edit on top of Workers Scripts: Edit. A deploy token
+  // that can rewrite the zone's routing is a wider grant than uploading files
+  // deserves. DEPLOY.md has the one command that attaches it.
+  //
+  // The hostname sits on the production zone, which is why the noindex rules in
+  // `pnpm build:preview` are not optional: a crawlable copy of the site on a
+  // subdomain of its own domain is the worst version of this mistake.
+  "assets": {
+    "directory": "out",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}

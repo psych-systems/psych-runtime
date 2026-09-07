@@ -1,0 +1,31 @@
+{
+  "title": "Guides",
+  "pages": [
+    "index",
+    "quickstart",
+    "agents",
+    "workflows",
+    "builder",
+    "code-tools",
+    "http-tools",
+    "mcp",
+    "mcp-oauth",
+    "a2a",
+    "sandbox",
+    "agent-skills",
+    "memory",
+    "subagents",
+    "approvals",
+    "interrupts",
+    "suspend-resume",
+    "compaction",
+    "streaming",
+    "report",
+    "pricing",
+    "telemetry",
+    "stores",
+    "blobs",
+    "multitenancy",
+    "testing"
+  ]
+}

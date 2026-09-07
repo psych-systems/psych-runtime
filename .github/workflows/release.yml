@@ -1,0 +1,233 @@
+# Publishing, driven by a tag and by nothing else.
+#
+# The gate proves the code is correct. This proves the artefact is the one the
+# tag names, and then puts it where people can install it. Those are different
+# jobs and this file does only the second, so a release can never be the moment
+# somebody discovers a test was failing.
+#
+# One-time setup on PyPI: add a trusted publisher for this repository, workflow
+# `release.yml`, environment `pypi`. That is what lets the job below publish
+# with no API token stored anywhere -- the short-lived OIDC credential GitHub
+# mints for this workflow is the whole authentication. A leaked long-lived token
+# is the failure mode this avoids, and it is the one that ends badly for a
+# package other people depend on.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: the tag is the version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: the tagged commit passed the complete gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data: repository } = await github.rest.repos.get({ owner, repo });
+            const { data: branch } = await github.rest.repos.getBranch({
+              owner, repo, branch: repository.default_branch,
+            });
+            const sha = (await exec.getExecOutput('git', ['rev-parse', 'HEAD'])).stdout.trim();
+            if (branch.commit.sha !== sha) {
+              core.setFailed('Release tags must point to the current default-branch commit.');
+              return;
+            }
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner, repo, workflow_id: 'gate.yml', head_sha: sha,
+              branch: repository.default_branch, event: 'push', per_page: 100,
+            });
+            const latest = runs.sort((a, b) => b.id - a.id)[0];
+            if (!latest || latest.status !== 'completed' || latest.conclusion !== 'success') {
+              core.setFailed('The exact tagged commit needs a completed, successful gate.yml push run.');
+            }
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # A tag that disagrees with the code publishes a wheel whose metadata
+      # says something else, and every bug report about it then cites a version
+      # that never existed. Cheaper to refuse here than to yank later.
+      - id: check
+        name: v<tag> matches psych_runtime.__version__
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(uv run python -c 'import psych_runtime; print(psych_runtime.__version__)')"
+          echo "tag=$tag declared=$declared"
+          if [ "$tag" != "$declared" ]; then
+            echo "::error::tag v$tag does not match psych_runtime.__version__ ($declared)."
+            echo "::error::Bump psych_runtime/__init__.py, commit, and retag."
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+      # A version already on PyPI cannot be replaced, so failing here beats
+      # failing halfway through the upload with a half-published release.
+      - name: this version is not already published
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/psych-runtime/${{ steps.check.outputs.version }}/json")"
+          if [ "$code" = "200" ]; then
+            echo "::error::psych-runtime ${{ steps.check.outputs.version }} is already on PyPI."
+            exit 1
+          fi
+          if [ "$code" != "404" ]; then
+            echo "::error::PyPI availability check returned HTTP $code; refusing to publish."
+            exit 1
+          fi
+
+      # The changelog is written at commit time, so by tag time it either has
+      # this version's entry or somebody skipped a step this file cannot fix.
+      - name: the changelog mentions this version
+        run: |
+          set -euo pipefail
+          if ! grep -qiE "^## +(\[)?v?${{ steps.check.outputs.version }}" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## ${{ steps.check.outputs.version }}' heading."
+            echo "::error::Rename the Unreleased section before tagging."
+            exit 1
+          fi
+
+  build:
+    name: build the wheel and sdist
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv build
+
+      # The skills ship inside the wheel so `psych skills install` works from a
+      # plain pip install. A wheel without them installs fine and fails that one
+      # command, which is exactly the kind of break nobody notices until a user
+      # reports it.
+      - name: the wheel carries the skills and the templates
+        run: |
+          set -euo pipefail
+          wheel="$(ls dist/*.whl)"
+          skills="$(unzip -Z1 "$wheel" | grep -c '_skills/.*/SKILL.md' || true)"
+          templates="$(unzip -Z1 "$wheel" | grep -c 'templates/.*/main.py' || true)"
+          echo "skills=$skills templates=$templates"
+          [ "$skills" -ge 20 ] || { echo "::error::wheel carries $skills skills"; exit 1; }
+          [ "$templates" -ge 3 ] || { echo "::error::wheel carries $templates templates"; exit 1; }
+
+      # Install the built wheel into a clean environment and run the thing a new
+      # user runs first. A release that cannot do this is not a release.
+      - name: a clean install can scaffold and run a project
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 /tmp/fresh
+          uv pip install --python /tmp/fresh/bin/python dist/*.whl
+          /tmp/fresh/bin/psych --version
+          /tmp/fresh/bin/psych new /tmp/smoke
+          cd /tmp/smoke && /tmp/fresh/bin/python main.py | tee /tmp/out.txt
+          grep -q "A1 has shipped" /tmp/out.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/psych-runtime/
+    permissions:
+      id-token: write # trusted publishing; no token is stored anywhere
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  image:
+    name: publish the playground image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Linking a package and making it public are separate settings.
+      # After the first release, explicitly set package visibility to public.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/psych-playground:${{ needs.verify.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/psych-playground:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  announce:
+    name: GitHub release
+    needs: [verify, publish, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # The release notes are the changelog section, not a second summary
+      # written at tag time. One account of a change is the only way two
+      # accounts cannot disagree.
+      - name: notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          awk -v v="${{ needs.verify.outputs.version }}" '
+            $0 ~ "^## +\\[?v?" v { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          test -s /tmp/notes.md
+          head -5 /tmp/notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/notes.md
+          files: dist/*
+          fail_on_unmatched_files: true

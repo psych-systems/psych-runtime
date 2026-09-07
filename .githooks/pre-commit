@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fast checks only. A hook that runs the full suite gets disabled within a week,
+# so the test layers stay in CI where they cannot be skipped.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh" fast

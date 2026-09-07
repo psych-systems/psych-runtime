@@ -1,0 +1,55 @@
+---
+title: Invariants
+description: Eight rules the runtime holds to, and the failure each one prevents.
+---
+
+These are not style preferences. Each is stated with the failure it prevents,
+because that is what makes it hard to argue with at 2am.
+
+## A Spec references tools by name and never holds a callable
+
+A builder may take a function and register it, but what lands in the Spec is the
+registered name. The moment a Spec holds a live object it stops being
+serialisable, and the runtime forks into two execution models: one for Specs
+that can be stored and replayed, one for Specs that cannot.
+
+## Pool clients by (scope, server, credential), never by URL
+
+Pooling an MCP client by URL alone will eventually send one tenant's OAuth token
+on another tenant's call. Two Scopes that happen to name the same server URL are
+not the same tenant, and two credentials that resolve for the same server are
+not interchangeable. It is one line, and it ends the project.
+
+## The reducer is pure
+
+No IO, no clock, no randomness. Same log in, same state out. That is what makes
+the state a restart computes provably the state the dead process had.
+
+## Access narrows and never widens
+
+What the server offers contains what the tenant permits, contains what the Spec
+grants, contains what is callable now. One function computes that intersection,
+and both the validator and the runtime call it, so the two cannot drift apart.
+
+## An unknown price records `None`, never `0`
+
+A silent zero makes metering look correct and be wrong, and nobody notices until
+an invoice fails to reconcile. `report.totals.unpriced_model_calls` counts what
+could not be priced, so the gap is visible rather than absorbed.
+
+## In-process sandboxing is rejected
+
+`RestrictedPython`, `exec` with trimmed builtins and AST filtering are all
+escapable. Process isolation is the floor, and no configuration lowers it.
+
+## Every outbound call goes through one egress seam
+
+The model client, HTTP tools, MCP, and anything a sandboxed program fetches. A
+control covering three of four routes is worse than none, because someone will
+believe it.
+
+## A contradictory log fails loudly and is never repaired
+
+A log the protocol could not have produced is a writer bug. Patching it at read
+time hides that bug while corrupting everything downstream. A legally incomplete
+log, the normal shape after a crash, is a different thing and folds cleanly.

@@ -1,0 +1,199 @@
+"""__PROJECT__: the HTTP surface Psych deliberately does not ship.
+
+    pip install fastapi uvicorn
+    python main.py            # then http://localhost:8000/docs
+
+Psych refuses to own an HTTP server, a route table or a transport, because you
+already have one. This is what the other side of that refusal looks like: six
+routes, none of which decide anything about the protocol, each one calling a
+Psych function and returning what it got.
+
+The shape to copy is the split. Admitting a Run is a fast, transactional write
+that belongs in a request handler. *Executing* one is a long-running loop of
+model and tool calls that belongs in a Worker, in its own process, scaled
+separately. They share a Store and nothing else.
+"""
+
+import asyncio
+import contextlib
+import os
+from collections.abc import AsyncIterator
+from typing import Any
+
+import psych_runtime
+from agent import SPEC, build_model, registry
+from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from store import build_store, runs_in_one_process
+
+STORE = build_store()
+VERSION: psych_runtime.Version | None = None
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Publish once at boot, and host a Worker only when nothing else can.
+
+    Publishing here rather than per request is the point of a Version being
+    content-hashed: republishing an identical Spec returns the existing one, so
+    doing it on every boot is free rather than merely harmless. Validation
+    happens here too, which is why a typo'd tool name fails your deploy instead
+    of a customer's conversation.
+    """
+    global VERSION
+
+    if hasattr(STORE, "migrate"):
+        await STORE.migrate()
+
+    VERSION = await psych_runtime.publish(
+        STORE, SPEC, context=psych_runtime.ValidationContext(registered_tools=registry.names)
+    )
+
+    worker_task: asyncio.Task[None] | None = None
+    worker: psych_runtime.Worker | None = None
+    if runs_in_one_process():
+        # Development only. An in-memory store cannot be reached from a second
+        # process, so there is nothing for a standalone worker.py to connect to.
+        # Set PSYCH_POSTGRES_DSN and this branch stops running.
+        runtime = psych_runtime.Runtime(store=STORE, model=build_model(), registry=registry)
+        worker = psych_runtime.Worker(STORE, runtime, concurrency=4)
+        worker_task = asyncio.create_task(worker.run())
+
+    yield
+
+    if worker is not None and worker_task is not None:
+        worker.stop()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(worker_task, timeout=30)
+
+
+app = FastAPI(title="__PROJECT__", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Your auth, not Psych's. Psych models no users, orgs or roles: it takes a Scope
+# and asks your Policy. This is where your real middleware turns a token into
+# one, and the placeholder below is the only line in this file to delete first.
+# ---------------------------------------------------------------------------
+def caller(x_tenant: str = Header(default="acme"), x_user: str = Header(default="anon")) -> psych_runtime.Scope:
+    return psych_runtime.Scope(tenant=x_tenant, principal=x_user)
+
+
+class StartRequest(BaseModel):
+    message: str
+    idempotency_key: str | None = None
+    continues: str | None = None
+
+
+@app.post("/runs")
+async def start_run(body: StartRequest, scope: psych_runtime.Scope = Depends(caller)) -> dict[str, Any]:
+    """Admit a Run and return immediately.
+
+    `idempotency_key` is what makes at-least-once delivery survivable. Key it on
+    something the caller already has -- a webhook event id, a queue message id,
+    an hour window for a cron job -- and a redelivery returns the first Run
+    instead of starting a second one and issuing a second refund.
+
+    `continues` carries a conversation forward: a second chat message starts a
+    new Run that can see the earlier exchange. It is refused across tenants.
+    """
+    assert VERSION is not None
+    dispatched = await psych_runtime.dispatch(
+        STORE,
+        VERSION,
+        scope,
+        input={"message": body.message},
+        idempotency_key=body.idempotency_key,
+        continues=psych_runtime.RunId(body.continues) if body.continues else None,
+    )
+    return {"run_id": dispatched.run_id, "created": dispatched.created}
+
+
+@app.get("/runs/{run_id}")
+async def read_run(run_id: str, scope: psych_runtime.Scope = Depends(caller)) -> psych_runtime.RunStatus:
+    """What the Run is doing now, in the words a screen uses.
+
+    `scope=` is not optional in anything serving end users: without it, one
+    leaked run id in a log line or a URL is a whole readable conversation.
+    """
+    try:
+        return await psych_runtime.status(STORE, psych_runtime.RunId(run_id), scope=scope)
+    except psych_runtime.RunNotFound:
+        raise HTTPException(status_code=404, detail="no such run") from None
+    except psych_runtime.AccessDenied:
+        # 404 rather than 403: telling a caller a run exists but is not theirs
+        # confirms it exists.
+        raise HTTPException(status_code=404, detail="no such run") from None
+
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(
+    run_id: str,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    scope: psych_runtime.Scope = Depends(caller),
+) -> StreamingResponse:
+    """Server-sent events, resumable, with no stream state to get out of step.
+
+    The log *is* the stream. A browser reconnecting sends `Last-Event-ID`
+    automatically, and passing it as `after=` replays everything missed,
+    including across an interrupt. There is nothing else to remember.
+    """
+    after = int(last_event_id) if last_event_id else 0
+
+    async def events() -> AsyncIterator[str]:
+        async for record in psych_runtime.stream(STORE, psych_runtime.RunId(run_id), after=after, scope=scope):
+            yield f"id: {record.seq}\nevent: {record.type}\ndata: {record.model_dump_json()}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.get("/runs/{run_id}/answer")
+async def read_answer(run_id: str, scope: psych_runtime.Scope = Depends(caller)) -> psych_runtime.AnswerView:
+    """What it concluded, and the work behind it."""
+    return await psych_runtime.answer(STORE, psych_runtime.RunId(run_id), scope=scope)
+
+
+@app.get("/runs/{run_id}/report")
+async def read_report(run_id: str, scope: psych_runtime.Scope = Depends(caller)) -> psych_runtime.RunReport:
+    """Every step, call, token and the cost. Your billing and audit read this."""
+    return await psych_runtime.report(STORE, psych_runtime.RunId(run_id), scope=scope)
+
+
+class Decision(BaseModel):
+    approved: bool
+
+
+@app.post("/runs/{run_id}/approve")
+async def approve(
+    run_id: str, body: Decision, scope: psych_runtime.Scope = Depends(caller)
+) -> dict[str, str]:
+    """Deliver a human's decision to a Run suspended before a dangerous call.
+
+    The Run is not holding a thread or a connection while it waits: it released
+    its lease and persisted, so this process need not be the one that asked, or
+    even be the same deployment.
+    """
+    try:
+        await psych_runtime.resume(STORE, psych_runtime.RunId(run_id), approved=body.approved, by=scope.principal)
+    except psych_runtime.RunNotSuspended:
+        raise HTTPException(status_code=409, detail="not waiting for a decision") from None
+    except psych_runtime.SuspensionExpired:
+        # The Run was settled ABANDONED before this arrived, so the call never
+        # ran. A stale approval must never execute.
+        raise HTTPException(status_code=410, detail="the decision arrived too late") from None
+    return {"status": "recorded"}
+
+
+@app.post("/runs/{run_id}/interrupt")
+async def interrupt(run_id: str, scope: psych_runtime.Scope = Depends(caller)) -> dict[str, str]:
+    """Stop a Run. An abort is a Record with a sequence number, not a flag, so a
+    client streaming with `after=N` sees it in order with everything else."""
+    await psych_runtime.interrupt(STORE, psych_runtime.RunId(run_id), reason="user pressed stop", by=scope.principal)
+    return {"status": "stopping"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("PORT", "8000")))

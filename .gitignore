@@ -1,0 +1,67 @@
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+
+# DynamoDB Local drops telemetry metadata into whatever directory it is
+# started from. scripts/dev-services.sh runs it from /opt, but a stray run from
+# the repo root leaves this behind.
+dynamodb-local-metadata.json
+
+# The Next.js playground UI. node_modules is ~850MB and .next is build output;
+# neither belongs in a library's repository. `npm install` reconstructs both.
+examples/playground/web/node_modules/
+examples/playground/web/.next/
+examples/playground/web/out/
+examples/playground/web/next-env.d.ts
+examples/playground/web/.env.local
+
+# The playground backend persists provider settings, including API keys, to
+# this file. It is deliberately local state, never committed.
+examples/playground/backend/.playground-state.json
+
+# The same backend's .env, which holds the provider API key it boots with.
+examples/playground/backend/.env
+
+# The agents-published and runs-dispatched lists the same backend keeps
+# (app/store_index.py). No credentials in it, but still local bookkeeping.
+examples/playground/backend/.playground-index.json
+
+# The private key this backend signs its A2A requests with, generated on first
+# boot. A committed signing key is a signing key everybody has, and a peer
+# that trusts it would trust anyone holding a clone of this repository.
+examples/playground/backend/a2a-signing-key
+
+# Archives a contributor might unpack while working. Never part of the tree.
+*.zip
+
+# Git worktrees the agent harness creates for isolated parallel work. Each is a
+# full checkout of this repository living inside it, so committing one would
+# nest the repo in itself. They are transient and reclaimed when the work is
+# merged. Scoped to the directory rather than to `.agents/` so a settings or
+# skills file under there can still be tracked.
+.agents/worktrees/
+
+# web
+web/**/node_modules/
+web/**/.next/
+web/site/.source/
+web/**/next-env.d.ts
+# TypeScript's incremental cache. Machine-local, rewritten by every `tsc` run,
+# and committed by accident when the site moved: it made a clean checkout dirty
+# the moment anybody type-checked.
+web/**/tsconfig.tsbuildinfo
+# `next build` output and the deploy CLI's local state. out/ is what Cloudflare
+# uploads, so it is a build artefact of the docs rather than a source of them.
+web/site/out/
+web/**/.wrangler/
+# Local launch builds and isolated install checks.
+/.release-artifacts/

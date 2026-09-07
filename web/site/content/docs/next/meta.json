@@ -1,0 +1,5 @@
+{
+  "title": "next",
+  "root": true,
+  "pages": ["index", "get-started", "guides", "concepts", "reference", "design", "development"]
+}

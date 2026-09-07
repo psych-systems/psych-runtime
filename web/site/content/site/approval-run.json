@@ -1,0 +1,1181 @@
+{
+  "generated_by": "scripts/generate_site_fixtures.py",
+  "psych_runtime": "0.1.0",
+  "input": "refund order A1, it arrived broken",
+  "model": "gpt-4o-mini",
+  "approval_selectors": [
+    "@destructive"
+  ],
+  "normalised": {
+    "identifiers": "replaced with stable names in order of first appearance",
+    "dropped": [
+      "at",
+      "duration_seconds",
+      "timings",
+      "system_prompt"
+    ],
+    "relative": {
+      "deadline_at": "+120s",
+      "expires_at": "+24h"
+    }
+  },
+  "branches": {
+    "approved": {
+      "records": [
+        {
+          "run_id": "run_9b7c",
+          "seq": 1,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": null,
+          "type": "run_admitted",
+          "version_hash": "sha256:950e5c92ee0a7274ff1c4aa009236236c707d1dfaa179c78b96303a7d3c36a43",
+          "input": {
+            "message": "refund order A1, it arrived broken"
+          },
+          "idempotency_key": null,
+          "deadline_at": "+120s",
+          "parent_run_id": null,
+          "delegation_depth": 0,
+          "continues_run_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 2,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "attempt_started",
+          "worker_id": "w-01",
+          "attempt_number": 1,
+          "reclaimed_expired_lease": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 3,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "turn_started",
+          "turn": 1,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 4,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_started",
+          "turn": 1,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 5,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_finished",
+          "turn": 1,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 412,
+            "output": 23,
+            "cache_read": 0,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00007560",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "tool_calls",
+          "text": "Checking the order.",
+          "tool_calls": [
+            "call_1"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 6,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_started",
+          "call_id": "call_1",
+          "tool": "lookup_order",
+          "arguments": {
+            "order_id": "A1"
+          },
+          "turn": 1,
+          "step_id": null,
+          "interruptible": true,
+          "safe_to_retry": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 7,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_finished",
+          "call_id": "call_1",
+          "outcome": "ok",
+          "result": {
+            "order_id": "A1",
+            "status": "delivered",
+            "total_cents": "4200"
+          },
+          "failure": null,
+          "result_handle": null,
+          "preview": null,
+          "result_bytes": 59,
+          "result_blob_key": null,
+          "result_content_type": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 8,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "turn_started",
+          "turn": 2,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 9,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_started",
+          "turn": 2,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 10,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_finished",
+          "turn": 2,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 61,
+            "output": 14,
+            "cache_read": 430,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00004980",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "tool_calls",
+          "text": "",
+          "tool_calls": [
+            "call_2"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 11,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_started",
+          "call_id": "call_2",
+          "tool": "load_skill",
+          "arguments": {
+            "name": "refund-policy"
+          },
+          "turn": 2,
+          "step_id": null,
+          "interruptible": true,
+          "safe_to_retry": true
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 12,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_finished",
+          "call_id": "call_2",
+          "outcome": "ok",
+          "result": {
+            "found": true,
+            "name": "refund-policy",
+            "body": "Refunds are allowed within 30 days of delivery.\nAnything over 10000 cents needs a manager, whatever the customer says.\nAlways state the amount back to the customer before issuing.",
+            "already_loaded": false
+          },
+          "failure": null,
+          "result_handle": null,
+          "preview": null,
+          "result_bytes": 251,
+          "result_blob_key": null,
+          "result_content_type": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 13,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "turn_started",
+          "turn": 3,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 14,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_started",
+          "turn": 3,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 15,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_finished",
+          "turn": 3,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 96,
+            "output": 31,
+            "cache_read": 491,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00006982",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "tool_calls",
+          "text": "That is within policy.",
+          "tool_calls": [
+            "call_3"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 16,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_started",
+          "call_id": "call_3",
+          "tool": "issue_refund",
+          "arguments": {
+            "order_id": "A1",
+            "cents": 4200
+          },
+          "turn": 3,
+          "step_id": null,
+          "interruptible": false,
+          "safe_to_retry": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 17,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "suspended",
+          "reason": "approval",
+          "payload_schema": {},
+          "expires_at": "+24h",
+          "pending_call_id": "call_3",
+          "question": "Approve calling 'issue_refund' with {\"order_id\": \"A1\", \"cents\": 4200}?",
+          "questions": []
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 18,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": null,
+          "type": "resumed",
+          "payload": {},
+          "approved": true,
+          "resumed_by": "manager-7"
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 19,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "attempt_started",
+          "worker_id": "w-02",
+          "attempt_number": 2,
+          "reclaimed_expired_lease": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 20,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "tool_call_finished",
+          "call_id": "call_3",
+          "outcome": "ok",
+          "result": "refunded 4200 on A1",
+          "failure": null,
+          "result_handle": null,
+          "preview": null,
+          "result_bytes": 19,
+          "result_blob_key": null,
+          "result_content_type": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 21,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "turn_started",
+          "turn": 4,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 22,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "model_call_started",
+          "turn": 4,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 23,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "model_call_finished",
+          "turn": 4,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 44,
+            "output": 19,
+            "cache_read": 618,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00006435",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "tool_calls",
+          "text": "",
+          "tool_calls": [
+            "call_4"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 24,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "tool_call_started",
+          "call_id": "call_4",
+          "tool": "remember",
+          "arguments": {
+            "content": "prefers email over SMS"
+          },
+          "turn": 4,
+          "step_id": null,
+          "interruptible": true,
+          "safe_to_retry": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 25,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "tool_call_finished",
+          "call_id": "call_4",
+          "outcome": "ok",
+          "result": {
+            "remembered": true,
+            "content": "prefers email over SMS"
+          },
+          "failure": null,
+          "result_handle": null,
+          "preview": null,
+          "result_bytes": 54,
+          "result_blob_key": null,
+          "result_content_type": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 26,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "turn_started",
+          "turn": 5,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 27,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "model_call_started",
+          "turn": 5,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 28,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "model_call_finished",
+          "turn": 5,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 38,
+            "output": 27,
+            "cache_read": 681,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00007298",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "stop",
+          "text": "Refunded $42.00 on order A1. I will email you from now on.",
+          "tool_calls": []
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 29,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "run_settled",
+          "state": "completed",
+          "output": {
+            "text": "Refunded $42.00 on order A1. I will email you from now on."
+          },
+          "failure": null,
+          "orphaned_attempt_id": null
+        }
+      ],
+      "report": {
+        "terminal_state": "completed",
+        "usage": {
+          "input": 651,
+          "output": 114,
+          "cache_read": 2220
+        },
+        "cost": {
+          "amount": "0.00033255",
+          "currency": "USD"
+        },
+        "tool_calls": [
+          {
+            "tool": "lookup_order",
+            "outcome": "ok"
+          },
+          {
+            "tool": "load_skill",
+            "outcome": "ok"
+          },
+          {
+            "tool": "issue_refund",
+            "outcome": "ok"
+          },
+          {
+            "tool": "remember",
+            "outcome": "ok"
+          }
+        ],
+        "answer": "Refunded $42.00 on order A1. I will email you from now on."
+      }
+    },
+    "denied": {
+      "records": [
+        {
+          "run_id": "run_9b7c",
+          "seq": 1,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": null,
+          "type": "run_admitted",
+          "version_hash": "sha256:950e5c92ee0a7274ff1c4aa009236236c707d1dfaa179c78b96303a7d3c36a43",
+          "input": {
+            "message": "refund order A1, it arrived broken"
+          },
+          "idempotency_key": null,
+          "deadline_at": "+120s",
+          "parent_run_id": null,
+          "delegation_depth": 0,
+          "continues_run_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 2,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "attempt_started",
+          "worker_id": "w-01",
+          "attempt_number": 1,
+          "reclaimed_expired_lease": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 3,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "turn_started",
+          "turn": 1,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 4,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_started",
+          "turn": 1,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 5,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_finished",
+          "turn": 1,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 412,
+            "output": 23,
+            "cache_read": 0,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00007560",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "tool_calls",
+          "text": "Checking the order.",
+          "tool_calls": [
+            "call_1"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 6,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_started",
+          "call_id": "call_1",
+          "tool": "lookup_order",
+          "arguments": {
+            "order_id": "A1"
+          },
+          "turn": 1,
+          "step_id": null,
+          "interruptible": true,
+          "safe_to_retry": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 7,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_finished",
+          "call_id": "call_1",
+          "outcome": "ok",
+          "result": {
+            "order_id": "A1",
+            "status": "delivered",
+            "total_cents": "4200"
+          },
+          "failure": null,
+          "result_handle": null,
+          "preview": null,
+          "result_bytes": 59,
+          "result_blob_key": null,
+          "result_content_type": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 8,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "turn_started",
+          "turn": 2,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 9,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_started",
+          "turn": 2,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 10,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_finished",
+          "turn": 2,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 61,
+            "output": 14,
+            "cache_read": 430,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00004980",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "tool_calls",
+          "text": "",
+          "tool_calls": [
+            "call_2"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 11,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_started",
+          "call_id": "call_2",
+          "tool": "load_skill",
+          "arguments": {
+            "name": "refund-policy"
+          },
+          "turn": 2,
+          "step_id": null,
+          "interruptible": true,
+          "safe_to_retry": true
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 12,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_finished",
+          "call_id": "call_2",
+          "outcome": "ok",
+          "result": {
+            "found": true,
+            "name": "refund-policy",
+            "body": "Refunds are allowed within 30 days of delivery.\nAnything over 10000 cents needs a manager, whatever the customer says.\nAlways state the amount back to the customer before issuing.",
+            "already_loaded": false
+          },
+          "failure": null,
+          "result_handle": null,
+          "preview": null,
+          "result_bytes": 251,
+          "result_blob_key": null,
+          "result_content_type": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 13,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "turn_started",
+          "turn": 3,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 14,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_started",
+          "turn": 3,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 15,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "model_call_finished",
+          "turn": 3,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 96,
+            "output": 31,
+            "cache_read": 491,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00006982",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "tool_calls",
+          "text": "That is within policy.",
+          "tool_calls": [
+            "call_3"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 16,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "tool_call_started",
+          "call_id": "call_3",
+          "tool": "issue_refund",
+          "arguments": {
+            "order_id": "A1",
+            "cents": 4200
+          },
+          "turn": 3,
+          "step_id": null,
+          "interruptible": false,
+          "safe_to_retry": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 17,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_1",
+          "type": "suspended",
+          "reason": "approval",
+          "payload_schema": {},
+          "expires_at": "+24h",
+          "pending_call_id": "call_3",
+          "question": "Approve calling 'issue_refund' with {\"order_id\": \"A1\", \"cents\": 4200}?",
+          "questions": []
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 18,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": null,
+          "type": "resumed",
+          "payload": {},
+          "approved": false,
+          "resumed_by": "manager-7"
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 19,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "attempt_started",
+          "worker_id": "w-02",
+          "attempt_number": 2,
+          "reclaimed_expired_lease": false
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 20,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "tool_call_finished",
+          "call_id": "call_3",
+          "outcome": "error",
+          "result": null,
+          "failure": {
+            "kind": "denied",
+            "message": "A human declined this call. Do not try it again. Tell the user it was not approved and ask how they would like to proceed.",
+            "traceback": null,
+            "transient": false,
+            "traceback_is_for_the_model": false
+          },
+          "result_handle": null,
+          "preview": null,
+          "result_bytes": 0,
+          "result_blob_key": null,
+          "result_content_type": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 21,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "turn_started",
+          "turn": 4,
+          "step_id": null
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 22,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "model_call_started",
+          "turn": 4,
+          "model": "gpt-4o-mini",
+          "prompt_tokens_estimate": null,
+          "tool_names": [
+            "issue_refund",
+            "lookup_order",
+            "load_skill",
+            "remember",
+            "forget"
+          ]
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 23,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "model_call_finished",
+          "turn": 4,
+          "model": "gpt-4o-mini",
+          "usage": {
+            "input": 52,
+            "output": 34,
+            "cache_read": 618,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+            "reasoning": 0
+          },
+          "cost": {
+            "amount": "0.00007455",
+            "currency": "USD",
+            "model": "gpt-4o-mini",
+            "source": "computed"
+          },
+          "finish_reason": "stop",
+          "text": "I was not able to issue that refund. A colleague needs to look at it. Shall I open a ticket?",
+          "tool_calls": []
+        },
+        {
+          "run_id": "run_9b7c",
+          "seq": 24,
+          "scope": {
+            "tenant": "acme",
+            "principal": "user-42",
+            "labels": {}
+          },
+          "attempt_id": "att_2",
+          "type": "run_settled",
+          "state": "completed",
+          "output": {
+            "text": "I was not able to issue that refund. A colleague needs to look at it. Shall I open a ticket?"
+          },
+          "failure": null,
+          "orphaned_attempt_id": null
+        }
+      ],
+      "report": {
+        "terminal_state": "completed",
+        "usage": {
+          "input": 621,
+          "output": 102,
+          "cache_read": 1539
+        },
+        "cost": {
+          "amount": "0.00026977",
+          "currency": "USD"
+        },
+        "tool_calls": [
+          {
+            "tool": "lookup_order",
+            "outcome": "ok"
+          },
+          {
+            "tool": "load_skill",
+            "outcome": "ok"
+          },
+          {
+            "tool": "issue_refund",
+            "outcome": "error"
+          }
+        ],
+        "answer": "I was not able to issue that refund. A colleague needs to look at it. Shall I open a ticket?"
+      }
+    }
+  }
+}

@@ -1,0 +1,125 @@
+---
+title: Read what a run did
+description: The four reads over a Run's log, what each is for, and why every one takes a scope.
+---
+
+**Outcome.** You know which call to make when you want a screen, an answer,
+an audit trail, or the raw records.
+
+**You need.** [The first run](/docs/next/get-started) working. The snippets
+below go inside its `async with` block, after `session.ask()`.
+
+Everything a Run did is in its log, and every read below is computed from
+that log when you call it. None is a second copy, so none can disagree with
+another.
+
+## status(): what to put on a screen
+
+```python
+status = await psych_runtime.status(session.store, answer.run_id)
+print(status.lifecycle, status.terminal_state, status.turn, status.tool_calls)
+```
+
+```text
+done completed 2 1
+```
+
+`lifecycle` is one of `queued`, `running`, `waiting`, `stopping`, `done`,
+`failed`, `stopped`. When a Run is waiting for approval, `status.pending_approval`
+names the tool and its exact arguments.
+
+## answer(): the conclusion and the work behind it
+
+```python
+view = await psych_runtime.answer(session.store, answer.run_id)
+print(view.text)
+print(view.summary())
+```
+
+```text
+A1 has shipped.
+1 turn, 1 tool call
+```
+
+`view.work` holds each earlier turn with its tool calls and results, for a
+transcript that can fold the work away.
+
+## report(): audit, debugging, billing
+
+```python
+report = await psych_runtime.report(session.store, answer.run_id)
+print(report.terminal_state, report.totals.usage, report.totals.cost)
+for call in report.tool_calls:
+    print(call.tool, call.arguments, call.outcome, call.result)
+for call in report.model_calls:
+    print(call.model, call.usage.input, call.usage.output, call.cost)
+```
+
+With `prices=psych_runtime.DEFAULT_PRICES` passed to `session()`:
+
+```text
+completed input=873 output=32 cache_read=0 cache_write=0 cache_write_1h=0 reasoning=0 amount=Decimal('0.00015015') currency='USD' model='gpt-4o-mini' source='computed'
+lookup_order {'order_id': 'A1'} ok {'order_id': 'A1', 'status': 'shipped'}
+gpt-4o-mini 412 23 amount=Decimal('0.00007560') currency='USD' model='gpt-4o-mini' source='computed'
+gpt-4o-mini 461 9 amount=Decimal('0.00007455') currency='USD' model='gpt-4o-mini' source='computed'
+```
+
+`report.totals.latency` splits wall-clock time into model, tool, compaction and
+unaccounted seconds. Usage is split by cache state because providers bill
+cached reads at a different rate.
+
+## records(): the log itself
+
+```python
+for record in await psych_runtime.records(session.store, answer.run_id):
+    print(record.seq, record.type)
+```
+
+```text
+1 run_admitted
+2 attempt_started
+3 turn_started
+4 model_call_started
+5 model_call_finished
+6 tool_call_started
+7 tool_call_finished
+8 turn_started
+9 model_call_started
+10 model_call_finished
+11 run_settled
+```
+
+Eleven records for one tool call and two model calls. `tool_call_started` is
+written before the tool runs and `tool_call_finished` after, so a crash
+between them is visible as an open call rather than a guess.
+
+`psych_runtime.stream(store, run_id, after=N)` yields the same records live
+and tails until the Run settles; reconnect with the last `seq` you saw and
+nothing is missed.
+
+## Pass a scope whenever you serve end users
+
+Every read takes `scope=`. With it, a Run belonging to another tenant is
+refused:
+
+```python
+await psych_runtime.status(
+    session.store, answer.run_id, scope=psych_runtime.Scope(tenant="someone-else")
+)
+```
+
+```text
+psych_runtime.AccessDenied
+```
+
+Without it, any run id is readable by whoever holds it. Build the `Scope` from
+your own authenticated request, never from the client's claim about who it is.
+
+## Next
+
+- [Inspect a run: report, status, answer](/docs/next/guides/report), the full
+  reference for these reads, including `thread()` for a conversation across
+  several Runs.
+- [Stream results and reconnect](/docs/next/guides/streaming).
+- [Persist and recover runs](/docs/next/guides/stores), so the log outlives the
+  process.

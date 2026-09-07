@@ -1,0 +1,207 @@
+"""__PROJECT__: a tour of what Psych does, in one runnable file.
+
+    python main.py
+
+Six things happen, in order, and each prints what it proved:
+
+    1. A tool call, read back out of the log.
+    2. An approval: the Run suspends before a destructive tool and waits.
+    3. A skill: a long policy the model loads only when it needs it.
+    4. Durable memory: a fact that outlives the Run that learned it.
+    5. A workflow: fixed steps, memoised so a crash does not redo them.
+    6. The report: tokens, cost and latency for all of it.
+
+It works with no API key. Without one it uses Psych's scriptable fake model, so
+every step runs offline and deterministically. Set OPENAI_API_KEY to point the
+same file at a real provider.
+"""
+
+import asyncio
+import os
+
+import psych_runtime
+from psych_runtime.memory.store_backed import StoreBackedMemory
+from psych_runtime.store.memory import InMemoryStore
+
+
+# ---------------------------------------------------------------------------
+# 1. Tools. Plain functions. Psych keeps the name, never the callable.
+# ---------------------------------------------------------------------------
+async def lookup_order(order_id: str) -> dict[str, str]:
+    """Look up an order by its id."""
+    return {"order_id": order_id, "status": "delivered", "total_cents": "4200"}
+
+
+async def issue_refund(order_id: str, cents: int) -> str:
+    """Refund an order. Destructive: this moves real money."""
+    return f"refunded {cents} on {order_id}"
+
+
+REFUND_POLICY = """Refunds are allowed within 30 days of delivery.
+Anything over 10000 cents needs a manager, whatever the customer says.
+Always state the amount back to the customer before issuing."""
+
+
+spec = psych_runtime.AgentSpec(
+    name="support",
+    instructions=(
+        "Help the customer with their order. "
+        "Read [[skill:refund-policy]] before issuing any refund."
+    ),
+    model=psych_runtime.ModelRef(model=os.getenv("PSYCH_MODEL", "gpt-4o-mini")),
+    tools=(
+        psych_runtime.CodeTool(name="lookup_order"),
+        # Not interruptible: a half-issued refund is worse than a slow stop.
+        psych_runtime.CodeTool(name="issue_refund", interruptible=False),
+    ),
+    # A skill's description sits in the prompt always; its body loads only when
+    # the model calls `load_skill`, so a long policy is not billed every turn.
+    skills=(
+        psych_runtime.Skill(
+            name="refund-policy",
+            description="When a refund is allowed, and the limit on one",
+            body=REFUND_POLICY,
+        ),
+    ),
+    limits=psych_runtime.Limits(max_turns=10, deadline_seconds=120),
+)
+
+
+def build_model() -> psych_runtime.ModelClient:
+    """A real provider when one is configured, the fake model otherwise."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        return psych_runtime.OpenAICompatibleClient(
+            base_url=os.getenv("PSYCH_BASE_URL", "https://api.openai.com/v1"),
+            api_key=api_key,
+            transport=psych_runtime.HttpTransport(),
+            scope=psych_runtime.Scope(tenant="acme"),
+        )
+
+    from psych_runtime.testing.fake_model import FakeModel
+
+    print("No OPENAI_API_KEY set, so this tour uses the fake model.\n")
+    return (
+        FakeModel()
+        .turn(text="Checking the order.", tool_calls=[("lookup_order", {"order_id": "A1"})])
+        .turn(tool_calls=[("load_skill", {"name": "refund-policy"})])
+        .turn(
+            text="That is within policy.",
+            tool_calls=[("issue_refund", {"order_id": "A1", "cents": 4200})],
+        )
+        # A turn with tool calls keeps the loop going; a turn without one ends
+        # it. So the fact is remembered before the closing turn, not after.
+        .turn(tool_calls=[("remember", {"content": "prefers email over SMS"})])
+        .turn(text="Refunded 4200 on order A1. I will email you from now on.")
+    )
+
+
+async def main() -> None:
+    scope = psych_runtime.Scope(tenant="acme", principal="user-42")
+
+    # Durable memory needs the store, so build both here rather than letting
+    # session() make one: everything session() assembles can be passed to it.
+    store = InMemoryStore()
+    memory = StoreBackedMemory(store)
+
+    # `session(tools=[...])` registers a function with no annotations, and an
+    # unannotated tool classifies as `write`. Approvals key off annotations, so
+    # anything you want gated needs its own registration -- which is what a real
+    # integration writes anyway.
+    registry = psych_runtime.ToolRegistry()
+    registry.register(annotations={"read-only"})(lookup_order)
+    registry.register(interruptible=False, annotations={"destructive"})(issue_refund)
+
+    async with psych_runtime.session(
+        build_model(),
+        store=store,
+        registry=registry,
+        tenant="acme",
+        principal="user-42",
+        # Anything destructive stops for a human before it runs.
+        approval_selectors=("@destructive",),
+        # `end_user_id` is required alongside memory: defaulting it would point
+        # every end user at one bucket of facts.
+        memory=memory,
+        end_user_id="user-42",
+    ) as s:
+        print("=" * 68)
+        print("1-3. Tool call, approval, and a skill loaded on demand")
+        print("=" * 68)
+
+        started = await s.start(spec, "refund order A1, it arrived broken")
+
+        # The Run suspends before the destructive call rather than blocking a
+        # thread: it releases its lease and persists, so the process that
+        # approves need not be the one that asked.
+        approved = await approve_everything(s, started.run_id)
+        answer = await s.wait(started.run_id)
+
+        print(f"\nanswer: {answer.text}")
+        print(f"work:   {answer.summary()}")
+        print(f"approvals granted: {approved}")
+
+        report = await psych_runtime.report(s.store, started.run_id, scope=scope)
+        for call in report.tool_calls:
+            print(f"  tool  {call.tool}({call.arguments}) -> {call.outcome}")
+
+        print()
+        print("=" * 68)
+        print("4. A fact that outlives the Run")
+        print("=" * 68)
+        facts = await memory.recall(scope, "user-42")
+        for fact in facts:
+            print(f"  remembered: {fact.content}")
+        if not facts:
+            print("  (the model chose not to remember anything this run)")
+
+        print()
+        print("=" * 68)
+        print("5. A workflow: fixed steps, memoised across a crash")
+        print("=" * 68)
+        flow = psych_runtime.WorkflowSpec(
+            name="close-ticket",
+            steps=(
+                psych_runtime.ToolStep(name="verify", tool="lookup_order", arguments={"order_id": "A1"}),
+            ),
+            tools=(psych_runtime.CodeTool(name="lookup_order"),),
+        )
+        flow_answer = await s.ask(flow, "close it")
+        flow_report = await psych_runtime.report(s.store, flow_answer.run_id, scope=scope)
+        for step in flow_report.steps:
+            print(f"  step {step.name} ({step.kind}) completed={step.completed}")
+
+        print()
+        print("=" * 68)
+        print("6. What all of it cost")
+        print("=" * 68)
+        print(f"  state:    {report.terminal_state}")
+        print(f"  usage:    {report.totals.usage}")
+        print(f"  cost:     {report.totals.cost}  (None means no price is known, never zero)")
+        print(f"  unpriced: {report.totals.unpriced_model_calls} model calls")
+        print(f"  latency:  {report.totals.latency.wall_clock_seconds:.2f}s wall clock")
+
+
+async def approve_everything(s: psych_runtime.Session, run_id: psych_runtime.RunId) -> int:
+    """Approve each pending call until the Run stops asking.
+
+    A real deployment shows `status.pending_approval` to a person and calls
+    `psych_runtime.resume(..., approved=True, by=...)` when they click. `by=` is
+    recorded on the log, because an approval whose log cannot say who approved
+    it is not an audit trail.
+    """
+    granted = 0
+    for _ in range(20):
+        await asyncio.sleep(0.1)
+        status = await psych_runtime.status(s.store, run_id)
+        if status.lifecycle in {psych_runtime.Lifecycle.DONE, psych_runtime.Lifecycle.FAILED}:
+            break
+        if status.pending_approval is not None:
+            print(f"  waiting on approval for: {status.pending_approval.tool}")
+            await psych_runtime.resume(s.store, run_id, approved=True, by="manager-7")
+            granted += 1
+    return granted
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,46 @@
+---
+title: Guides
+description: One task per page, with working code. Pick the one that matches what you are doing.
+---
+
+Each guide is one feature: what it is for, the code that uses it, and the
+mistakes that are easy to make. They are the same files that ship as skills
+for coding agents (`psych skills install`), so there is one copy and it is the
+tested one.
+
+If you have not run an agent yet, start with [Get started](/docs/next/get-started).
+
+## Give an agent things to do
+
+- [Define an agent](/docs/next/guides/agents): instructions, model, limits, what stops a Run.
+- [Connect Python functions as tools](/docs/next/guides/code-tools).
+- [Call an HTTP endpoint as a tool](/docs/next/guides/http-tools), with no function to write.
+- [Connect MCP servers](/docs/next/guides/mcp), and [authenticate to one with OAuth 2.1](/docs/next/guides/mcp-oauth).
+- [Work with other agents over A2A](/docs/next/guides/a2a), in both directions.
+- [Run code the model writes](/docs/next/guides/sandbox), in a subprocess or a container.
+- [Load instructions on demand with skills](/docs/next/guides/agent-skills).
+- [Remember facts across runs](/docs/next/guides/memory).
+- [Delegate to subagents](/docs/next/guides/subagents).
+- [Run fixed steps as a workflow](/docs/next/guides/workflows), and [build either with the fluent builder](/docs/next/guides/builder).
+
+## Control a run
+
+- [Require approval for selected tool calls](/docs/next/guides/approvals).
+- [Stop or steer a running agent](/docs/next/guides/interrupts).
+- [Pause a run and resume it later](/docs/next/guides/suspend-resume): questions, webhooks, waiting on a clock.
+- [Keep a long conversation inside the window](/docs/next/guides/compaction).
+
+## Read a run
+
+- [Stream results and reconnect](/docs/next/guides/streaming).
+- [Inspect a run: report, status, answer](/docs/next/guides/report).
+- [Track token usage and cost](/docs/next/guides/pricing).
+- [Export spans with OpenTelemetry](/docs/next/guides/telemetry).
+
+## Operate it
+
+- [Persist and recover runs](/docs/next/guides/stores): PostgreSQL, MySQL, DynamoDB, and what the in-memory store is for.
+- [Handle large tool results](/docs/next/guides/blobs).
+- [Serve multiple tenants safely](/docs/next/guides/multitenancy): Scope, Policy, egress.
+- [Test agents without a network](/docs/next/guides/testing).
+- [First run, in detail](/docs/next/guides/quickstart): the full walkthrough, including the long form `session()` expands to.

@@ -1,0 +1,104 @@
+---
+title: Add a tool
+description: What a Python function needs to become a tool, how to mark one destructive, and where HTTP and MCP tools fit.
+---
+
+**Outcome.** A second tool the agent can call, registered with the
+annotations that decide whether it needs approval.
+
+**You need.** [The first run](/docs/next/get-started) working.
+
+## 1. Write the function
+
+A tool is an ordinary function. The runtime derives its schema from the type
+hints and its description from the docstring, so both are required:
+
+```python
+async def issue_refund(order_id: str, cents: int) -> str:
+    """Refund an order. Moves real money."""
+    return f"refunded {cents} on {order_id}"
+```
+
+Synchronous functions work too. Parameters need hints; the return value is
+serialised to JSON for the model.
+
+## 2. Register it, with annotations
+
+`session(tools=[...])` registers plain functions with no annotations, and an
+unannotated tool counts as `write`. Anything with a side effect you care about
+wants its own registration:
+
+```python
+registry = psych_runtime.ToolRegistry()
+registry.register(annotations={"read-only"})(lookup_order)
+registry.register(interruptible=False, annotations={"destructive"})(issue_refund)
+```
+
+- `annotations`: MCP-style, `read-only`, `write` or `destructive`. Approval
+  selectors match on these.
+- `interruptible=False`: an interrupt during the call waits for it to finish
+  rather than cancelling it, so a refund is never half-issued.
+- `safe_to_retry=True`: a Worker recovering a crashed Run may execute the call
+  again. The default is `False`, because assuming a side effect is repeatable
+  is how double refunds happen.
+
+Pass the registry to the session and name both tools in the Spec:
+
+```python
+spec = psych_runtime.AgentSpec(
+    name="support",
+    instructions="Help the customer with their order.",
+    model=psych_runtime.ModelRef(model="gpt-4o-mini"),
+    tools=(
+        psych_runtime.CodeTool(name="lookup_order"),
+        psych_runtime.CodeTool(name="issue_refund", interruptible=False),
+    ),
+)
+
+async with psych_runtime.session(model, registry=registry) as session:
+    ...
+```
+
+The Spec holds names, never the functions. That is what lets it serialise,
+hash to a `Version`, and be reviewed as data.
+
+## 3. Decide what needs approval
+
+By default the `Runtime` asks for approval on `@write` and `@destructive`
+calls. To gate only destructive ones:
+
+```python
+async with psych_runtime.session(
+    model, registry=registry, approval_selectors=("@destructive",)
+) as session:
+    ...
+```
+
+A matching call suspends the Run before the tool executes. [Require approval
+for selected tool calls](/docs/next/guides/approvals) shows how to read the
+pending call and deliver a decision.
+
+## If it does not work
+
+**`ToolSchemaError` at registration.** A parameter has no type hint, or the
+function has no docstring and no `description=`.
+
+**`SpecValidationError: code tool 'x' is not registered`.** The `CodeTool`
+name does not match a registered name. `session.publish(spec)` checks this at
+publish time, before any model is called.
+
+**The tool ran without asking.** It was registered through `tools=[...]` with
+no annotations, so it is `write`, and your selectors only name
+`@destructive`. Register it with `annotations={"destructive"}`.
+
+## Other kinds of tool
+
+- [Call an HTTP endpoint as a tool](/docs/next/guides/http-tools): a URL, a
+  method and a schema in the Spec, no function.
+- [Connect MCP servers](/docs/next/guides/mcp): a server's whole catalogue,
+  narrowed to what this agent may use.
+- [Work with other agents over A2A](/docs/next/guides/a2a).
+
+## Next
+
+- [Read what a run did](/docs/next/get-started/read-a-run).

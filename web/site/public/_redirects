@@ -1,0 +1,9 @@
+# The changelog lives at /changelog in the marketing shell. The docs tree still
+# carries a copy for the MDX pipeline, so anyone holding the old URL lands on
+# the one route rather than a duplicate.
+/docs/next/changelog  /changelog  301
+/docs/*/changelog     /changelog  301
+
+# The quickstart became a Get started section with four pages.
+/docs/next/quickstart  /docs/next/get-started  301
+/docs/*/quickstart     /docs/:splat/get-started  301

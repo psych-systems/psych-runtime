@@ -1,0 +1,92 @@
+---
+title: Run with a real model
+description: Swap the fake model for an OpenAI-compatible provider, keep everything else, and know what changes when the model chooses its own turns.
+---
+
+**Outcome.** The same agent from [the first run](/docs/v0.1/get-started), now
+answering with a real model.
+
+**You need.** The first run working, and an API key for a service that exposes
+the compatible chat API.
+
+**Cost.** A real model call is billed by your provider. The example makes two
+calls of a few hundred tokens each.
+
+## 1. Build a provider client
+
+`session()` takes any `ModelClient`. `FakeModel` is one; this is the other one
+that ships:
+
+```python
+import os
+
+import psych_runtime
+
+model = psych_runtime.OpenAICompatibleClient(
+    base_url="https://api.openai.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+    transport=psych_runtime.HttpTransport(),
+    scope=psych_runtime.Scope(tenant="local"),
+)
+```
+
+Replace the `model = FakeModel()...` block in `main.py` with that, and delete
+the `FakeModel` import. Nothing else in the file changes.
+
+For a gateway, change `base_url`. The client speaks the wire protocol rather
+than a provider's SDK, so one class reaches every service that speaks it.
+
+## 2. Run it
+
+```sh
+export OPENAI_API_KEY=sk-...
+python main.py
+```
+
+The generated project from `psych new` already does this switch for you: it
+reads `OPENAI_API_KEY`, and optionally `PSYCH_BASE_URL` and `PSYCH_MODEL`, and
+builds the client above when a key is set.
+
+## What changes
+
+**The model chooses the turns.** With `FakeModel` you scripted "call the tool,
+then answer". A real model may call the tool once, several times, or not at
+all. `report.tool_calls` tells you what it did.
+
+**Usage is real, and cost still needs a price.** The provider reports token
+counts and the runtime records them per call. Cost is computed only from a
+price table you pass:
+
+```python
+async with psych_runtime.session(
+    model, tools=[lookup_order], prices=psych_runtime.DEFAULT_PRICES
+) as session:
+    ...
+```
+
+`DEFAULT_PRICES` carries rates for a small set of known model IDs. A model
+it does not know records `cost=None` on that call and
+`report.totals.unpriced_model_calls` counts it, so a total is never quietly
+short. [Track token usage and cost](/docs/v0.1/guides/pricing) covers your own
+tables.
+
+**Limits apply.** `Limits(max_turns=..., deadline_seconds=...)` on the Spec
+bound how long a real model can loop.
+
+## If it does not work
+
+**`401` from the provider.** The key is wrong or for a different account. The
+runtime surfaces the provider's status code in a `model_call_failed` record,
+and `psych_runtime.report()` shows it under `model_calls`.
+
+**The model never calls the tool.** Instructions matter more with a real
+model. Say what the tool is for in the docstring, and what the agent should do
+in `instructions`.
+
+**`cost` is `None` with a price table.** The model id in `ModelRef` is not in
+the table. Add it with your own `PriceResolver`, or check the id spelling.
+
+## Next
+
+- [Add a tool](/docs/v0.1/get-started/add-a-tool).
+- [Require approval for selected tool calls](/docs/v0.1/guides/approvals), before a real model can reach anything destructive.

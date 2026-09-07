@@ -1,0 +1,39 @@
+# Everything the build does not need. Kept tight because whatever lands in the
+# build context is uploaded to the daemon and, worse, is one COPY away from
+# ending up in a published image.
+.git
+.gitignore
+.github
+.agents
+!.agents/
+.agents/*
+!.agents/skills/
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+htmlcov
+.coverage
+
+# Node: reinstalled inside the image from the lockfile, never copied in. A
+# host's node_modules carries binaries built for the host's architecture, which
+# is exactly the way a multi-arch image goes subtly wrong.
+examples/playground/web/node_modules
+examples/playground/web/.next
+web
+
+# Local state, which holds real credentials.
+**/.env
+**/.playground-state.json
+**/.playground-index.json
+**/.playground-memory.json
+**/*-state.json
+**/*-index.json
+**/a2a-signing-key
+
+# Not part of the runtime.
+tests
+docs
+*.zip

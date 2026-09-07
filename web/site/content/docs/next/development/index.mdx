@@ -1,0 +1,60 @@
+---
+title: Working on Psych
+description: Check the repository out, run the focused checks and the full gate, and find the reasoning behind each area before changing it.
+---
+
+This section is for changing the library. To use it, start with
+[Get started](/docs/next/get-started) instead.
+
+## Check it out
+
+```sh
+git clone https://github.com/psych-systems/psych-runtime && cd psych-runtime
+uv sync --all-extras --group dev
+```
+
+The store tests run against real databases. `scripts/dev-services.sh start`
+runs PostgreSQL, MySQL and DynamoDB Local as ordinary processes for an
+environment with no container runtime; CI uses service containers.
+
+## Run the checks
+
+```sh
+scripts/check.sh fast      # ruff, ruff format, mypy --strict, import-linter, generated docs in sync
+scripts/check.sh           # the above, then unit, functional and end-to-end tests
+uv run pytest tests/unit -q                       # one layer
+uv run pytest tests/e2e/test_durability.py -q     # one file
+```
+
+All of it must be green before a commit. The three test layers run as separate
+CI jobs so a failure names the layer.
+
+## Find the reasoning first
+
+`DESIGN.md` in the repository is the settled design. A change that contradicts
+it is a conversation before it is a commit. `docs/design-notes/` holds one
+document per area saying why that area is shaped the way it is and what breaks
+under the obvious alternative; the same documents are published here under
+[Design](/docs/next/design).
+
+The rules a change is rejected for breaking are short and listed under
+[Concepts: invariants](/docs/next/concepts/invariants).
+
+## Adding an adapter
+
+A `Store` or `BlobStore` adapter is correct when it passes the shared contract
+suite, the same tests the shipped adapters pass. A model provider with a
+different wire protocol is one `ModelClient` implementation.
+[Persist and recover runs](/docs/next/guides/stores) describes the store
+contract, and [Reference: ports](/docs/next/reference/ports) lists every port.
+
+## Contributing
+
+`CONTRIBUTING.md` in the repository says what a change has to pass, how to
+propose a larger one, and how a breaking change is announced. Security
+reports go through the private advisory form named in `SECURITY.md`, never
+through a public issue.
+
+- [CONTRIBUTING.md](https://github.com/psych-systems/psych-runtime/blob/main/CONTRIBUTING.md)
+- [SECURITY.md](https://github.com/psych-systems/psych-runtime/blob/main/SECURITY.md)
+- [Psych for coding agents](/docs/next/development/coding-agents): the router skill an AI coding agent reads first.

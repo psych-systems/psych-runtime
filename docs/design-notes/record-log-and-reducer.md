@@ -1,0 +1,239 @@
+# The record log, the reducer, and what counts as corruption
+
+Covers DESIGN.md §6 (the record log), §9 (interrupts, steering and resume) and
+§12 (streaming). Read it before touching `psych_runtime/core/records.py`,
+`psych_runtime/core/reducer.py` or `psych_runtime/core/corruption.py`.
+
+## Two vocabularies, one sequence
+
+A Run's log carries two kinds of thing and they are not interchangeable:
+
+**Content.** Everything the model sees or that projects into its context: user
+messages, assistant messages, tool results, compaction summaries.
+
+**Orchestration metadata.** Everything about the machinery: an operation starting
+and finishing, a step attempt, a tool call starting, a queue enqueue or
+cancellation, a usage measurement.
+
+The design's prose says "Record" for both, and the reducer genuinely treats them
+differently. Content is looked up by id. Metadata is the sequence-ordered stream
+that gets folded. Keeping them as separate model families in code is worth the
+extra type, because the validation logic is different for each.
+
+Both share one `seq` counter, gapless from 1 across the whole Run. Not per kind,
+not per lane. Every append increments it, and the append path rejects any write
+whose `seq` is not exactly the current head plus one.
+
+That single invariant is what makes resumable streaming work. A client
+reconnecting with `after=N` asks the store for everything with `seq > N`. There is
+no range arithmetic, no cursor bookkeeping and no reconciliation step. Gaplessness
+is the whole mechanism, and it is enforced at write time so a reader never has to
+check it.
+
+If a `Store` adapter ever batches adjacent rows for size, that batching must be
+invisible above the `Store` port. The reducer and the resumable stream must never
+learn it happened, and a packed row that does not decode exactly must fail loudly
+rather than degrade into "treat it as one record", which would silently drop a
+whole run of records.
+
+## Intent before result
+
+Several Records name an entry that does not exist yet. A step attempt names the
+entry its result will land in, chosen *before* the model call. A queue enqueue
+names the message it will materialise. A tool start names its result entry.
+
+This is deliberate and it is what makes a crash mid-call recoverable: the log says
+"a step is in flight and its result belongs at this id", so a reclaiming Worker
+can tell a step that never finished from a step that finished and was never read.
+
+The matching rule is precise. If the named entry does not exist yet, that is fine;
+the Record only expressed intent. It is corrupt only once an entry with that id
+exists holding *different* content. Compare after stripping the storage-assigned
+fields (position, sequence, timestamp) from the persisted entry, and get that
+excluded set exactly right or the check misfires on legitimate differences.
+
+Write that comparison once, as one primitive, and call it from every site that
+references a not-yet-materialised entry. Reimplementing it per Record type is
+exactly the drift the one-canonical-owner rule exists to stop.
+
+## Recoverable prefix versus impossible state
+
+This is the line the whole corruption taxonomy sits on, and it can be stated as a
+property rather than a list of examples:
+
+> Any prefix of a sequence the protocol could legitimately produce must validate.
+> Anything that requires an illegal write to have happened is corrupt, wherever
+> the truncation lands.
+
+A crash can stop the writer anywhere. Operation started but no step yet. Step
+attempted, no result. Assistant message with three tool calls, one started, none
+finished. Abort recorded, tool still dangling. Every one of those is a legal
+prefix and every one must fold cleanly.
+
+Two open operations on one Run is not that. The single-writer rule makes it
+unreachable by any legal caller, crash or no crash, so it is corrupt no matter
+where the log was cut.
+
+The test shape that enforces this is worth copying directly: build a helper that
+takes a legitimate sequence of appends and generates one case per prefix length,
+asserting every truncation point validates. Then each corruption case is a log
+that could not have been written at all.
+
+## The corruption reasons
+
+Fourteen, each a distinct typed error naming a distinct writer bug. Psych never
+repairs any of them; it fails the Run loudly, because silent repair hides the
+writer bug that produced it.
+
+| Reason | What it catches |
+|---|---|
+| `multiple_open_operations` | Two operations open at once on one Run. Unreachable under the single-writer rule, so it catches a storage bug rather than something the fold discovers. |
+| `unknown_operation` | A Record referencing an operation the log never started. |
+| `record_after_finish` | A Record whose sequence follows the operation's settlement. Once an operation is finished, nothing may reference it. |
+| `non_consecutive_seq` | A gap in the sequence. Checked at append, unconditionally, with no partial-log exemption. |
+| `non_consecutive_attempt` | Retry attempt numbers within one step series that do not increment by one. A different check from the sequence gap, catching a different writer bug. |
+| `queue_after_abort` | A steer or follow-up enqueued for a Run after its abort was recorded. |
+| `invalid_queue_cancellation` | A cancellation with no pending enqueue to cancel: none was recorded, the enqueue is not strictly earlier, the two disagree about the Run, or the target was already consumed. |
+| `inconsistent_step` | A step record contradicting its own series, such as attempts disagreeing about their result entry. |
+| `tool_call_mismatch` | A tool start or result that does not agree with the assistant message it claims to belong to, at the ordinal it claims. |
+| `duplicate_tool_invocation` | Two starts for one invocation. Identity is (assistant entry, ordinal), not the call id, so two starts for the same slot are corrupt even with different Record ids. |
+| `provisioned_entry_mismatch` | A named entry that exists with content other than what was declared. |
+| `invalid_deferred_handle` | A handle naming no stored result, or one belonging to a different Run. A handle that resolved across Runs would be a cross-tenant read. |
+| `invalid_compaction_reason` | A compaction Record whose stated reason and content disagree. |
+| `inconsistent_cost` | Two model calls in one Run priced in different currencies. A total that cannot be summed is not a total. |
+
+Two of these deserve their own note.
+
+**`queue_after_abort`'s exemption is as load-bearing as the rule.** A `next_run`
+enqueue is exempt, because it is not tied to the aborting Run. "Stop mid-response
+and immediately send another request" (§9) *is* a `next_run` enqueue landing after
+an abort, and it is correct rather than corrupt. Make that structural: give the
+`next_run` Record no run id at all rather than an optional one that happens to be
+null, so the exemption cannot be forgotten by a check somewhere downstream.
+
+**`non_consecutive_seq` belongs at the append path.** It is the one invariant with
+no legitimate partial-log exemption, unlike, say, a tool call that is unmatched
+only because the log stops mid-batch.
+
+## What the reducer computes
+
+The reducer is a pure fold over the log producing the state a Worker needs to
+decide what to do next. Same log in, same state out. No IO, no clock, no
+randomness.
+
+Three derivations are subtle enough to be worth naming:
+
+**Aborting is derived, not stored.** It is "some abort Record exists for this
+operation", computed by scanning. There is no mutable abort bit anywhere in the
+state machine. That is what "an abort is a Record, not a flag" means concretely.
+
+**Pending steer and follow-up are forced empty once aborting.** A queue item
+legally enqueued before the abort but never drained is moot; the loop must not act
+on it. Their presence in the log stays legal, but the state the loop reads is
+empty.
+
+**The in-flight step is the newest attempt whose result entry does not exist yet.**
+Once the result exists, the step reports as absent even though the attempt history
+is still in the log. "In flight" and "most recent" are different questions and only
+one of them should own the field name.
+
+Return newly constructed immutable models rather than defensively copying mutable
+ones. Immutability removes the whole aliasing category at no cost.
+
+## The agent loop
+
+One turn is one assistant response plus the tool batch it produced. A Run spans
+many turns. The loop shape, condensed:
+
+```
+outer:
+    inner while there are more tool calls or pending messages:
+        on any turn after the first: prepare the next turn, then poll steering once
+        inject pending messages into context
+        stream one assistant response
+        if it stopped with error or abort: end the turn and the run
+        if it made tool calls:
+            if it was truncated at the output limit: fail every call in it
+            otherwise execute them
+            keep going unless every finalised result asked to terminate
+        end the turn
+        if the stop-after-turn condition holds: end the run
+        pending messages = poll steering
+    follow-ups = poll follow-up queue
+    if any: make them pending and continue the outer loop
+```
+
+Stop conditions, in the order the loop checks them, because the order is
+observable:
+
+1. The assistant stream ended in error or abort. No tool execution is attempted at
+   all. This is the only stop that skips the tool batch entirely.
+2. **Every** finalised tool result in the batch asked to terminate. Every, not any.
+   One non-terminating call in a mixed batch keeps the loop going.
+3. The stop-after-turn condition holds. Checked after the turn ends and before
+   steering is polled, so the assistant response and its tools have already
+   completed. This is the clean place to stop for context budget.
+4. No tool calls and no follow-ups. The natural end.
+
+A truncated assistant message with tool calls is a fifth, narrower case that does
+not stop the loop. Every call in it is force-failed with an explicit message saying
+the response hit the output token limit so the arguments may be truncated, and to
+re-issue with complete arguments. The reasoning is that truncation makes *every*
+call in that message suspect, so none are safe to execute even if some individually
+parse.
+
+**Tool ordering has two axes and they differ on purpose.** Live progress events
+fire in completion order, because that is what a UI wants. Persisted results are
+re-ordered back to the order the assistant issued the calls, because the model
+needs its tool results in the order it asked for them, and because reproducibility
+of the next turn's context depends on it. Do not let `asyncio.gather` resolution
+order leak into the log.
+
+If any tool in a batch declares sequential execution, the whole batch runs
+sequentially. A tool can escalate the batch's ordering; it cannot opt out of it.
+
+Every hook a consumer supplies is wrapped so that it cannot throw into the loop. A
+violated hook contract should degrade to a safe fallback and a log line, not
+corrupt the loop.
+
+## Interrupts and steering: three queues
+
+| Queue | Scope | Drains |
+|---|---|---|
+| steer | the current Run | before the next assistant response, mid-run |
+| follow-up | the current Run | only once the Run would otherwise stop |
+| next-run | the Run family, no run id | consumed by the next Run's initial messages, never inside this one |
+
+How many items drain at once is a policy decision that belongs above the reducer.
+The reducer says what is pending; something else decides how much of it to take per
+drain point. Do not bake a drain count into the fold.
+
+## Aborting a tool call in flight
+
+Two properties of a tool are easy to merge and must stay separate, because they are
+asked at different times by different code:
+
+**Replay safety** is asked *after a crash*, by whoever reclaims the Run: if this
+call never recorded a result, is it safe to run again?
+
+**Interruptibility** is asked *live*, by the Worker holding the Attempt when an
+abort arrives mid-call: should this call be cancelled, or allowed to finish?
+
+A refund tool wants neither. It must not be blindly re-run after a crash and must
+not be cut off mid-flight. The two flags agree for that example and are independent
+in general, so they are two fields on the tool declaration.
+
+Interruptibility is a *declaration the scheduler consults before attempting
+cancellation*, not a hope that the tool checks its cancellation signal promptly.
+Cooperative-only cancellation, where the signal is passed down and the tool may or
+may not read it, is not enough: a signal-deaf tool then runs to completion past
+every deadline. Declaring the property up front is what lets the scheduler decide
+to abandon the call and settle it as an orphan instead.
+
+## Streaming after an interrupt
+
+Nothing extra is needed. The client-facing stream is a projection of the log, so
+the guarantee that a reconnect with `after=N` misses nothing comes entirely from
+gaplessness and append-only-ness. An in-process live event channel is a different
+thing, useful for a CLI rendering output as it arrives, and must never be what a
+reconnecting client is replayed from.

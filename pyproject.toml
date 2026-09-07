@@ -1,0 +1,244 @@
+[project]
+name = "psych-runtime"
+# One source of truth, read from the code. Two places to bump is one place to
+# forget, and a wheel whose metadata disagrees with `psych_runtime.__version__`
+# is a bug nobody notices until a bug report cites the wrong version.
+dynamic = ["version"]
+description = "Run AI agents in Python with tool approvals, persistent run logs, and worker recovery."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Mrutyunjay Patil" }]
+keywords = ["agent", "runtime", "llm", "durable-execution", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.9",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+postgres = ["asyncpg>=0.29"]
+mysql = ["aiomysql>=0.2"]
+dynamodb = ["aioboto3>=13.0"]
+otel = ["opentelemetry-api>=1.27", "opentelemetry-sdk>=1.27"]
+playground = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-dotenv>=1.0",
+    "asyncpg>=0.29",  # optional PostgresStore wiring; unused unless PSYCH_PLAYGROUND_POSTGRES_DSN is set
+    # Tracing, unused unless PSYCH_PLAYGROUND_OTLP_ENDPOINT is set. The SDK and
+    # the exporter are separate packages: `psych`'s own `otel` extra takes only
+    # the API and the SDK, because a library must not choose a consumer's
+    # exporter. This is the consumer, so it chooses one.
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
+all = [
+    "asyncpg>=0.29",
+    "aiomysql>=0.2",
+    "aioboto3>=13.0",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+]
+
+[project.scripts]
+# Developer tooling only: it scaffolds and reports, and never runs an agent.
+# See psych_runtime/cli.py's module docstring for why that line is where it is.
+psych = "psych_runtime.cli:main"
+
+[project.urls]
+Homepage = "https://psychruntime.com"
+Source = "https://github.com/psych-systems/psych-runtime"
+Issues = "https://github.com/psych-systems/psych-runtime/issues"
+Changelog = "https://github.com/psych-systems/psych-runtime/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.6",
+    "hypothesis>=6.112",
+    "mypy>=1.13",
+    "ruff>=0.7",
+    "import-linter>=2.1",
+    "types-aioboto3>=13.0",
+    "moto[s3,server]>=5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "psych_runtime/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["psych_runtime"]
+
+# The skills are documentation an agent reads, and `psych skills install`
+# copies them out of an installed wheel. The canonical copy stays at
+# .agents/skills so this repository's own agents find it with no build step;
+# this puts the same files where an installed package can reach them.
+[tool.hatch.build.targets.wheel.force-include]
+".agents/skills" = "psych_runtime/_skills"
+
+# ---------------------------------------------------------------------------
+# Lint and format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["psych_runtime", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # flake8-bugbear
+    "A",         # flake8-builtins
+    "C4",        # comprehensions
+    "T20",       # no print
+    "PT",        # pytest style
+    "RET",       # return
+    "SIM",       # simplify
+    "TID",       # tidy imports
+    "ARG",       # unused arguments
+    "PTH",       # use pathlib
+    "ERA",       # commented-out code
+    "PL",        # pylint
+    "TRY",       # tryceratops
+    "RUF",
+]
+ignore = [
+    "PLR0913",  # many arguments: ports legitimately take several
+    "TRY003",   # long messages outside exception class: our errors are explanatory by design
+    "PLR2004",  # magic value in comparison: noisy in tests
+    "N818",     # exception names need an Error suffix: DESIGN.md names these
+                # types (SeqConflict, LeaseLost, AccessDenied) and the design
+                # wins over the convention.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004", "ARG001", "ARG002", "PLC0415"]
+"psych_runtime/testing/**" = ["T20"]
+# A command line's output IS its interface, the same reason the testing
+# helpers are exempt.
+"psych_runtime/cli.py" = ["T20"]
+# A benchmark reports numbers; printing them is the point, and a reader
+# needs the measurement even on a run that passes.
+"benchmarks/**" = ["T20", "PLC0415"]
+# A command-line script's output IS its interface, the same reason the testing
+# helpers are exempt. Nothing under scripts/ is imported by the library.
+"scripts/**" = ["T20"]
+# The playground backend is a runnable app, not a library module; it logs to
+# stdout the same way the scripts above do.
+"examples/**" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["psych_runtime"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_no_return = true
+disallow_any_explicit = false
+disallow_any_generics = true
+no_implicit_reexport = true
+show_error_codes = true
+pretty = true
+files = ["psych_runtime", "tests"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["aioboto3.*", "aiomysql.*", "botocore.*"]
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+timeout = 120
+filterwarnings = [
+    "error",
+    # starlette's TestClient warns that using it with httpx is deprecated and
+    # tells you to install httpx2. Psych depends on httpx and is not adding a
+    # second HTTP library so that one test can drive a generated FastAPI app.
+    # Matched on the message rather than the category, so a genuine deprecation
+    # anywhere else -- including a future one from starlette -- still fails.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:",
+]
+markers = [
+    "benchmark: measured against a recorded baseline; fails on regression",
+    "unit: pure logic, no IO",
+    "functional: a component against a real adapter",
+    "e2e: a whole run from dispatch to report",
+    "postgres: needs a real PostgreSQL server",
+    "mysql: needs a real MySQL/MariaDB server",
+    "dynamodb: needs DynamoDB Local",
+]
+
+# ---------------------------------------------------------------------------
+# Architecture: dependencies point inward (DESIGN.md §21)
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "psych_runtime"
+
+[[tool.importlinter.contracts]]
+name = "core imports nothing from the other subpackages"
+type = "forbidden"
+source_modules = ["psych_runtime.core"]
+forbidden_modules = [
+    "psych_runtime.runtime", "psych_runtime.tools", "psych_runtime.model", "psych_runtime.store",
+    "psych_runtime.sandbox", "psych_runtime.memory", "psych_runtime.telemetry", "psych_runtime.report",
+    "psych_runtime.builder", "psych_runtime.testing", "psych_runtime.a2a",
+]
+
+[[tool.importlinter.contracts]]
+name = "ports do not import the runtime that drives them"
+type = "forbidden"
+source_modules = ["psych_runtime.store", "psych_runtime.sandbox", "psych_runtime.memory", "psych_runtime.telemetry"]
+forbidden_modules = ["psych_runtime.runtime", "psych_runtime.tools", "psych_runtime.builder"]
+
+[[tool.importlinter.contracts]]
+name = "layers point inward"
+type = "layers"
+layers = [
+    "psych_runtime.builder",
+    "psych_runtime.report",
+    "psych_runtime.runtime",
+    "psych_runtime.tools | psych_runtime.model | psych_runtime.sandbox | psych_runtime.memory",
+    # A2A is protocol translation over psych.core and nothing else. Above the
+    # ports and below psych.tools, which holds the outbound client that speaks
+    # it (psych.tools.a2a).
+    "psych_runtime.a2a",
+    "psych_runtime.store | psych_runtime.telemetry",
+    "psych_runtime.core",
+]
+exhaustive = false

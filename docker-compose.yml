@@ -1,0 +1,89 @@
+# The playground with a real database behind it.
+#
+# `docker run` alone is the quick look and keeps everything in memory, which is
+# honest for ten minutes and loses every Run on restart. This is the other
+# shape: the same image, pointed at PostgreSQL, so Runs and Records persist and
+# the store contract is doing real work.
+#
+#   docker compose up --build
+#
+# Then http://localhost:3000. Nothing else to configure: the console's Settings
+# page is where a model provider goes, and it treats having none as a designed
+# state rather than an error.
+
+services:
+  playground:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      # One port. The console proxies /api and /a2a to the backend on loopback
+      # inside the container, so there is no second origin for a browser to be
+      # confused by. See examples/playground/web/next.config.ts.
+      - "127.0.0.1:3000:3000"
+    environment:
+      # The one line that swaps the in-memory store for a real one. Everything
+      # else about the image is identical, which is the point of a Store port.
+      PSYCH_PLAYGROUND_POSTGRES_DSN: postgresql://psych:psych@postgres:5432/psych
+      # Turns tracing on. Unset in the plain `docker run`, where the no-op
+      # `Telemetry` keeps the quick look a single command with no collector to
+      # stand up. Psych opens the spans either way; this decides whether
+      # anything is listening. See examples/playground/backend/app/observability.py.
+      PSYCH_PLAYGROUND_OTLP_ENDPOINT: http://jaeger:4318
+    volumes:
+      # Settings, the agent and run index, and memories. The database holds the
+      # Runs; this holds the platform's own bookkeeping beside it.
+      - psych-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: psych
+      POSTGRES_PASSWORD: psych
+      POSTGRES_DB: psych
+    volumes:
+      - psych-postgres:/var/lib/postgresql/data
+    healthcheck:
+      # `depends_on` alone only waits for the container to start, not for
+      # Postgres to accept connections, and the backend opening its pool
+      # against a database still starting is the usual first-run failure.
+      test: ["CMD-SHELL", "pg_isready -U psych -d psych"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # Not published. Nothing outside this network needs it, and a database on a
+    # host port is how a demo becomes an incident.
+    expose:
+      - "5432"
+
+  jaeger:
+    # All-in-one: collector, storage and a UI in one container, which is the
+    # right trade for a demo. It accepts OTLP directly, so there is no separate
+    # collector to configure, and the traces land somewhere a person can
+    # actually open rather than in a sink that swallows them.
+    #
+    # In-memory storage, deliberately. Traces last as long as the container,
+    # which matches how long anyone looks at them here, and it keeps the
+    # compose file to one more service rather than a storage backend as well.
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # The UI. Open it and search for the `psych-playground` service to see a
+      # Run as a span tree: the Run, its Attempt, each Turn, and the model,
+      # tool and compaction calls underneath.
+      - "127.0.0.1:16686:16686"
+    expose:
+      # OTLP/HTTP, reachable from the backend on this network and not
+      # published: nothing outside needs to post spans here.
+      - "4318"
+
+volumes:
+  psych-data:
+  psych-postgres:

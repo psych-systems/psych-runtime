@@ -1,0 +1,468 @@
+name: gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "0"
+
+jobs:
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy --strict .
+      - name: dependencies point inward
+        run: uv run lint-imports
+
+  docs:
+    name: docs match the library
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: uv sync --all-extras --group dev
+
+      # The three checks that make the documentation self-maintaining. Each one
+      # fails on a *diff*, not on a missing file: the question is never "did
+      # somebody write a page" but "does the page still say what the code says".
+      - name: the API reference matches psych_runtime.__all__
+        run: uv run python scripts/generate_docs.py --check
+      - name: the changelog and design notes are in sync
+        run: node web/scripts/sync-from-repo.mjs --check
+      - name: docs checks preserve files and support Windows line endings
+        run: node --test web/scripts/tests/sync-from-repo.test.mjs
+      - name: the site advertises the real package
+        run: node web/scripts/check-site.mjs
+      - name: the approval demo steps through the log the runtime writes
+        run: uv run python scripts/generate_site_fixtures.py --check
+
+      # A site that does not build is a site that is down. Building it here
+      # means a broken MDX page, a type error in a marketing page or a stale
+      # symbol in a code sample fails the pull request that wrote it rather than
+      # the deploy that follows. The build renders the social image with fonts
+      # fetched from Google Fonts, so this job needs outbound network.
+      - name: the site type-checks and builds
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm build
+
+  benchmarks:
+    name: benchmarks do not regress
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+
+      # These fail on regression rather than printing numbers, which is the only
+      # reason they will still exist in six months. Tolerances are wide because
+      # a shared runner is noisy and a benchmark that fails on a busy neighbour
+      # teaches people to rerun the job until it passes.
+      #
+      # The baselines were recorded on the machine named in baselines.json. A
+      # failure here is a regression *or* a different box; the assertion prints
+      # both shapes so the first thing to rule out is visible in the log.
+      - name: measured against the committed baselines
+        run: uv run pytest benchmarks -q
+
+  unit:
+    name: unit (pure logic, no IO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      # -n auto: 939 pure-logic tests, no IO, embarrassingly parallel.
+      # Measured 6.4s -> 3.7s on four cores.
+      - run: uv run pytest tests/unit -q -n auto
+
+  functional:
+    name: functional (no database)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No services. Nineteen of the twenty-three files here open no store, and
+    # they were each waiting 47 seconds for three database containers before
+    # their first test -- most of it MySQL initialising a data directory from
+    # scratch on every run. The four that do need one are the `stores` jobs
+    # below, and they run in parallel with this rather than in front of it.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      - run: >-
+          uv run pytest tests/functional -q --durations=15 -n auto
+          --ignore=tests/functional/test_sandbox_subprocess.py
+          --ignore=tests/functional/test_sandbox_container.py
+          --ignore=tests/functional/test_store_postgres.py
+          --ignore=tests/functional/test_store_mysql.py
+          --ignore=tests/functional/test_store_dynamodb.py
+          --ignore=tests/functional/test_blob_s3.py
+
+  stores:
+    name: stores (postgres, dynamodb, s3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # MySQL is deliberately not here. It is the one service that initialises a
+    # data directory on every start, which costs about 45 seconds against
+    # Postgres's 18 and DynamoDB Local's 10, so pairing it with these would
+    # make all three wait for the slowest. It gets its own job below.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: psych
+          POSTGRES_USER: psych
+          POSTGRES_DB: psych_test
+        ports: ["5432:5432"]
+        # -U psych, because pg_isready with no user authenticates as the
+        # runner's own account and Postgres has no `root` role. It still exits
+        # 0 -- the server answered -- so the health check passed while the
+        # server log filled with FATAL lines, one every five seconds for the
+        # life of every job this workflow has ever run.
+        options: >-
+          --health-cmd "pg_isready -U psych -d psych_test" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+      dynamodb:
+        image: amazon/dynamodb-local:latest
+        ports: ["8000:8000"]
+    env:
+      PSYCH_TEST_POSTGRES_DSN: postgresql://psych:psych@127.0.0.1:5432/psych_test
+      PSYCH_TEST_DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      - run: >-
+          uv run pytest -q --durations=15
+          tests/functional/test_store_postgres.py
+          tests/functional/test_store_dynamodb.py
+          tests/functional/test_blob_s3.py
+
+  stores-mysql:
+    name: stores (mysql)
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: psych
+          MYSQL_USER: psych
+          MYSQL_PASSWORD: psych
+          MYSQL_DATABASE: psych_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -ppsych"
+          --health-interval 2s --health-timeout 5s --health-retries 60
+    env:
+      PSYCH_TEST_MYSQL_DSN: mysql://psych:psych@127.0.0.1:3306/psych_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      - run: uv run pytest tests/functional/test_store_mysql.py -q --durations=15
+
+  sandbox:
+    name: sandbox (subprocess and container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    # No service containers on purpose. Neither file opens a store, and the
+    # three databases the functional job needs cost 42s of startup before its
+    # first test runs. Split out, these start immediately and in parallel with
+    # everything else, so the gate's wall clock is the slowest job rather than
+    # the sum of all of them.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      # ContainerSandbox never pulls an image implicitly, so without this the
+      # container tests skip on their own precondition and `ContainerSandbox`
+      # goes unexercised. Pulling here rather than in a fixture keeps the
+      # suite's one outbound call in the place that provisions the host.
+      - name: the image ContainerSandbox runs programs in
+        run: docker pull python:3.12-slim
+      # -n 4 because this job is almost entirely waiting on the docker daemon:
+      # each container test creates a container, runs one short program, stops
+      # and removes it. The container name is randomised per execution and the
+      # IPC directory is a fresh mkdtemp, so nothing here is shared between
+      # tests and they parallelise cleanly.
+      #
+      # -v with PYTHONUNBUFFERED so the log names each test as it finishes.
+      # Without it pytest buffers, and a job that is merely slow looks exactly
+      # like one that is wedged until it ends -- which cost four separate
+      # attempts to find out which of the two this was.
+      # Two steps, not one. The first is 22 tests that fork a process and take
+      # three seconds; the second is 13 that each drive a real container. Run
+      # together they are indistinguishable in the log, and the last attempt
+      # spent eight minutes proving only that "something" was stuck.
+      #
+      # -v alone, without -q: passing both cancels them out, which is why the
+      # previous run printed no per-test lines at all despite asking for them.
+      - run: uv run pytest tests/functional/test_sandbox_subprocess.py -v --timeout=60
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      # --timeout=60 rather than the 120 in pyproject: every guard inside the
+      # adapter is shorter than that -- 20s to connect, 45s of wall clock -- so
+      # a case still running at 60 is stuck somewhere neither of them covers,
+      # and waiting the other 60 seconds to be told so teaches nothing. At four
+      # workers this bounds the whole file at about four minutes even if every
+      # single case hangs, which fits inside the job's ceiling and leaves a
+      # complete report rather than a cancellation.
+      # Serial, not -n 4. Under xdist, pytest-timeout dumps the worker's
+      # execnet receiver thread rather than the test's own stack, so thirteen
+      # timeouts produced thirteen tracebacks through execnet and not one line
+      # of this repository's code. Run in this process, the dump named the
+      # frame -- an epoll wait with no timer scheduled, which is what found
+      # `_close_listener`. Keep it serial while this backend is young: these
+      # are the only tests in the gate whose failure mode is a hang.
+      #
+      # --timeout=45 because the adapter's own guards are
+      # 20s to connect and 45s of wall clock, and the previous 60 was below
+      # its worst case (~63s including teardown) -- so pytest was killing
+      # these a few seconds before the adapter could report its own failure.
+      - run: uv run pytest tests/functional/test_sandbox_container.py -v --timeout=45
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      # Only on failure, and it costs nothing when green. The adapter removes
+      # each container in teardown, so anything still listed here is a
+      # container whose teardown did not finish -- which is the current
+      # suspicion. If they are gone instead, the hang is earlier and the logs
+      # below say how far the bootstrap got.
+      - name: what the runtime actually saw
+        if: failure()
+        run: |
+          echo "--- containers this adapter left behind ---"
+          docker ps -a --filter "name=psych-sandbox-" \
+            --format '{{.Names}}\t{{.Status}}\t{{.Image}}' || true
+          for c in $(docker ps -aq --filter "name=psych-sandbox-" | head -5); do
+            echo "--- inspect $c ---"
+            docker inspect "$c" --format \
+              'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}}' || true
+            echo "--- logs $c ---"
+            docker logs "$c" 2>&1 | tail -25 || true
+          done
+          echo "--- daemon responsiveness, the thing rm -f depends on ---"
+          time docker version --format '{{.Server.Version}}' || true
+          time docker ps -q >/dev/null || true
+
+  e2e:
+    name: e2e (dispatch to report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: psych
+          POSTGRES_USER: psych
+          POSTGRES_DB: psych_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PSYCH_TEST_POSTGRES_DSN: postgresql://psych:psych@127.0.0.1:5432/psych_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      # --dist loadfile, not plain -n: a few of these share a real Postgres,
+      # and loadfile keeps every test in a file on one worker so their
+      # ordering holds. Measured 39.6s -> 18.3s on four cores.
+      - run: uv run pytest tests/e2e -q --durations=15 -n auto --dist loadfile
+
+  console:
+    name: the console type-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 25k lines of TypeScript that only `next build` inside the image job
+      # ever checked, which is a Docker build away from the change that broke
+      # them. `typecheck` runs `next typegen` first: the pages annotate
+      # themselves with the PageProps and LayoutProps Next generates, so a bare
+      # tsc fails on a checkout that has never been built.
+      - run: npm --prefix examples/playground/web ci
+      - run: npm --prefix examples/playground/web run typecheck
+
+  image:
+    name: playground image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # The development container has no container runtime, so this job is the
+      # only place the image is ever built. A Dockerfile nobody builds is a
+      # Dockerfile that has stopped working.
+      - uses: docker/setup-buildx-action@v3
+      - name: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: psych-playground:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: it starts, and it answers
+        run: |
+          set -euo pipefail
+          # No provider, because that is how README.md and docker-compose.yml
+          # tell somebody to run this and therefore the only configuration
+          # worth proving. This job used to pass
+          # `-e PSYCH_PLAYGROUND_BASE_URL=http://127.0.0.1:1/v1`, a port
+          # guaranteed to refuse, because `load_settings()` raised without one.
+          # So the image was proved to start in a configuration nobody is told
+          # to use, while the documented command exited during startup. The
+          # workaround hid the defect for as long as it existed.
+          #
+          # Nothing here talks to a model anyway: the HEALTHCHECK and the curls
+          # below want the server answering, not a completion.
+          docker run -d --name playground -p 3000:3000 psych-playground:ci
+          # The image's own HEALTHCHECK is the condition, so this waits on the
+          # same thing the image says "ready" means rather than a second
+          # opinion invented here.
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' playground)
+            [ "$state" = "healthy" ] && break
+            [ "$state" = "unhealthy" ] && { docker logs playground; exit 1; }
+            sleep 2
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' playground)" = "healthy" ]
+
+          # One published port carrying both prefixes: this is the whole reason
+          # the console proxies instead of the browser being told a second
+          # address.
+          curl -fsS http://127.0.0.1:3000/api/health > /dev/null
+          curl -fsS http://127.0.0.1:3000/ > /dev/null
+
+          # A stale build served from a previous layer looks exactly like a
+          # working app until something is missing, so assert the console's own
+          # assets came through: standalone output leaves `static` outside the
+          # server directory and it has to be copied by hand.
+          curl -fsS http://127.0.0.1:3000/ | grep -q '/_next/static/'
+
+      # The console is built on an SSE stream, and the way it forwards `/api`
+      # decides whether that stream reaches the browser as it is written or
+      # only when it ends. A Next `rewrites()` entry buffers it: measured
+      # against this backend, first byte never arrived within five seconds
+      # where the backend itself answered in five milliseconds. A conversation
+      # waiting for approval therefore rendered empty, with no approval card
+      # and no way to approve it, which is the console's whole point.
+      #
+      # So this asserts the shape rather than the wiring: dispatch a Run and
+      # require the first record to arrive promptly. No provider is configured,
+      # so the Run fails at its model call -- and it still writes
+      # `run_admitted` and `attempt_started` first, which is all this needs.
+      - name: the record stream is not buffered
+        run: |
+          set -euo pipefail
+          jar=$(mktemp)
+          curl -fsS -c "$jar" -X POST http://127.0.0.1:3000/api/auth/signup \
+            -H 'content-type: application/json' \
+            -d '{"email":"ci@example.com","password":"correct horse battery staple"}' > /dev/null
+          agent=$(curl -fsS -b "$jar" -X POST http://127.0.0.1:3000/api/agents \
+            -H 'content-type: application/json' \
+            -d '{"name":"ci","instructions":"hello","model":"none","tools":[]}' \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent_id"])')
+          run=$(curl -fsS -b "$jar" -X POST http://127.0.0.1:3000/api/runs \
+            -H 'content-type: application/json' \
+            -d "{\"agent_id\": \"$agent\", \"message\": \"hello\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
+          # -m 5 kills the read at five seconds; a stream that only flushes on
+          # close gives us nothing by then, and one that streams gives us the
+          # first records immediately.
+          frames=$(curl -sS -N -b "$jar" -m 5 \
+            "http://127.0.0.1:3000/api/runs/$run/stream?after=0" \
+            | grep -c '^data:' || true)
+          echo "records delivered within five seconds: $frames"
+          [ "$frames" -ge 1 ]
+
+      - name: it is not running as root
+        run: |
+          [ "$(docker exec playground id -u)" != "0" ]
+
+      - name: it stops when asked
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          docker stop playground > /dev/null
+          # `docker stop` waits ten seconds before killing, so anything close
+          # to that means signals are not reaching the two children and the
+          # container is being shot rather than shutting down.
+          [ $(( $(date +%s) - start )) -lt 8 ]
+          docker rm playground > /dev/null
+
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    needs: [lint, docs, benchmarks, unit, functional, stores, stores-mysql, sandbox, e2e, console, image]
+    if: always()
+    steps:
+      - name: every job must be green
+        run: |
+          echo "lint=${{ needs.lint.result }} docs=${{ needs.docs.result }} benchmarks=${{ needs.benchmarks.result }}"
+          echo "unit=${{ needs.unit.result }}"
+          echo "functional=${{ needs.functional.result }} sandbox=${{ needs.sandbox.result }}"
+          echo "stores=${{ needs.stores.result }} stores-mysql=${{ needs['stores-mysql'].result }}"
+          echo "e2e=${{ needs.e2e.result }} image=${{ needs.image.result }}"
+          [ "${{ needs.lint.result }}" = "success" ] || exit 1
+          [ "${{ needs.docs.result }}" = "success" ] || exit 1
+          [ "${{ needs.benchmarks.result }}" = "success" ] || exit 1
+          [ "${{ needs.unit.result }}" = "success" ] || exit 1
+          [ "${{ needs.functional.result }}" = "success" ] || exit 1
+          [ "${{ needs.stores.result }}" = "success" ] || exit 1
+          [ "${{ needs['stores-mysql'].result }}" = "success" ] || exit 1
+          [ "${{ needs.sandbox.result }}" = "success" ] || exit 1
+          [ "${{ needs.e2e.result }}" = "success" ] || exit 1
+          [ "${{ needs.image.result }}" = "success" ] || exit 1
+          [ "${{ needs.console.result }}" = "success" ] || exit 1

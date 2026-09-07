@@ -1,0 +1,148 @@
+---
+title: Install and run an agent offline
+description: Install psych-runtime, run one agent that calls one tool, and read back what it did. No API key, no database.
+---
+
+**Outcome.** A Python file that runs an agent, has it call a tool, and prints
+the answer and the tool call it made. Five minutes, offline.
+
+**You need.** Python 3.12 or newer. The package depends on `pydantic` and
+`httpx` and nothing else.
+
+**Version.** These pages describe the code on `main`. The installed package
+prints its own version with `psych doctor`.
+
+## 1. Install
+
+```sh
+pip install psych-runtime        # or: uv add psych-runtime
+```
+
+The distribution is `psych-runtime`, the import is `psych_runtime`, and the
+command is `psych`. (`pip install psych` installs an unrelated package.)
+
+## 2. The shortest path: a generated project
+
+```sh
+psych new demo && cd demo && python main.py
+```
+
+`psych new` writes a `main.py` you own. Run it and it prints:
+
+```text
+No OPENAI_API_KEY set, so this run uses the fake model.
+
+Order A1 has shipped with DHL.
+
+completed | 1 turn, 1 tool call | 0 tokens | cost None
+```
+
+With no provider configured, the file runs against the scripted fake model,
+so the whole loop executes without a network. Set `OPENAI_API_KEY` and the
+same file calls a real provider ([Run with a real model](/docs/next/get-started/real-model)).
+
+The command line writes files and reports what is installed. It never runs an
+agent for you: `psych doctor` says what is installed and configured, and
+`psych --help` is the rest.
+
+## 3. Or write it yourself
+
+The same program, in the open. Save it as `main.py` in an empty directory.
+
+```python
+import asyncio
+
+import psych_runtime
+from psych_runtime.testing.fake_model import FakeModel
+
+
+async def lookup_order(order_id: str) -> dict[str, str]:
+    """Look up an order by its id."""
+    return {"order_id": order_id, "status": "shipped"}
+
+
+spec = psych_runtime.AgentSpec(
+    name="support",
+    instructions="Help the customer with their order.",
+    model=psych_runtime.ModelRef(model="gpt-4o-mini"),
+    tools=(psych_runtime.CodeTool(name="lookup_order"),),
+)
+
+
+async def main() -> None:
+    # Two turns: call the tool, then answer from its result. A real provider
+    # decides this for itself; here you decide it, which is what makes the
+    # run deterministic.
+    model = (
+        FakeModel()
+        .turn(
+            tool_calls=[("lookup_order", {"order_id": "A1"})],
+            usage=psych_runtime.Usage(input=412, output=23),
+        )
+        .turn(text="A1 has shipped.", usage=psych_runtime.Usage(input=461, output=9))
+    )
+    async with psych_runtime.session(model, tools=[lookup_order]) as session:
+        answer = await session.ask(spec, "where is order A1?")
+        print(answer.text)
+
+        report = await psych_runtime.report(session.store, answer.run_id)
+        print(report.terminal_state, report.totals.usage.input, report.totals.usage.output, report.totals.cost)
+        for call in report.tool_calls:
+            print(call.tool, call.arguments, call.outcome)
+
+
+asyncio.run(main())
+```
+
+```sh
+python main.py
+```
+
+```text
+A1 has shipped.
+completed 873 32 None
+lookup_order {'order_id': 'A1'} ok
+```
+
+## What happened
+
+`session()` assembled a store, a tool registry, a `Runtime` and a running
+`Worker`, ran the agent, and shut them down again. `lookup_order` was called
+with the arguments the model asked for, and `report.tool_calls` says so from
+the log rather than from the model's claim.
+
+Three things in that output matter before you build on it.
+
+- **The tool ran.** `outcome` is `ok`, read from the record the runtime wrote
+  after executing it.
+- **Cost is `None`, not `0`.** No price table was passed and the fake model
+  has no rate. `None` means "no price known"; it is never rounded to zero.
+  [Track token usage and cost](/docs/next/guides/pricing) shows how to pass one.
+- **Nothing was saved.** `session()` defaults to `InMemoryStore`, which lives
+  in this process and dies with it. Pass `store=` for anything that must
+  survive a restart. [Persist and recover runs](/docs/next/guides/stores)
+  covers PostgreSQL, MySQL and DynamoDB.
+
+## If it does not work
+
+**`ToolSchemaError: tool 'lookup_order' has no description and no docstring`.**
+The function needs type hints on every parameter and a docstring. The schema
+comes from the hints and the description from the docstring, so a tool without
+them cannot be described to the model.
+
+**`SpecValidationError: code tool 'x' is not registered`.** The Spec names a
+tool that was not passed in `tools=[...]`. The name in `CodeTool(name=...)`
+must match the function's name.
+
+**`ModuleNotFoundError: No module named 'psych_runtime'`.** The distribution
+is `psych-runtime`; `pip install psych` installs something else.
+
+**`answer.finished` is `False` and `answer.text` is empty.** The Run failed or
+is still going. That is reported rather than raised, because a failed Run is
+fully recorded. `psych_runtime.status(session.store, answer.run_id)` says why.
+
+## Next
+
+- [Run with a real model](/docs/next/get-started/real-model): the one line that changes.
+- [Add a tool](/docs/next/get-started/add-a-tool): what a function needs to be a tool, and how to mark one destructive.
+- [Read what a run did](/docs/next/get-started/read-a-run): `status()`, `answer()`, `report()` and the raw log.

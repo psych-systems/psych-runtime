@@ -1,0 +1,31 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "machine": "x86_64",
+    "system": "Linux",
+    "cpus": 4
+  },
+  "note": "Recorded by `pytest benchmarks --benchmark-record`. These numbers belong to the environment above; see benchmarks/README.md.",
+  "measurements": {
+    "claim_latency_ms": {
+      "value": 0.014374,
+      "unit": "ms/claim",
+      "higher_is_better": false
+    },
+    "claims_per_second_32_workers": {
+      "value": 32883.184462,
+      "unit": "claims/sec",
+      "higher_is_better": true
+    },
+    "dispatch_throughput": {
+      "value": 56715.17612599999,
+      "unit": "runs/sec",
+      "higher_is_better": true
+    },
+    "log_bytes_per_turn": {
+      "value": 2197.0,
+      "unit": "bytes/turn",
+      "higher_is_better": false
+    }
+  }
+}

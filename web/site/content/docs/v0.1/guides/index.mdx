@@ -1,0 +1,46 @@
+---
+title: Guides
+description: One task per page, with working code. Pick the one that matches what you are doing.
+---
+
+Each guide is one feature: what it is for, the code that uses it, and the
+mistakes that are easy to make. They are the same files that ship as skills
+for coding agents (`psych skills install`), so there is one copy and it is the
+tested one.
+
+If you have not run an agent yet, start with [Get started](/docs/v0.1/get-started).
+
+## Give an agent things to do
+
+- [Define an agent](/docs/v0.1/guides/agents): instructions, model, limits, what stops a Run.
+- [Connect Python functions as tools](/docs/v0.1/guides/code-tools).
+- [Call an HTTP endpoint as a tool](/docs/v0.1/guides/http-tools), with no function to write.
+- [Connect MCP servers](/docs/v0.1/guides/mcp), and [authenticate to one with OAuth 2.1](/docs/v0.1/guides/mcp-oauth).
+- [Work with other agents over A2A](/docs/v0.1/guides/a2a), in both directions.
+- [Run code the model writes](/docs/v0.1/guides/sandbox), in a subprocess or a container.
+- [Load instructions on demand with skills](/docs/v0.1/guides/agent-skills).
+- [Remember facts across runs](/docs/v0.1/guides/memory).
+- [Delegate to subagents](/docs/v0.1/guides/subagents).
+- [Run fixed steps as a workflow](/docs/v0.1/guides/workflows), and [build either with the fluent builder](/docs/v0.1/guides/builder).
+
+## Control a run
+
+- [Require approval for selected tool calls](/docs/v0.1/guides/approvals).
+- [Stop or steer a running agent](/docs/v0.1/guides/interrupts).
+- [Pause a run and resume it later](/docs/v0.1/guides/suspend-resume): questions, webhooks, waiting on a clock.
+- [Keep a long conversation inside the window](/docs/v0.1/guides/compaction).
+
+## Read a run
+
+- [Stream results and reconnect](/docs/v0.1/guides/streaming).
+- [Inspect a run: report, status, answer](/docs/v0.1/guides/report).
+- [Track token usage and cost](/docs/v0.1/guides/pricing).
+- [Export spans with OpenTelemetry](/docs/v0.1/guides/telemetry).
+
+## Operate it
+
+- [Persist and recover runs](/docs/v0.1/guides/stores): PostgreSQL, MySQL, DynamoDB, and what the in-memory store is for.
+- [Handle large tool results](/docs/v0.1/guides/blobs).
+- [Serve multiple tenants safely](/docs/v0.1/guides/multitenancy): Scope, Policy, egress.
+- [Test agents without a network](/docs/v0.1/guides/testing).
+- [First run, in detail](/docs/v0.1/guides/quickstart): the full walkthrough, including the long form `session()` expands to.

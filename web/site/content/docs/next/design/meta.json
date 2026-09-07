@@ -1,0 +1,14 @@
+{
+  "title": "Design notes",
+  "pages": [
+    "index",
+    "durability-and-leases",
+    "record-log-and-reducer",
+    "spec-versioning-and-tool-access",
+    "tool-disclosure-and-prompt-budget",
+    "metering-and-telemetry",
+    "subagents-and-delegation",
+    "code-execution-and-sandboxing",
+    "mcp-2026-07-28"
+  ]
+}

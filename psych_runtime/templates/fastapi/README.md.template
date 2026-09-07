@@ -1,0 +1,85 @@
+# __PROJECT__
+
+An HTTP API over [Psych Runtime](https://psychruntime.com), showing the split
+every real integration makes.
+
+```sh
+pip install psych-runtime fastapi uvicorn
+python main.py            # then http://localhost:8000/docs
+```
+
+Try it with no API key at all:
+
+```sh
+curl -X POST localhost:8000/runs -H 'content-type: application/json' \
+     -d '{"message": "where is order A1?"}'
+# {"run_id":"run_...","created":true}
+
+curl localhost:8000/runs/<run_id>/answer
+curl localhost:8000/runs/<run_id>/report
+curl -N localhost:8000/runs/<run_id>/stream        # server-sent events
+```
+
+## The shape to copy
+
+| File | Owns |
+|---|---|
+| `agent.py` | The Spec and the tools. Imported by both processes. |
+| `store.py` | Where Runs live. One choice, made once. |
+| `main.py` | Six routes. Admits Runs and reads them back. |
+| `worker.py` | Executes Runs. Scales separately. |
+
+**Admitting a Run and executing one are different jobs.** Admitting is a fast
+write that belongs in a request handler. Executing is minutes of model and tool
+calls that belongs in its own process, so an agent loop's memory profile does
+not decide how many HTTP requests you can serve. They share a `Store` and
+nothing else.
+
+`agent.py` is imported by both and passes no callables between them: the Spec
+names its tools, and each process registers its own implementations under those
+names. That is what makes a Spec storable, hashable and replayable after a
+crash.
+
+## Running it for real
+
+```sh
+export PSYCH_POSTGRES_DSN=postgresql://localhost/psych
+export OPENAI_API_KEY=sk-...
+
+python main.py      # web: admits and reads
+python worker.py    # worker: executes. Run several.
+```
+
+With no DSN set, `main.py` hosts a Worker itself and `worker.py` refuses to
+start, because two processes cannot share an in-memory store. That fallback is
+for `python main.py` on a laptop and nothing else.
+
+## What each route demonstrates
+
+- **`POST /runs`.** `idempotency_key` is what makes at-least-once delivery
+  survivable. Key it on the webhook event id or queue message id you already
+  have, and a redelivery returns the first Run instead of issuing a second
+  refund. `continues` carries a conversation forward across Runs.
+- **`GET /runs/{id}/stream`.** The log *is* the stream. A browser reconnecting
+  sends `Last-Event-ID`; pass it as `after=` and it misses nothing, including
+  across an interrupt.
+- **`POST /runs/{id}/approve`.** A Run suspended before a destructive call is
+  holding no thread and no connection. It released its lease and persisted, so
+  the process that approves need not be the one that asked.
+- **`scope=` on every read.** Without it, one leaked run id in a log line is a
+  readable conversation. `AccessDenied` is returned as 404 on purpose: a 403
+  confirms the run exists.
+
+## What is deliberately missing
+
+Authentication. `caller()` in `main.py` reads two headers and trusts them, and
+it is the first line to delete. Psych models no users, orgs or roles: it threads
+a `Scope` through every call and asks your `Policy`. Your existing middleware
+turns a token into that `Scope`.
+
+## Next
+
+`psych doctor` reports what is installed and configured.
+
+`psych skills install` drops 26 guides into `.agents/skills/` so an AI coding
+agent can extend this without guessing.

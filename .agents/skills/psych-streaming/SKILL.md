@@ -1,0 +1,156 @@
+---
+name: psych-streaming
+description: >-
+  Stream a Psych Run to a client and survive reconnects: `psych_runtime.stream()`
+  with `after=N`, `psych_runtime.stream_text()` for a chat UI that wants only the
+  assistant's words, why the log IS the stream, the optional `Notifier` accelerator,
+  streaming across an interrupt without gaps, and turning Records into
+  server-sent events. Use whenever someone builds a live view of a Psych agent,
+  wires SSE or WebSockets over Psych, asks how a client resumes after dropping
+  its connection, asks why a stream hangs forever on a bad run id, or worries
+  about missing records around an abort. Read before writing any streaming
+  endpoint, because reconnecting means passing the highest sequence you already
+  have rather than keeping stream state, and because there is no separate stream
+  to get out of step with the log.
+---
+
+# Streaming
+
+**The log is the stream.** Every Record has a sequence number and is persisted
+before it is delivered. There is no separate stream state, which is why an
+interrupt cannot break streaming: an abort is just more Records.
+
+```python
+async for record in psych_runtime.stream(store, run_id, after=0, scope=scope):
+    if record.type == "model_call_finished" and record.text:
+        yield record.text
+```
+
+The iterator yields the backlog after `after`, then tails until the Run settles.
+
+## Reconnecting
+
+A client passes the highest sequence it already has and misses nothing,
+including across an interrupt:
+
+```python
+async for record in psych_runtime.stream(store, run_id, after=last_seq_the_client_saw):
+    ...
+```
+
+`psych_runtime.status(...).head_seq` is the sequence to reconnect from when you have a
+status but no record in hand.
+
+This is one of Psych's definition-of-done items: a client reconnecting with
+`after=N` receives every later record and misses none.
+
+## The Worker is somewhere else
+
+The Worker executing a Run is a different process from your HTTP server. The
+stream has to survive that, and it does, because both read the same store. Your
+handler needs no channel to the Worker and no shared memory with it.
+
+## Server-sent events
+
+```python
+async def sse(run_id: RunId, after: int) -> AsyncIterator[str]:
+    async for record in psych_runtime.stream(store, run_id, after=after, scope=scope):
+        yield f"id: {record.seq}\ndata: {record.model_dump_json()}\n\n"
+```
+
+Use the record's `seq` as the SSE event id and the browser's own
+`Last-Event-ID` header becomes your `after`. Psych ships no HTTP server;
+`examples/playground/backend/` is a complete set of routes to copy.
+
+## Polling first, pub/sub as an accelerator
+
+Reads poll the store, currently every 250ms when nothing new arrived. Quarter of
+a second feels live in a chat UI and keeps a thousand idle subscribers off the
+database.
+
+An optional `Notifier` (Redis, Postgres `LISTEN/NOTIFY`, anything) shortens the
+wait. It is **never required for correctness**: a notifier that drops every
+message produces a stream that is exactly as complete and slightly slower,
+because the poll still runs. The tests do not use one.
+
+Lower latency comes from supplying a `Notifier`, not from lowering the poll
+interval.
+
+## Gaps are checked, not assumed
+
+A tailing reader that silently skipped a sequence would hand a consumer a
+conversation missing its middle and look fine doing it. Reads go through the
+store's range read, which the contract suite pins against exactly this, and the
+reader asserts contiguity itself rather than trusting it. A gap raises
+`CorruptLog`.
+
+## A bad run id fails fast
+
+`stream()` raises `RunNotFound` **before the first record** rather than tailing
+an id nobody admitted. It used to do the latter, and a typo'd id produced a
+stream that never yielded and never ended.
+
+`AccessDenied` when `scope` names a different tenant than the Run's.
+
+## Collecting instead of iterating
+
+```python
+from psych_runtime.runtime.stream import stream_until_settled
+
+records = await stream_until_settled(store, run_id, after=0, timeout=120.0)
+```
+
+For a caller who wants the whole thing rather than to iterate. The timeout is
+the caller's own bound; the Run's deadline is the real one. `psych_runtime.session()`'s
+`ask()` and `wait()` use this.
+
+## Just the words: `stream_text()`
+
+A chat UI that renders only assistant text should not write the record switch at
+all:
+
+```python
+async for delta in psych_runtime.stream_text(store, run_id, scope=scope):
+    yield f"data: {delta}\n\n"
+```
+
+It is a projection over `stream()`, exactly as `answer()` is a projection over
+the same log, and it exists for the same reason those do: every consumer writes
+this loop and every one gets the same three things wrong. Text arrives on
+`model_call_finished` rather than a record named for text, an abort is a Record
+rather than an exception, and the iterator ends when the Run *settles* rather
+than when the model stops talking.
+
+**It refuses to swallow a bad ending.** A Run that fails raises `RunFailed`; one
+that was interrupted or timed out raises `RunAborted`, carrying the terminal
+state so a user's stop is distinguishable from a deadline. Both subclass
+`RunEndedWithoutAnswer`, so a caller who only wants "it did not answer" writes
+one `except`.
+
+Returning quietly instead would be the bug this exists to prevent: a blank reply,
+no error, and a log that says exactly what went wrong.
+
+`after=` skips what a reconnecting client already rendered. Pass `0`, or read
+`answer()`, when you want the whole reply from the start.
+
+## What to render, when you want everything
+
+`stream()` stays the complete truth. Records carry a `type`. The ones a chat UI
+usually wants: `model_call_finished` for assistant text, `tool_call_started` and
+`tool_call_finished` for the work, `suspended` and `resumed` for a pause,
+`run_aborted`, and `run_settled`.
+
+Use `psych_runtime.answer()` or `psych_runtime.thread()` for the settled view rather than
+rebuilding one from records you streamed. Both project the same log, so neither
+can show something the other denies.
+
+## Gotchas
+
+- **Streaming does not start a Run.** `dispatch()` does, and a Worker has to be
+  claiming.
+- **`after` is exclusive.** Pass the last sequence you saw, not the next one you
+  want.
+- **The stream ends when the Run settles,** including `ABORTED` and `ABANDONED`.
+  A continuation is a new Run with a new id, so a chat UI streams the new one.
+- **Do not cache a projection keyed by run id without a sequence.** Records keep
+  arriving; the sequence is what makes a cache safe.

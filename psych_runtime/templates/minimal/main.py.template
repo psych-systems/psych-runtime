@@ -1,0 +1,81 @@
+"""__PROJECT__: an agent, and the two lines that read back what it did.
+
+Run it:
+
+    python main.py
+
+It works with no API key. With none set it uses Psych's scriptable fake model,
+so the whole loop runs offline and costs nothing. Set OPENAI_API_KEY (and
+optionally PSYCH_BASE_URL and PSYCH_MODEL) and the same file calls a real
+provider instead. Nothing else changes, because the model is a port.
+"""
+
+import asyncio
+import os
+
+import psych_runtime
+
+
+# 1. A tool is a plain function. Psych keeps its name, its schema (from the type
+#    hints) and its description (from the docstring), never the function itself.
+async def lookup_order(order_id: str) -> dict[str, str]:
+    """Look up an order by its id."""
+    return {"order_id": order_id, "status": "shipped", "carrier": "DHL"}
+
+
+# 2. An agent is data. No callables in here: `tools` names the tool above.
+spec = psych_runtime.AgentSpec(
+    name="support",
+    instructions="Help the customer with their order. Be brief.",
+    model=psych_runtime.ModelRef(model=os.getenv("PSYCH_MODEL", "gpt-4o-mini")),
+    tools=(psych_runtime.CodeTool(name="lookup_order"),),
+    limits=psych_runtime.Limits(max_turns=8, deadline_seconds=120),
+)
+
+
+def build_model() -> psych_runtime.ModelClient:
+    """A real provider when one is configured, the fake model otherwise.
+
+    Psych speaks the OpenAI-compatible wire protocol rather than depending on a
+    provider SDK, so this one client reaches any compatible provider or gateway,
+    Bedrock behind a gateway, or anything else that speaks it.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        return psych_runtime.OpenAICompatibleClient(
+            base_url=os.getenv("PSYCH_BASE_URL", "https://api.openai.com/v1"),
+            api_key=api_key,
+            transport=psych_runtime.HttpTransport(),
+            scope=psych_runtime.Scope(tenant="local"),
+        )
+
+    from psych_runtime.testing.fake_model import FakeModel
+
+    print("No OPENAI_API_KEY set, so this run uses the fake model.\n")
+    return (
+        FakeModel()
+        .turn(text="Let me check that.", tool_calls=[("lookup_order", {"order_id": "A1"})])
+        .turn(text="Order A1 has shipped with DHL.")
+    )
+
+
+async def main() -> None:
+    # 3. `session()` assembles a store, a registry, a Runtime and a running
+    #    Worker, and stops them again on the way out. Everything it built is
+    #    still reachable: s.store, s.registry, s.runtime, s.worker.
+    async with psych_runtime.session(build_model(), tools=[lookup_order]) as s:
+        answer = await s.ask(spec, "where is order A1?")
+        print(answer.text)
+
+        # 4. Everything the Run did is in its log. This is a projection of it,
+        #    not a second copy, so it can never disagree with what happened.
+        report = await psych_runtime.report(s.store, answer.run_id)
+        print(
+            f"\n{report.terminal_state} | {answer.summary() or 'no tool calls'} | "
+            f"{report.totals.usage.input + report.totals.usage.output} tokens | "
+            f"cost {report.totals.cost}"
+        )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

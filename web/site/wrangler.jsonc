@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // `next build` with `output: "export"` writes plain HTML to out/, so the
+  // whole site, marketing pages and docs alike, is static assets: no Worker
+  // script, no bindings, no runtime. Cloudflare serves the files from its edge
+  // and there is no code path that can be down while the files are fine.
+  "name": "psychruntime",
+  // Off, explicitly. Without this line Cloudflare enables
+  // <worker>.<subdomain>.workers.dev on every deploy and says so in a warning
+  // nobody reads twice. For production that is a second, crawlable copy of the
+  // whole site competing with psychruntime.com for its own search results; for
+  // the preview it is a second URL to confuse a reviewer. One hostname each.
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "out",
+    // /about and /about/ are the same page rather than one of them being a 404.
+    "html_handling": "auto-trailing-slash",
+    // Serves out/404.html, which is the designed page, for any unknown path.
+    "not_found_handling": "404-page"
+  }
+}

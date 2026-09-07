@@ -1,0 +1,295 @@
+# Specs, Versions, and who may call what
+
+Covers DESIGN.md §4 (the Spec as the only executable artifact), §10.4 to §10.6
+and §10.9 (tenant isolation, narrowing, the failure-streak guard, approvals) and
+§14 (Scope). Read it before touching `psych_runtime/core/spec.py`,
+`psych_runtime/core/version.py`, `psych_runtime/tools/narrowing.py` or `psych_runtime/tools/policy.py`.
+
+## A Spec holds data, never a callable
+
+The rule is enforced by the repository gate; this is why it survives contact with a real tool
+registry.
+
+There are three tool kinds and none of them can hold a function. A code tool
+stores the program's *source text*, which a sandbox parses and executes fresh on
+every call. An HTTP tool stores a URL, a method, a schema and a *reference* to a
+credential, with secret placeholders resolved at call time so the Spec itself
+never holds the resolved secret. A registered function tool stores the registered
+name.
+
+The stronger move is at the type level: **MCP is not a member of the authorable
+tool union at all.** An author references a catalogued server through a grant, and
+the runtime synthesises the actual tools from the tenant's catalogue at resolution
+time. The synthesised type is deliberately not a member of the Spec's tool union,
+so it can never be persisted into a Spec. Keeping `kind: "mcp"` out of the
+authorable union is what stops a tenant pinning a bare server URL with no
+registry, catalogue or credential behind it.
+
+That is worth generalising: enforcing an invariant by making the illegal state
+unrepresentable beats enforcing it by discipline at every write site.
+
+## Idempotence is tri-state, and retry depends on it
+
+`idempotent` is `True`, `False` or unset, and the three are different. Unset means
+the author said nothing, which lets the runtime infer: a read-only builtin is
+idempotent, an HTTP tool is idempotent when its method is `GET` or `HEAD`,
+everything else is not.
+
+Publication then rejects any tool asking for more than one attempt when it is not
+inferred idempotent. A tool that asks for retries but is not safe to repeat is an
+author error, and the right time to say so is at publish, not at the moment a
+customer is waiting.
+
+One off-by-one worth spelling out: an attempt count **includes the first call**.
+`attempts: 1` means no retry, and `attempts: 3` means at most three calls in total,
+so two backoff delays.
+
+The turn is held synchronously during a retry backoff. That is a real cost, which is
+why the ceilings are small.
+
+## What publication validates
+
+Everything here runs after schema validation and before a Version exists. None of it
+runs at run time.
+
+- Names are unique within each collection: tools, skills, subagents, schedules,
+  channels, and MCP grants by server slug. One function, called at every collection.
+- A subagent's tools all exist in the parent's tools. When a name looks like it was
+  meant as an MCP tool, the error says to use the subagent's own MCP grants rather
+  than "unknown tool", because that is the mistake the author actually made.
+- A subagent's MCP grants may only narrow the parent's: the server must appear in
+  the parent's grants, and if the parent's grant names specific tools, the child's
+  must be a subset. This is the same narrows-never-widens rule as §10.5, applied one
+  plane earlier.
+- Sandbox-dependent builtins require the sandbox to be enabled.
+- Skill cross-links resolve. `[[skill:name]]` links are extracted from every skill
+  body and from the instructions, and a dangling link fails publication.
+
+Reference a server by a stable slug rather than a row id, so a grant survives the
+server being removed and re-added and old Versions stay readable.
+
+## Versioning by content hash
+
+Publishing computes a canonical serialisation, hashes it, and stores it as a
+Version. Republishing an identical Spec returns the existing Version instead of
+creating a duplicate. Two Specs that mean the same thing must hash the same, and two
+that differ must not.
+
+The obvious cheaper design mints a random id and bumps an integer on every publish
+call, including for byte-identical input. That answers "what is the next revision"
+rather than "is this the same content as something already published", and it makes
+Version pinning useless for deduplication and for cache reuse.
+
+Getting the canonicalisation right is most of the work, and every rule in
+`psych_runtime/core/version.py` is documented against the specific way two identical Specs
+would otherwise diverge. The traps, all real:
+
+**Key ordering.** Python dicts preserve insertion order, so two builder call
+sequences producing the same logical Spec can serialise differently, as can a
+round trip through JSON or YAML. Sort keys recursively at every level rather than
+relying on field declaration order matching across callers.
+
+**Float formatting.** `1.0` and `1` and `1.00` must not be three hashes. Pick one
+numeric serialisation and enforce it in the canonicaliser.
+
+**Defaults.** Hash the fully validated, post-default model, never the raw
+author-supplied dict. A Spec that sets a field explicitly to its default value and
+one that omits the field are the same agent and must hash the same.
+
+**Server-assigned fields.** Anything time-dependent or randomly generated is
+computed after hashing and stored beside the Version, never inside the hashed body.
+
+**Array order, decided per field.** Some arrays are semantically sets, where two
+Specs differing only in order should hash the same. Others are genuinely ordered,
+such as a model failover list. Decide each one deliberately; there is no single
+right answer.
+
+**Whitespace in long strings.** Instructions, skill bodies and code-tool source are
+free text. Line endings and trailing whitespace differ between a file-authored Spec
+and one written in a UI. Normalising is a content-altering choice and not
+normalising surprises the author who changed only trailing whitespace. Either is
+defensible; leaving it undecided is not.
+
+**Absent versus null.** Pick one JSON representation for "no value" and apply it
+everywhere, or the same logical Spec built two ways hashes twice.
+
+## Access narrows and never widens
+
+```
+what the server offers  ⊇  what the tenant permits  ⊇  what the Spec grants  ⊇  what is callable now
+```
+
+One function computes the intersection, and both the validator and the runtime call
+it, so the two cannot drift. The algorithm is small enough to state completely:
+
+1. **Tenant plane.** An empty tenant allow-list permits every catalogued tool. A
+   non-empty one is intersected with the catalogue, computed by filtering the
+   tenant's list down to what the catalogue has rather than the other way round, so a
+   stale tenant entry naming a tool the server no longer offers is dropped rather
+   than erroring.
+2. **Grant plane.** An empty grant resolves to exactly the tenant-permitted set. A
+   non-empty one is filtered against that already-narrowed set, never against the raw
+   catalogue.
+
+Four properties fall out and each is worth stating because implementers assume the
+opposite:
+
+- **Empty means everything, never nothing.** It is the only way to say "all".
+- **Every list is an allow-list.** There is no deny plane.
+- **Membership is exact string matching.** No globs, no patterns.
+- **Composition order is fixed.** Each function's output is a subset of its input, so
+  composing them can only shrink. That is what makes narrowing monotone by
+  construction rather than by review.
+
+A tool the Spec names but the tenant has revoked is silently absent from the result.
+Nothing throws and nothing warns inside the narrowing function itself; asking for
+something you do not have access to simply does not get it. Warnings, if a consumer
+wants them, belong at the caller.
+
+## Never pool MCP clients by URL
+
+Pool by `(scope, server, credential)`. `credential` means the actual resolved secret
+material, or a stable id or hash of it, not a proxy for it like a user key.
+
+A key of `(session, server, user)` looks safe and is not, in a library. It is safe
+only where every session runs inside its own isolated process, so nothing is ever
+shared across a tenant boundary in the first place. Psych is embedded in one
+long-lived process, or a pool of them, serving many tenants concurrently with no such
+isolation. In that shape nothing about a session id or a user key *proves* which
+credential authenticated a pooled connection, and a token rotation mid-session, a
+re-auth flow, or one user holding two grants against the same server under different
+scopes would silently reuse the wrong credential's connection.
+
+Two more properties of a pooled connection, independent of the key:
+
+**Resolve the credential fresh on every call**, through a correctly scoped lookup with
+a single-flight lock per key. Cache the lock, not the token. A cached connection must
+never be assumed to still be authenticated with the credential the caller holds now.
+
+**Self-heal on a staleness signal.** When the server says a cached session is gone,
+evict and re-initialise exactly once. A TTL alone leaves a window where every call
+fails against a session the server has already forgotten.
+
+## Selectors over MCP annotations
+
+Two selector vocabularies, deliberately disjoint, each also accepting a literal tool
+name:
+
+- enable, disable and preload lists accept `@all` and `@read-only`
+- approval lists accept `@all`, `@write` and `@destructive`
+
+Enforce them as genuinely different unions rather than one enum filtered by
+convention, and reject an unknown `@tag` at validation rather than letting it silently
+match nothing.
+
+Annotation matching is tri-state against `is True` and `is False`, never truthiness.
+`readOnlyHint` unset is not `readOnlyHint == False`.
+
+Selector lists evaluate as a plain OR: a tool matches a list if any entry matches. The
+only precedence in the scheme is that the disable list subtracts from the enable list,
+unconditionally, regardless of order or specificity. A literal name in enable still
+loses to `@all` in disable.
+
+There is no approval-exempt list. If one is ever wanted, a literal-name exemption
+mirroring the disable list is the natural shape.
+
+**Omitted and explicitly empty are different.** An omitted approval list falls back to
+the default selector set. An explicit `[]` means no tool on that server requires
+approval. Model it as `list[str] | None = None` and branch on `is None`; a plain
+`list[str] = []` default cannot tell the two apart.
+
+## Approvals for unannotated and partly annotated tools
+
+**An unannotated tool is treated as `write`, and therefore requires approval under
+the default selector set.** This is the safer default and it is a deliberate choice.
+The alternative, exempting unannotated tools because they match none of the three
+predicates, means a server that forgets to annotate a destructive tool thereby exempts
+it from approval. Forgetting an annotation should not be a way to skip the gate.
+
+A **partly** annotated tool is a third case: `{"title": "Delete user"}` with no hints
+at all. Psych reads the MCP specification's own default, where `destructiveHint`
+defaults to true, so this is destructive rather than merely a write. Reading it as a
+write would let a consumer who narrowed their selectors to `@destructive` wave through
+exactly the calls the annotation exists to catch.
+
+## The approval flow
+
+The approval state is derived from the log on every step, like everything else. There
+are three states: a model call is required, tool responses are required, or user input
+is required. The last one holds when any open tool call needs approval and has no
+recorded decision.
+
+Approval is **per tool call, not per turn**. Within one assistant turn, calls that need
+no approval run to completion while the ones that do are suspended together in a single
+event carrying a list of call references. The check happens before the underlying tool
+is invoked, so the side-effecting call genuinely does not happen.
+
+The suspension record carries only the call ids and the id of the assistant message that
+requested them. The tool name, arguments and annotations are reconstructed from the
+assistant message and the catalogue when needed, not duplicated into the suspension.
+
+Resume validates against the actually-pending set and is **all or nothing**. A decision
+for a call that is not pending is rejected outright, and every pending decision must
+arrive in one resume. There is no partial-resume path, so there is no state where half
+the batch is settled and the rest is waiting on a caller who has moved on.
+
+Decisions are appended to the log as their own Record type and are excluded from what is
+sent to the model. They are bookkeeping for the reducer, not part of the conversation.
+
+Once decisions are recorded, execution re-runs over the same still-open calls with the
+decision in hand. A still-pending approval at that point is impossible and must fail
+loudly rather than silently re-suspending.
+
+**A denial is an ordinary error tool result** carrying the reason, fed back to the model
+like any other tool failure. There is no special denied state and no retry blocking. The
+one question this raises deliberately: a denial looks like a failure to the failure-streak
+counter below. Decide whether it should count, and write the decision down.
+
+**Suspensions expire.** A Run suspended past its expiry is settled as abandoned rather
+than waiting forever. Nothing about the approval flow itself supplies this; it is the
+lease and deadline machinery in `durability-and-leases.md` applied to a suspended Run.
+
+## The failure-streak guard
+
+A counter tracks consecutive failures of the same tool, keyed by **tool name**. Two
+calls with wildly different arguments increment the same counter, and a success with any
+arguments resets it. Per-argument bucketing is a different mechanism; if it is ever
+wanted it is a deliberate addition, not an assumption.
+
+**The streak counts per Run, not per turn.** A per-turn reset lets a model launder a
+broken tool by taking a turn off, and §10.6 says "within a Run" for that reason. The
+counter therefore survives suspend and resume, and a Run resumed with a streak already
+over the threshold stops immediately instead of getting a fresh budget.
+
+What counts as a failure is narrower than "the call did not succeed":
+
+- An executor error counts.
+- An unknown tool name counts, against the same streak as execution failures.
+- A call cancelled by the user does **not**. That was not the tool's fault.
+- A policy denial before execution does **not**, for the same reason.
+
+Two thresholds:
+
+**Advisory, at three.** The tool's own error result still goes back to the model, with an
+added field saying the tool has now failed three times in a row, to stop retrying it, and
+to explain the problem to the user rather than calling it again with similar input. The
+message rides inside the tool result the model is already reading, not as a separate
+system message.
+
+**Hard stop, configurable.** Checked at the top of the step loop, before the next model
+call is made and before the step budget is consulted, so the breaker rather than the step
+cap is what ends a runaway turn. A consumer may configure it below the advisory
+threshold, in which case the hard stop fires first and the advisory never appears.
+
+When the loop breaks with no assistant text produced, which is the usual case, append a
+synthesised message naming the tool that kept failing and suggesting a different approach.
+Silence is worse than a plain sentence.
+
+The Run is **not** marked failed. The breaker is a controlled stop with an explanation,
+not an error state.
+
+Keep this separate from degenerate-completion detection, which is a different mechanism
+solving a different problem: a model call that returns successfully with no usable output
+(no text, no tool calls, and not a genuine length truncation) or with obviously repeating
+text is a *model* failure and belongs to the failover path, not to the tool-failure
+streak. Both are worth having. Neither substitutes for the other.

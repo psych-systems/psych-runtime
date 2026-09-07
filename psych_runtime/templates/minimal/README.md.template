@@ -1,0 +1,34 @@
+# __PROJECT__
+
+An agent built on [Psych](https://github.com/psych-systems/psych-runtime).
+
+```sh
+python main.py
+```
+
+It runs with no API key: without one it uses Psych's scriptable fake model, so
+the whole agent loop executes offline. To call a real provider:
+
+```sh
+export OPENAI_API_KEY=sk-...
+export PSYCH_MODEL=gpt-4o-mini          # optional
+export PSYCH_BASE_URL=https://api.openai.com/v1   # optional: any OpenAI-compatible endpoint
+python main.py
+```
+
+## What to change first
+
+- **Add a tool.** Write a function with type hints and a docstring, pass it in
+  `tools=[...]`, and name it in the Spec's `tools=(psych_runtime.CodeTool(name=...),)`.
+- **Change the instructions.** That is the system prompt.
+- **Keep the Runs.** `psych_runtime.session()` defaults to an in-memory store, which
+  loses everything when the process exits. Pass `store=PostgresStore(dsn=...)`
+  once you want them to survive.
+
+## Where to look next
+
+`psych doctor` reports what is installed and configured.
+
+If you use an AI coding agent, `psych skills install` drops 26 guides into
+`.agents/skills/`, one per feature, so it can write correct Psych code without
+guessing.

@@ -1,0 +1,64 @@
+"""The agent, and the tools it may call. Imported by both processes.
+
+This file is the reason a Spec is data rather than code. `main.py` publishes it
+and `worker.py` executes it, in different processes and potentially on different
+machines, and neither passes a callable to the other: the Spec names its tools
+and each process registers its own implementations under those names.
+"""
+
+import os
+
+import psych_runtime
+
+# One registry per process. The web process needs it to publish (so validation
+# can reject a Spec naming a tool nobody registered); the Worker needs it to
+# actually call them.
+registry = psych_runtime.ToolRegistry()
+
+
+@registry.register(annotations={"read-only"})
+async def lookup_order(order_id: str) -> dict[str, str]:
+    """Look up an order by its id."""
+    return {"order_id": order_id, "status": "shipped", "carrier": "DHL"}
+
+
+@registry.register(interruptible=False, safe_to_retry=False, annotations={"destructive"})
+async def issue_refund(order_id: str, cents: int) -> str:
+    """Refund an order.
+
+    Not interruptible: a half-issued refund is worse than a slow stop. Not safe
+    to retry: a Worker reclaiming a crashed Run must not send the money twice.
+    """
+    return f"refunded {cents} on {order_id}"
+
+
+SPEC = psych_runtime.AgentSpec(
+    name="support",
+    instructions="Help the customer with their order. Be brief.",
+    model=psych_runtime.ModelRef(model=os.getenv("PSYCH_MODEL", "gpt-4o-mini")),
+    tools=(
+        psych_runtime.CodeTool(name="lookup_order"),
+        psych_runtime.CodeTool(name="issue_refund", interruptible=False),
+    ),
+    limits=psych_runtime.Limits(max_turns=8, deadline_seconds=120),
+)
+
+
+def build_model() -> psych_runtime.ModelClient:
+    """A real provider when one is configured, the fake model otherwise."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        return psych_runtime.OpenAICompatibleClient(
+            base_url=os.getenv("PSYCH_BASE_URL", "https://api.openai.com/v1"),
+            api_key=api_key,
+            transport=psych_runtime.HttpTransport(),
+            scope=psych_runtime.Scope(tenant="acme"),
+        )
+
+    from psych_runtime.testing.fake_model import FakeModel
+
+    return (
+        FakeModel()
+        .turn(text="Checking.", tool_calls=[("lookup_order", {"order_id": "A1"})])
+        .turn(text="Order A1 has shipped with DHL.")
+    )

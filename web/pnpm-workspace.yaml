@@ -1,0 +1,8 @@
+packages:
+  - "site"
+
+# workerd is Cloudflare's runtime. `wrangler dev` runs the real thing locally,
+# which is the only way a preview proves anything about the deployment, and it
+# needs its postinstall to unpack the binary.
+onlyBuiltDependencies:
+  - workerd

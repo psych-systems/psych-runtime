@@ -1,0 +1,69 @@
+"""__PROJECT__: the process that actually executes Runs.
+
+    python worker.py
+
+Run as many of these as you need. They coordinate through the store and nothing
+else: a runnable Run is one whose lease is unheld or expired, so `claim()` is
+the queue and there is no broker to keep in step with it.
+
+This is a separate file from `main.py` because it scales separately. Admitting a
+Run is a fast write; executing one is minutes of model and tool calls. Sharing a
+process between them means an agent loop's memory and CPU profile decides how
+many HTTP requests you can serve.
+
+It needs a real store, because an in-memory one cannot be reached from another
+process. Set `PSYCH_POSTGRES_DSN` before running this.
+"""
+
+import asyncio
+import logging
+import os
+import signal
+
+import psych_runtime
+from agent import build_model, registry
+from store import build_store, runs_in_one_process
+
+# Psych attaches a NullHandler to its own logger and decides nothing about where
+# lines go. A Worker is the one place its warnings are worth reading: lease
+# renewal, reclaimed attempts, a store that blinked.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+
+
+async def main() -> None:
+    if runs_in_one_process():
+        raise SystemExit(
+            "PSYCH_POSTGRES_DSN is unset, so this would claim from an in-memory store "
+            "no other process can see. Set it, or run main.py alone: with no DSN it "
+            "hosts a Worker itself for development."
+        )
+
+    store = build_store()
+    if hasattr(store, "migrate"):
+        await store.migrate()
+
+    runtime = psych_runtime.Runtime(
+        store=store,
+        model=build_model(),
+        registry=registry,
+        # Anything destructive stops for a human. This is a property of the
+        # host, not of the agent: one deployment enforces one approval policy
+        # for every Spec it runs, which is why it is not in the Version hash.
+        approval_selectors=("@destructive",),
+    )
+    worker = psych_runtime.Worker(store, runtime, concurrency=int(os.getenv("PSYCH_CONCURRENCY", "8")))
+
+    # A Worker told to stop finishes what it holds and hands the rest back
+    # RUNNABLE, so a redeploy loses nothing: another Worker picks those up, or
+    # this one does after it restarts, replaying the log to find its place.
+    loop = asyncio.get_running_loop()
+    for received in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(received, worker.stop)
+
+    logging.info("worker %s claiming", worker.worker_id)
+    await worker.run()
+    logging.info("worker stopped cleanly")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

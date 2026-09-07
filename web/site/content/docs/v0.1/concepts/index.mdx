@@ -1,0 +1,21 @@
+---
+title: Concepts
+description: The vocabulary Psych Runtime uses exactly, and the invariants that get a change rejected.
+---
+
+Psych's words have exact meanings and no synonyms. Two pages carry them.
+
+- [Vocabulary](/docs/v0.1/concepts/vocabulary): Spec, Version, Run, Record,
+  Step, Turn, Agent, Workflow, Tool, Skill, Subagent, Scope, Port, Attempt,
+  Lease. The three people get wrong are here too: a Version is an immutable
+  content-hashed publication of a Spec, an Attempt is one execution pass by one
+  Worker holding a lease, and a Record is one sequenced entry in a Run's log
+  rather than a log line.
+- [Invariants](/docs/v0.1/concepts/invariants): the rules a change is rejected
+  for breaking. A Spec holds tool names and never a callable. MCP clients pool
+  by `(scope, server, credential)` and never by URL. The reducer is pure. A
+  model with no known price records `cost=None`, never `0`. A Spec is validated
+  at publish, never at run.
+
+Both are worth reading once before writing code against the library, because
+neither is guessable from the shape of the API.

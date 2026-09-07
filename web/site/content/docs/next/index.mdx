@@ -1,0 +1,53 @@
+---
+title: Psych Runtime
+description: A Python library for running AI agents inside your application. Install it, run one agent offline, then connect a model, tools and a database.
+---
+
+Psych Runtime is a Python library for running AI agents inside your own
+application. It runs an agent's tool calls, saves a Run's progress as it goes,
+pauses for approval before the calls you choose, and records everything a Run
+did so you can read it back. You supply the model, the tools and the database.
+It brings no HTTP server, no auth, no scheduler and no UI, because your
+application already has those.
+
+```sh
+pip install psych-runtime
+psych new demo && cd demo && python main.py
+```
+
+That prints an answer with no API key: with no provider configured, the
+generated file runs against the scripted fake model.
+
+<Cards>
+  <Card title="Get started" href="/docs/next/get-started" description="Install, run an agent offline, switch to a real model, add a tool, read the result." />
+  <Card title="Guides" href="/docs/next/guides" description="One task per page: approvals, persistence and recovery, MCP, streaming, tenants, cost." />
+  <Card title="Reference" href="/docs/next/reference" description="Every public call and type, generated from the module itself." />
+</Cards>
+
+## How it fits
+
+Your request handler admits a Run and returns. A `Worker` in a process of your
+own claims it and executes it, turn by turn, writing each step to a log in
+your database. Everything you read back, a status for a screen, the answer, a
+cost report, a live stream, is computed from that log.
+
+An agent is data: an `AgentSpec` naming its tools, published as an immutable,
+content-hashed `Version` that each Run pins. Editing an agent never changes a
+Run already in flight.
+
+## Also here
+
+- [Concepts](/docs/next/concepts): the vocabulary, used exactly, and the rules a change is rejected for breaking.
+- [Design notes](/docs/next/design): why each area is shaped the way it is.
+- [Development](/docs/next/development): working on the library itself, and the skills that teach a coding agent to use it.
+
+## About these pages
+
+The reference is generated from `psych_runtime.__all__`, the guides are the
+same files that ship as skills for coding agents, and the design notes and
+changelog are copied from the repository. The build fails when any of them
+disagrees with its source.
+
+This tree is `next`. It tracks `main`, so it can describe behaviour that is
+merged but not yet released; the changelog says which release a change landed
+in.

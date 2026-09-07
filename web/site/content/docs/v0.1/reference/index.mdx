@@ -1,0 +1,30 @@
+---
+title: Reference
+description: Every public call and type in psych_runtime, generated from the module itself.
+---
+
+`psych_runtime` is the whole public surface. Anything reached through a
+submodule path is internal and moves without ceremony while the package is
+`0.x`.
+
+Almost none of these pages is written by hand. `scripts/generate_docs.py` reads
+signatures, kinds, docstrings and model fields out of the live module, and the
+build fails when what is committed differs from what the code says. A thin
+docstring therefore produces a thin page, which is honest: the fix is a better
+docstring, which is also the fix for the reader who found the symbol in their
+editor instead.
+
+- [The public API](/docs/v0.1/reference/api): the document with the worked
+  example the test suite executes. Start here.
+- [Calls](/docs/v0.1/reference/calls): the functions a consumer calls. The whole
+  verb surface.
+- [Spec models](/docs/v0.1/reference/specs): what an agent or workflow is, as
+  data. None of these holds a callable.
+- [Runtime](/docs/v0.1/reference/runtime): what you construct and run, including
+  `Runtime`, `Worker` and `ToolRegistry`.
+- [Ports](/docs/v0.1/reference/ports): the interfaces you implement, and the
+  adapters that ship for each.
+- [Reading a Run](/docs/v0.1/reference/reading-a-run): the report, status,
+  answer and thread projections, and every type they return.
+- [Errors](/docs/v0.1/reference/errors): every exception the library raises, and
+  what each one means about your code.

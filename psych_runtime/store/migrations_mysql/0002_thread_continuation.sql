@@ -1,0 +1,27 @@
+-- 0002_thread_continuation.sql
+--
+-- A chat thread is a chain of Runs, each continuing the last. This
+-- adds the one column `RunHeader.continues_run_id` needs so a continuation's
+-- Scope can be checked with one row read instead of a full log replay -- the
+-- log itself (`RunAdmitted.continues_run_id`) stays the record, and this
+-- column mirrors it, same as `parent_run_id` already is for delegation.
+--
+-- Forward-only (DESIGN.md section 22): 0001 is never edited once a
+-- later migration exists, this file is applied on top of it.
+--
+-- Plain `ADD COLUMN`, matching the Postgres file statement for statement.
+-- This once read `ADD COLUMN IF NOT EXISTS`, to survive a `migrate()` that
+-- reapplied every statement on every call. That spelling is MariaDB's and
+-- MySQL 8 rejects it as a syntax error, so the adapter did not work against
+-- the database it is named for, and the development script's MariaDB
+-- accepted it. `MySQLStore.migrate()` now records applied versions in
+-- `psych_schema_migrations` and skips them, so a migration no longer has to
+-- be idempotent on its own and no file needs dialect-specific spelling.
+--
+-- Note for whoever edits this file: MySQLStore.migrate() and the test suite's
+-- own migration helper both split this file naively on the statement
+-- terminator rather than parsing SQL, so that character anywhere in a
+-- comment above -- not only in a statement -- breaks the split. Keep these
+-- comments free of it.
+
+ALTER TABLE runs ADD COLUMN continues_run_id VARCHAR(64) NULL;

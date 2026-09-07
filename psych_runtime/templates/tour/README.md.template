@@ -1,0 +1,50 @@
+# __PROJECT__
+
+A tour of [Psych](https://github.com/psych-systems/psych-runtime) in one runnable
+file.
+
+```sh
+python main.py
+```
+
+It runs with no API key: without one it uses Psych's scriptable fake model, so
+every step executes offline and deterministically. To call a real provider:
+
+```sh
+export OPENAI_API_KEY=sk-...
+python main.py
+```
+
+## What it shows, in order
+
+1. **A tool call**, read back out of the Run's log rather than out of a return
+   value.
+2. **An approval.** The Run suspends before the destructive tool. It releases
+   its lease and persists, so the process that approves need not be the one
+   that asked.
+3. **A skill.** The refund policy sits out of the prompt until the model calls
+   `load_skill`, so a long policy is not billed on every turn.
+4. **Durable memory.** A fact keyed by tenant plus end user, surviving the Run
+   that learned it.
+5. **A workflow.** Fixed steps, memoised, so a crash resumes rather than
+   redoing them.
+6. **The report.** Tokens split by cache state, cost, and a latency breakdown.
+
+## What is deliberately not here
+
+No HTTP server, no auth, no scheduler, no UI. Psych refuses to own those
+because you already have them. `psych_runtime.dispatch()` is the only trigger; your own
+cron job, webhook handler or queue consumer calls it.
+
+For a UI, run the playground from a clone of the Psych repository:
+
+```sh
+docker compose up --build        # then http://localhost:3000
+```
+
+## Next
+
+`psych doctor` reports what is installed and configured.
+
+`psych skills install` drops 26 guides into `.agents/skills/`, one per feature,
+so an AI coding agent can write correct Psych code without guessing.

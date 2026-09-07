@@ -1,0 +1,109 @@
+---
+name: psych-workflows
+description: >-
+  Build a `WorkflowSpec` for Psych: deterministic ordered steps (tool, agent,
+  nested workflow), step memoisation, and crash resume that does not re-execute
+  completed steps. Use whenever someone wants a fixed pipeline rather than a
+  model-driven loop, asks how to sequence Psych steps, asks whether a workflow
+  re-runs work after a Worker dies, mixes agents and deterministic steps, or is
+  choosing between an agent and a workflow. Read before writing any
+  `WorkflowSpec`, because step names are the memoisation key and a duplicated or
+  renamed step silently changes what a resume replays.
+---
+
+# WorkflowSpec
+
+A Workflow is a Step that sequences other Steps deterministically. Its
+determinism comes from **step memoisation**, not from replaying side effects: a
+completed step's output is in the log, so a Worker that reclaims a crashed Run
+skips it and continues from the next one.
+
+An agent's tool may be a workflow, and a workflow's step may be an agent. That
+recursion is why there is one durability implementation instead of two.
+
+## Agent or workflow
+
+Use an **agent** when the model decides what to do next and the number of steps
+is not known in advance. Use a **workflow** when the sequence is fixed and you
+want it to be the same every time. Mixing is normal: a workflow step can run an
+agent, which is how "validate, then let a model draft, then send" is written.
+
+## Building one
+
+```python
+spec = psych_runtime.WorkflowSpec(
+    name="onboard-customer",
+    description="Create the account, then greet them.",
+    steps=(
+        psych_runtime.ToolStep(name="create", tool="create_account", arguments={"plan": "starter"}),
+        psych_runtime.AgentStep(name="welcome", spec=greeter_agent_spec),
+        psych_runtime.WorkflowStepRef(name="provision", spec=provisioning_workflow),
+    ),
+    tools=(psych_runtime.CodeTool(name="create_account"),),
+    limits=psych_runtime.Limits(max_steps=64),
+)
+```
+
+All three step types are on `psych` itself. The builder in `psych-builder` is
+usually shorter.
+
+## Three step kinds
+
+| Kind | Fields | Runs |
+|---|---|---|
+| `ToolStep` | `name`, `tool`, `arguments` | One tool with fixed arguments. No model call. |
+| `AgentStep` | `name`, `spec` | A nested agent to completion. |
+| `WorkflowStepRef` | `name`, `spec` | A nested workflow. |
+
+`arguments` on a `ToolStep` is fixed at authoring time. A workflow does not let
+a model choose arguments; that is what an `AgentStep` is for.
+
+## Step names are the memoisation key
+
+They must be unique within one workflow, and the Spec model enforces that at
+validation. Two consequences worth knowing before you rename anything:
+
+- A report addresses a step by its name, so renaming a step in a published Spec
+  produces a different Version, which is correct: it is a different workflow.
+- Memoisation is keyed by the step id derived from the name and position. A
+  resume finds "create" already completed and does not create a second account.
+
+## Crash resume
+
+This is the property to test, and Psych's own e2e suite asserts it: a workflow
+with a nested agent, killed mid-run, resumes from its last completed step and
+does not re-execute the completed ones. Nothing about that lives in a process.
+It follows from the log plus the memoisation, so you get it without writing
+anything.
+
+`Limits.max_steps` (default 48) bounds the whole Run, nested steps included.
+
+## Publishing and running
+
+Identical to an agent. `psych_runtime.publish()` then `psych_runtime.dispatch()`, and the same
+Worker executes both kinds:
+
+```python
+version = await psych_runtime.publish(
+    store, spec, context=psych_runtime.ValidationContext(registered_tools=registry.names)
+)
+run = await psych_runtime.dispatch(store, version, scope, input={"customer_id": "c-1"})
+```
+
+`psych_runtime.report()` fills `report.steps` with a `StepReport` per step: its
+`step_id`, `name`, `kind`, `attempt_number`, `input`, `completed`, `output`,
+`failure`, and `child_run_id` plus a nested `child` report for an agent or
+workflow step.
+
+## Gotchas
+
+- **A step's tool must be granted.** Either on the workflow's own `tools`, or
+  registered in the process the Run executes in. Publish-time validation checks
+  the first and names the second as a possibility when it cannot.
+- **Order is never sorted.** Tools and MCP servers on a Spec are sorted sets, so
+  declaration order does not affect the hash. `steps` is not, because order is
+  exactly what "sequences deterministically" means.
+- **A workflow has no `instructions` and no `model`.** It runs steps. Anything
+  needing a model is an `AgentStep`.
+- **`steps` must be non-empty.** A workflow with no steps is refused at
+  validation rather than completing instantly.

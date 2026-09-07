@@ -1,0 +1,1338 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/*
+ * One stylesheet, two surfaces.
+ *
+ * Colour is defined once as a palette and once as a set of roles. Components
+ * only ever name roles, so switching to dark is a block of role reassignments
+ * rather than a second set of components. The docs half at the bottom maps the
+ * same roles onto fumadocs' variables and touches nothing else, which is why
+ * the documentation follows the brand without being restyled.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Palette                                                             */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --paper: #f9f8f4;
+  --paper-deep: #f0ede6;
+
+  --ink: #151921;
+  --ink-soft: #4f5662;
+  --ink-faint: #7d838c;
+
+  --copper: #bc4900;
+  --copper-bright: #f18b48;
+  --copper-pale: #f7dfcf;
+
+  --night: #0d1117;
+  --night-soft: #161c24;
+  --night-line: rgba(255, 255, 255, 0.11);
+
+  --green: #65b98c;
+  --violet: #ad8bf2;
+
+  /* The accent gradient. Every surface it paints carries white text, so its
+     lightest stop is the lightest copper that still clears 4.5:1 against white
+     (#cb4a08, 4.64:1) rather than the brighter orange the palette suggests. A
+     gradient that fails at one end fails wherever the text happens to land, and
+     text position is a layout decision this file cannot see. */
+  --flame: linear-gradient(152deg, #cb4a08 0%, #bc4900 45%, #9c3d00 100%);
+
+  --font-display: var(--font-fraunces), "Fraunces", Georgia, serif;
+  --font-sans: var(--font-plex-sans), "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+
+  --shell: 1200px;
+  --gutter: clamp(18px, 4vw, 44px);
+  --measure: 60ch;
+  --radius: 8px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@theme inline {
+  --font-display: var(--font-fraunces), "Fraunces", Georgia, serif;
+  --font-sans: var(--font-plex-sans), "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* ------------------------------------------------------------------ */
+/* Roles: light                                                        */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --bg: var(--paper);
+  --bg-sunk: var(--paper-deep);
+  --card: #fffefb;
+  --card-quiet: #f4f1ea;
+  --text: var(--ink);
+  --text-soft: var(--ink-soft);
+  /* Not --ink-faint. That token is 3.6:1 on paper, which is fine for a rule or
+     an icon and fails for the 12px mono labels this role actually paints. */
+  --text-faint: #666c76;
+  --line: rgba(21, 25, 33, 0.12);
+  --line-strong: rgba(21, 25, 33, 0.26);
+  --accent: var(--copper);
+  --accent-text: var(--copper);
+  /* Violet as *text on a card*. --violet itself is tuned for the dark code
+     panel and measures 2.7:1 against paper, so it can only ever be a fill or a
+     stroke on the light theme. */
+  --violet-text: #6f45c4;
+  /* Same problem, same fix: --green is 2.4:1 against paper. */
+  --green-text: #2f7d52;
+  --tick: rgba(21, 25, 33, 0.3);
+  --shadow-card: 0 1px 2px rgba(21, 25, 33, 0.04);
+  --shadow-lift: 0 24px 50px -32px rgba(21, 25, 33, 0.4);
+  --grid-line: rgba(21, 25, 33, 0.055);
+  /* Solid copper for a shape that carries white text, in either theme: white
+     on #bc4900 clears AA both times, so this one does not flip. */
+  --flame-fill: var(--copper);
+
+  /* Diagram roles, used by the Trident diagram in either theme. */
+  --diagram-mark: var(--copper);
+  --diagram-line: var(--line-strong);
+  --diagram-label: var(--ink);
+  --diagram-muted: #666c76;
+  --diagram-accent: var(--copper);
+
+  color-scheme: light;
+}
+
+/* ------------------------------------------------------------------ */
+/* Roles: dark                                                         */
+/* ------------------------------------------------------------------ */
+
+.dark {
+  --bg: var(--night);
+  --bg-sunk: #0a0e14;
+  --card: #141a22;
+  --card-quiet: #11161d;
+  --text: #e9ecf1;
+  --text-soft: #a7afbb;
+  /* Lifted for the same reason as its light counterpart: #737b88 is 4.1:1 on
+     the card surface. */
+  --text-faint: #868e9c;
+  --line: var(--night-line);
+  --line-strong: rgba(255, 255, 255, 0.24);
+  --violet-text: var(--violet);
+  --green-text: var(--green);
+  --accent: var(--copper-bright);
+  /* Copper is too dark on night for small text; the bright tint is the one
+     that clears AA there. Large display type still uses --copper via .flame. */
+  --accent-text: var(--copper-bright);
+  --tick: rgba(255, 255, 255, 0.3);
+  --shadow-card: none;
+  --shadow-lift: 0 30px 60px -34px rgba(0, 0, 0, 0.8);
+  --grid-line: rgba(255, 255, 255, 0.05);
+  --flame-fill: var(--copper);
+
+  --diagram-mark: var(--copper-bright);
+  --diagram-line: rgba(255, 255, 255, 0.22);
+  --diagram-label: #e9ecf1;
+  --diagram-muted: #868e9c;
+  --diagram-accent: var(--copper-bright);
+
+  color-scheme: dark;
+}
+
+/* ------------------------------------------------------------------ */
+/* Base                                                                */
+/* ------------------------------------------------------------------ */
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--copper-pale);
+  color: var(--ink);
+}
+.dark ::selection {
+  background: rgba(241, 139, 72, 0.28);
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+img,
+svg {
+  max-width: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* Type                                                                */
+/* ------------------------------------------------------------------ */
+
+.display {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.032em;
+  line-height: 1.02;
+  text-wrap: balance;
+}
+.d1 {
+  font-size: clamp(40px, 6.4vw, 82px);
+}
+.d2 {
+  font-size: clamp(30px, 4vw, 50px);
+}
+.d3 {
+  font-size: clamp(22px, 2.4vw, 30px);
+  letter-spacing: -0.022em;
+  line-height: 1.12;
+}
+/* The serif italic phrase. One per heading at most: it is the accent, and two
+   of them in a row stop being an accent. */
+.serif {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: -0.02em;
+  color: var(--accent-text);
+}
+
+.lede {
+  margin: 0;
+  font-size: clamp(16.5px, 1.3vw, 19px);
+  line-height: 1.5;
+  color: var(--text-soft);
+  max-width: var(--measure);
+  text-wrap: pretty;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.eyebrow::before {
+  content: "";
+  width: 14px;
+  height: 1px;
+  background: var(--accent);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+.small {
+  font-size: 14.5px;
+  color: var(--text-soft);
+}
+.meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.prose {
+  max-width: var(--measure);
+}
+.prose p {
+  margin: 0 0 1em;
+  color: var(--text-soft);
+  text-wrap: pretty;
+}
+.prose p:last-child {
+  margin-bottom: 0;
+}
+.prose strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.link {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1.5px;
+}
+.link:hover {
+  color: var(--accent-text);
+}
+.inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+  background: var(--card-quiet);
+  border: 1px solid var(--line);
+  padding: 0.08em 0.34em;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Layout                                                              */
+/* ------------------------------------------------------------------ */
+
+.shell {
+  width: min(var(--shell), 100% - 2 * var(--gutter));
+  margin-inline: auto;
+}
+.section {
+  padding-block: clamp(56px, 7vw, 104px);
+}
+.section-tight {
+  padding-block: clamp(36px, 4.5vw, 64px);
+}
+.sunk {
+  background: var(--bg-sunk);
+}
+
+.section-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: clamp(20px, 4vw, 56px);
+  align-items: end;
+  margin-bottom: clamp(28px, 4vw, 48px);
+}
+@media (max-width: 860px) {
+  .section-head {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+}
+
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -60px;
+  z-index: 100;
+  padding: 10px 14px;
+  background: var(--text);
+  color: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  border-radius: var(--radius);
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                             */
+/* ------------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 20px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 15px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 160ms var(--ease),
+    border-color 160ms var(--ease),
+    color 160ms var(--ease),
+    transform 160ms var(--ease);
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+}
+.btn-primary:hover {
+  background: var(--copper);
+  color: #fff;
+}
+.dark .btn-primary {
+  background: var(--paper);
+  color: var(--ink);
+}
+.dark .btn-primary:hover {
+  background: var(--copper-bright);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.btn-ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.btn-flame {
+  background: var(--flame);
+  color: #fff;
+  box-shadow: 0 10px 24px -12px rgba(238, 92, 18, 0.7);
+}
+.btn-flame:hover {
+  filter: brightness(1.06);
+}
+.btn-sm {
+  min-height: 38px;
+  padding: 0 15px;
+  font-size: 14px;
+}
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.btn .arrow {
+  transition: transform 160ms var(--ease);
+}
+.btn:hover .arrow {
+  transform: translateX(2px);
+}
+
+/* ------------------------------------------------------------------ */
+/* Cards, ticks, bento                                                 */
+/* ------------------------------------------------------------------ */
+
+.card {
+  position: relative;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+/* The corner ticks. Four short rules inset from each corner, drawn once as a
+   background image so a card carries them without four extra elements. */
+.ticked {
+  position: relative;
+  padding: 7px;
+}
+.ticked::before,
+.ticked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+}
+.ticked::before {
+  background-image:
+    linear-gradient(var(--tick), var(--tick)), linear-gradient(var(--tick), var(--tick)),
+    linear-gradient(var(--tick), var(--tick)), linear-gradient(var(--tick), var(--tick));
+  background-size:
+    9px 1px,
+    1px 9px,
+    9px 1px,
+    1px 9px;
+  background-position:
+    left top,
+    left top,
+    right top,
+    right top;
+}
+.ticked::after {
+  background-image:
+    linear-gradient(var(--tick), var(--tick)), linear-gradient(var(--tick), var(--tick)),
+    linear-gradient(var(--tick), var(--tick)), linear-gradient(var(--tick), var(--tick));
+  background-size:
+    9px 1px,
+    1px 9px,
+    9px 1px,
+    1px 9px;
+  background-position:
+    left bottom,
+    left bottom,
+    right bottom,
+    right bottom;
+}
+
+.bento {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.bento > * {
+  min-width: 0;
+}
+.span-2 {
+  grid-column: span 2;
+}
+.row-2 {
+  grid-row: span 2;
+}
+@media (max-width: 1000px) {
+  .bento {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .bento .row-2 {
+    grid-row: auto;
+  }
+}
+@media (max-width: 640px) {
+  .bento {
+    grid-template-columns: 1fr;
+  }
+  .bento .span-2 {
+    grid-column: auto;
+  }
+}
+
+/* A tile: art on top, a short label under it. Never more than a line of copy. */
+.tile {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  border: 1px solid var(--line);
+  transition:
+    border-color 200ms var(--ease),
+    transform 200ms var(--ease);
+}
+.tile:hover {
+  border-color: var(--line-strong);
+}
+.tile-art {
+  position: relative;
+  flex: 1;
+  min-height: 132px;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  overflow: hidden;
+  background: var(--card-quiet);
+}
+.tile-body {
+  padding: 14px 18px 18px;
+}
+.tile-body h3 {
+  margin: 0;
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+.tile-body p {
+  margin: 5px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-soft);
+  text-wrap: pretty;
+}
+
+/* The accent tile: the one saturated thing on the page. */
+.tile-flame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px;
+  border-radius: var(--radius-lg);
+  background: var(--flame);
+  color: #fff;
+  overflow: hidden;
+  text-decoration: none;
+  box-shadow: 0 18px 40px -26px rgba(238, 92, 18, 0.85);
+}
+.tile-flame::after {
+  /* the faint arc that gives the gradient somewhere to sit */
+  content: "";
+  position: absolute;
+  right: -30%;
+  bottom: -60%;
+  width: 90%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+.tile-flame h3 {
+  position: relative;
+  margin: 0 0 8px;
+  font-size: clamp(21px, 2vw, 27px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.tile-flame p {
+  position: relative;
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: #fff;
+  max-width: 34ch;
+}
+.flame-corner {
+  position: relative;
+  align-self: flex-end;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  transition: background-color 160ms var(--ease);
+}
+.tile-flame:hover .flame-corner {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.trident-tile {
+  display: inline-grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--flame);
+  color: #fff;
+  flex: none;
+}
+
+/* Every drawing sits on the same 240x96 grid and is capped to one height, so a
+   tile spanning two columns does not get a picture twice the size of its
+   neighbour's. The SVG letterboxes itself inside the width it is given. */
+.art {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 128px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Code, on the night surface in both themes                           */
+/* ------------------------------------------------------------------ */
+
+.code {
+  margin: 0;
+  background: var(--night);
+  border: 1px solid var(--night-line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  color-scheme: dark;
+}
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--night-line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #8b93a1;
+}
+.code-head .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--copper-bright);
+  margin-right: 8px;
+}
+.code pre {
+  margin: 0;
+  padding: 18px 20px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.62;
+  color: #e9ecf1;
+  tab-size: 4;
+}
+.code pre code {
+  font: inherit;
+  display: block;
+  min-width: max-content;
+}
+.code .line {
+  display: block;
+}
+.code .line.hl {
+  background: rgba(241, 139, 72, 0.1);
+  box-shadow: inset 2px 0 0 var(--copper-bright);
+  margin-inline: -20px;
+  padding-inline: 18px 20px;
+}
+.tok-kw {
+  color: var(--copper-bright);
+}
+.tok-str {
+  color: var(--green);
+}
+.tok-fn {
+  color: #fff;
+}
+.tok-name {
+  color: var(--violet);
+}
+.tok-num {
+  color: var(--green);
+}
+.tok-com {
+  color: #7d8593;
+  font-style: italic;
+}
+.tok-dec {
+  color: var(--violet);
+}
+.tok-op,
+.tok-out {
+  color: #a7afbb;
+}
+
+/* ------------------------------------------------------------------ */
+/* Record log                                                          */
+/* ------------------------------------------------------------------ */
+
+.panel {
+  background: var(--night);
+  border: 1px solid var(--night-line);
+  border-radius: var(--radius-lg);
+  color: #e9ecf1;
+  color-scheme: dark;
+  overflow: hidden;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--night-line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #8b93a1;
+}
+.panel-head strong {
+  color: #e9ecf1;
+  font-weight: 500;
+}
+.dot-live {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse 2.4s infinite;
+}
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(101, 185, 140, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(101, 185, 140, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(101, 185, 140, 0);
+  }
+}
+
+.log {
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.log li {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 12px;
+  padding: 5px 16px;
+  align-items: baseline;
+}
+.log .seq {
+  color: #7d8593;
+  text-align: right;
+}
+.log .type {
+  color: #e9ecf1;
+}
+.log .detail {
+  color: #8b93a1;
+  overflow-wrap: anywhere;
+}
+.log li[data-tone="model"] .type {
+  color: var(--violet);
+}
+.log li[data-tone="tool"] .type {
+  color: var(--copper-bright);
+}
+.log li[data-tone="wait"] .type {
+  color: #f0c36a;
+}
+.log li[data-tone="end"] .type {
+  color: var(--green);
+}
+.log li.now {
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 2px 0 0 var(--copper-bright);
+}
+/* Records the stepper has not reached yet.
+ *
+ * This used to be `opacity: 0.3`, which put the type at 2.4:1 and the detail at
+ * 1.6:1 against the panel: text nobody could read, on the half of the component
+ * that is meant to show what is coming. Recession comes from dropping the tone
+ * colour instead, so an unreached row reads as flat rather than faded and every
+ * part of it still clears AA. */
+.log li.ahead .type,
+.log li.ahead[data-tone] .type {
+  color: #8b93a1;
+}
+.log li.ahead .detail {
+  color: #7d8593;
+}
+
+/* ------------------------------------------------------------------ */
+/* Motion                                                              */
+/* ------------------------------------------------------------------ */
+
+[data-js="on"] .reveal {
+  opacity: 0;
+  transition: opacity 500ms var(--ease);
+}
+.reveal.in {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .reveal {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Documentation: fumadocs, wearing the brand and nothing else         */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --color-fd-background: var(--paper);
+  --color-fd-foreground: var(--ink);
+  --color-fd-muted: var(--paper-deep);
+  --color-fd-muted-foreground: var(--ink-soft);
+  --color-fd-popover: #fffefb;
+  --color-fd-popover-foreground: var(--ink);
+  --color-fd-card: #fffefb;
+  --color-fd-card-foreground: var(--ink);
+  --color-fd-border: rgba(21, 25, 33, 0.12);
+  --color-fd-primary: var(--copper);
+  --color-fd-primary-foreground: #fff;
+  --color-fd-secondary: var(--paper-deep);
+  --color-fd-secondary-foreground: var(--ink);
+  --color-fd-accent: var(--copper-pale);
+  --color-fd-accent-foreground: var(--ink);
+  --color-fd-ring: var(--copper);
+}
+
+.dark {
+  --color-fd-background: var(--night);
+  --color-fd-foreground: #e9ecf1;
+  --color-fd-muted: var(--night-soft);
+  --color-fd-muted-foreground: #a7afbb;
+  --color-fd-popover: var(--night-soft);
+  --color-fd-popover-foreground: #e9ecf1;
+  --color-fd-card: #141a22;
+  --color-fd-card-foreground: #e9ecf1;
+  --color-fd-border: var(--night-line);
+  --color-fd-primary: var(--copper-bright);
+  --color-fd-primary-foreground: var(--night);
+  --color-fd-secondary: var(--night-soft);
+  --color-fd-secondary-foreground: #e9ecf1;
+  --color-fd-accent: rgba(241, 139, 72, 0.14);
+  --color-fd-accent-foreground: var(--copper-bright);
+  --color-fd-ring: var(--copper-bright);
+}
+
+/* Docs headings stay in the interface face at reading size. The serif is a
+   marketing accent and belongs nowhere near a reference page. */
+#nd-docs-layout,
+#nd-page {
+  font-family: var(--font-sans);
+}
+
+/* The wordmark in the docs nav. */
+.docs-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  text-decoration: none;
+  color: inherit;
+}
+.docs-brand .wordmark {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.docs-brand .wordmark span {
+  margin-left: 5px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--color-fd-muted-foreground);
+}
+
+.psych-version-banner {
+  margin-bottom: 1.5rem;
+  padding: 0.7rem 0.95rem;
+  border: 1px solid var(--color-fd-border);
+  border-left: 2px solid var(--copper);
+  border-radius: 10px;
+  background: var(--color-fd-card);
+  font-size: 0.875rem;
+  color: var(--color-fd-muted-foreground);
+}
+.dark .psych-version-banner {
+  border-left-color: var(--copper-bright);
+}
+
+/* ------------------------------------------------------------------ */
+/* Atmosphere: grain, blooms, curtains, glass                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Colour for the decorative layer. These are the only place the raw orange of
+ * the reference sheets appears: nothing here ever sits under text, so it is
+ * free to be as saturated as the artwork wants.
+ */
+:root {
+  --bloom-flame: 255, 106, 31;
+  --bloom-ember: 214, 58, 12;
+  --bloom-gold: 255, 176, 62;
+  --bloom-strength: 0.5;
+  --grain-opacity: 0.4;
+  --grain-blend: multiply;
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-line: rgba(255, 255, 255, 0.85);
+  --glass-shadow: 0 26px 60px -34px rgba(90, 40, 10, 0.42);
+}
+.dark {
+  --bloom-flame: 255, 122, 51;
+  --bloom-ember: 188, 73, 0;
+  --bloom-gold: 255, 158, 46;
+  --bloom-strength: 0.42;
+  --grain-opacity: 0.32;
+  --grain-blend: overlay;
+  --glass: rgba(30, 37, 48, 0.58);
+  --glass-line: rgba(255, 255, 255, 0.12);
+  --glass-shadow: 0 30px 70px -40px rgba(0, 0, 0, 0.9);
+}
+
+/* A stage clips its own decoration and lifts real content above it. */
+.stage {
+  position: relative;
+  isolation: isolate;
+}
+.stage > *:not(.bloom):not(.grain):not(.curtain) {
+  position: relative;
+  z-index: 1;
+}
+
+/* Blooms. Radial gradients rather than blurred boxes: a blur filter over a
+   viewport-sized element repaints the whole surface every frame it moves. */
+.bloom {
+  position: absolute;
+  z-index: 0;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  border-radius: 50%;
+}
+.bloom-flame {
+  background: radial-gradient(
+    closest-side,
+    rgba(var(--bloom-flame), var(--bloom-strength)),
+    rgba(var(--bloom-flame), calc(var(--bloom-strength) * 0.42)) 42%,
+    rgba(var(--bloom-flame), 0) 72%
+  );
+}
+.bloom-ember {
+  background: radial-gradient(
+    closest-side,
+    rgba(var(--bloom-ember), var(--bloom-strength)),
+    rgba(var(--bloom-ember), calc(var(--bloom-strength) * 0.38)) 45%,
+    rgba(var(--bloom-ember), 0) 74%
+  );
+}
+.bloom-gold {
+  background: radial-gradient(
+    closest-side,
+    rgba(var(--bloom-gold), calc(var(--bloom-strength) * 0.9)),
+    rgba(var(--bloom-gold), calc(var(--bloom-strength) * 0.3)) 46%,
+    rgba(var(--bloom-gold), 0) 74%
+  );
+}
+/* Parallax. `translate` is its own property, so it composes with the centring
+   transform above instead of fighting it. --px/--py come from the Stage and are
+   0 until a fine pointer moves, so this is inert on touch and under reduced
+   motion. */
+.bloom {
+  translate: calc(var(--px, 0) * var(--lean, 40px)) calc(var(--py, 0) * var(--lean, 40px) * 0.6);
+  transition: translate 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.bloom-drift {
+  animation: drift 26s ease-in-out infinite alternate;
+}
+/* The blooms are sized in percentages of the stage, so they already scale with
+   the viewport. The lean is in pixels and does not, so it comes down with it. */
+@media (max-width: 900px) {
+  .bloom {
+    --lean: 18px;
+  }
+}
+@keyframes drift {
+  from {
+    transform: translate(-50%, -50%) scale(1) rotate(0deg);
+  }
+  to {
+    transform: translate(-46%, -54%) scale(1.14) rotate(8deg);
+  }
+}
+
+/* The grain. One tiling fractal-noise SVG, sized so the pattern never reads as
+   a repeat, blended so it darkens the light theme and lifts the dark one. */
+.grain {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: var(--grain-blend);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+
+/* The curtain: a plume of colour banded into vertical columns, the shape the
+   reference sheets get from a gradient dragged through a column mask. */
+.curtain {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.07) 0 1.6%,
+      rgba(0, 0, 0, 0.045) 1.6% 3.1%,
+      rgba(255, 255, 255, 0.03) 3.1% 5%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(var(--bloom-gold), 0) 0%,
+      rgba(var(--bloom-gold), 0.5) 22%,
+      rgba(var(--bloom-flame), 0.85) 52%,
+      rgba(var(--bloom-ember), 0.95) 100%
+    );
+  mask-image: radial-gradient(58% 82% at 50% 74%, #000 24%, transparent 76%);
+}
+.curtain-down {
+  transform: scaleY(-1);
+}
+
+/* Glass. A translucent plate with a lit top edge, over whatever bloom the
+   stage put behind it. */
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(18px) saturate(1.35);
+}
+/* The hairline highlight along the top edge, which is what makes a plate read
+   as glass rather than as a grey box. */
+.glass-lit {
+  position: relative;
+}
+.glass-lit::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.9),
+    rgba(255, 255, 255, 0.05) 38%,
+    rgba(255, 255, 255, 0) 62%
+  );
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+.dark .glass-lit::before {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.28),
+    rgba(255, 255, 255, 0.03) 40%,
+    rgba(255, 255, 255, 0) 64%
+  );
+}
+
+/* The cursor sheen: a soft highlight that follows the pointer across a card.
+   --mx/--my are written by the Stage on the card under the cursor. */
+[data-sheen] {
+  position: relative;
+}
+[data-sheen]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 280ms var(--ease);
+  background: radial-gradient(
+    22rem 22rem at var(--mx, 50%) var(--my, 50%),
+    rgba(var(--bloom-flame), 0.16),
+    transparent 62%
+  );
+}
+[data-sheen]:hover::after {
+  opacity: 1;
+}
+@media (hover: none) {
+  [data-sheen]::after {
+    display: none;
+  }
+}
+
+/* A stack of tilted plates, the way the reference sheets layer them. */
+.plates {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.plate {
+  position: absolute;
+  border-radius: 26px;
+  border: 1px solid var(--glass-line);
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.12));
+  backdrop-filter: blur(8px);
+  box-shadow: var(--glass-shadow);
+}
+.dark .plate {
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.015));
+}
+
+/* Motion ------------------------------------------------------------ */
+
+/* The staggered entrance. Each element sets --d for its place in the queue.
+   Scoped to [data-js] for the reason given in app/layout.tsx. */
+[data-js="on"] .rise {
+  opacity: 0;
+  transform: translateY(14px);
+}
+.rise.in {
+  animation: rise 760ms var(--ease) forwards;
+  animation-delay: calc(var(--d, 0) * 70ms);
+}
+@keyframes rise {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A line that draws itself in when its section arrives. */
+[data-js="on"] .sweep {
+  transform: scaleX(0);
+  transform-origin: left;
+}
+.sweep.in {
+  animation: sweep 900ms var(--ease) forwards;
+}
+@keyframes sweep {
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bloom-drift {
+    animation: none;
+  }
+  [data-js="on"] .rise,
+  [data-js="on"] .sweep,
+  .rise,
+  .sweep {
+    opacity: 1;
+    transform: none;
+    animation: none;
+  }
+  [data-js="on"] .reveal {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Scrollbars                                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Two colours, applied through the standard properties first.
+ *
+ * `scrollbar-color` is the one that reaches most readers: it themes overlay
+ * scrollbars as well as classic ones, which matters because overlay is the
+ * default on macOS and on Chrome for Linux and Android. The
+ * `::-webkit-scrollbar` pseudo-elements draw a prettier capsule and can take a
+ * hover colour, but an engine that uses overlay scrollbars ignores them
+ * completely, and any engine that supports `scrollbar-color` ignores them the
+ * moment it is set. So they are the fallback for older Safari and Chrome
+ * rather than the main path, and the two are split by feature query because
+ * layering them means the standard one silently wins.
+ *
+ * Both custom properties inherit, so a dark panel on a light page overrides
+ * them once and every scroller inside it follows.
+ */
+:root {
+  --scroll-thumb: rgba(21, 25, 33, 0.28);
+  --scroll-thumb-hover: var(--copper);
+}
+.dark {
+  --scroll-thumb: rgba(255, 255, 255, 0.24);
+  --scroll-thumb-hover: var(--copper-bright);
+}
+
+@supports (scrollbar-color: red transparent) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
+}
+
+@supports not (scrollbar-color: red transparent) {
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  /* A transparent border with `background-clip: content-box` insets the thumb
+     inside a wider track: a slim capsule with a full 12px pointer target. */
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scroll-thumb);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scroll-thumb-hover);
+  }
+}
+
+/* Surfaces that stay dark whatever the theme: code blocks, record log panels
+   and the stepper. They override the pair once, here, rather than making each
+   scroller inside them restate it. */
+.code,
+.panel,
+.stepper {
+  --scroll-thumb: rgba(255, 255, 255, 0.26);
+  --scroll-thumb-hover: var(--copper-bright);
+}
+
+/* A scroller inside a component should not drag the page along once it reaches
+   its own end. */
+.stepper .log {
+  overscroll-behavior: contain;
+}
+.table-wrap,
+.code pre {
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+}
+
+/* ------------------------------------------------------------------ */
+/* Search results, grouped by page (components/DocsSearch.tsx)         */
+/* ------------------------------------------------------------------ */
+
+.psych-result + .psych-result {
+  margin-top: 2px;
+}
+.psych-result-subs {
+  margin: 0 0 4px;
+  padding: 0 0 0 22px;
+  list-style: none;
+  border-left: 1px solid var(--color-fd-border);
+  margin-left: 12px;
+}
+.psych-result-subs button,
+.psych-result-subs a {
+  font-size: 13px;
+  color: var(--color-fd-muted-foreground);
+}
+/* One line each. The excerpt is already trimmed in the component; this catches
+   a heading long enough to wrap on a narrow dialog. */
+.psych-result-subs button,
+.psych-result-subs a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+/* fumadocs draws the documentation chrome, and its links and icon buttons sit
+   between 28 and 39px: comfortable on a mouse, a miss on a thumb. The whole
+   chrome is addressed by its layout root rather than by the utility classes
+   on each control, which are generated and will not survive an upgrade.
+   Coarse pointers only, for the same reason as the marketing side. */
+@media (pointer: coarse) {
+  #nd-docs-layout a,
+  #nd-docs-layout button,
+  #nd-docs-layout summary,
+  #nd-sidebar a,
+  #nd-sidebar button,
+  #nd-sidebar-mobile a,
+  #nd-sidebar-mobile button,
+  #nd-nav a,
+  #nd-nav button,
+  #nd-subnav a,
+  #nd-subnav button,
+  #nd-toc a {
+    min-height: 44px;
+  }
+  /* Except inside the prose, where a link inside a sentence must keep the
+     line-height of the sentence it is in. */
+  #nd-page p a,
+  #nd-page li a,
+  #nd-page td a,
+  #nd-page code a {
+    min-height: 0;
+  }
+}

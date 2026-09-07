@@ -1,0 +1,297 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-technical);
+  --font-heading: var(--font-display);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-surface: var(--surface);
+  --color-surface-foreground: var(--surface-foreground);
+  --color-status-running: var(--status-running);
+  --color-status-waiting: var(--status-waiting);
+  --color-status-done: var(--status-done);
+  --color-status-failed: var(--status-failed);
+  --color-status-stopped: var(--status-stopped);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /*
+   * One type scale, so a component picks a step rather than inventing a pixel
+   * size. The old code had `text-[10px]`, `text-[11px]` and `text-[13px]`
+   * literals in roughly twenty-five places, each chosen once and never
+   * compared with the others.
+   */
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1rem;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.125rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.375rem;
+  --text-prose: 0.9375rem;
+  --text-prose--line-height: 1.6;
+  /* The wordmark, and the mark beside it. Its own step because a logo is
+     brand rather than body copy: it should not move when the reading scale
+     is tuned, and it is the one place a bespoke size is honest. */
+  --text-mark: 1.0625rem;
+  --text-mark--line-height: 1;
+  --text-glyph: 0.9375rem;
+  --text-glyph--line-height: 1;
+}
+
+/*
+ * The palette: warm paper and ink, one copper accent doing all the pointing.
+ * A product for people who are running agents on their own data, so it reads
+ * as a workplace tool rather than a developer console -- but the restraint is
+ * deliberate, not decoration, because the thing on screen is usually someone
+ * else's text and it should be the only bright thing.
+ *
+ * Status colors are their own tokens, never aliases of chart-*, because a
+ * run's state is read at a glance across every surface and must not move if
+ * the chart palette changes for unrelated reasons. They are named for what a
+ * person sees (waiting, done, stopped), not for the store's own vocabulary.
+ *
+ * series-* is a third set, and a third set on purpose. chart-* is a two-tone
+ * timing accent (model time against tool time) that also gets worn as text;
+ * series-* is a categorical palette for the charts an agent asks us to draw,
+ * where the only job is that five marks beside each other stay tellable apart
+ * -- including by a reader with protanopia or deuteranopia. Those are
+ * different jobs with different constraints, and one set trying to do both
+ * would fail the second.
+ *
+ * The five hues and their two sets of steps are validated rather than chosen:
+ * every adjacent pair clears the CVD and normal-vision separation floors on
+ * both surfaces, and the dark steps are stepped for the dark surface rather
+ * than flipped. Written as hex, unlike everything else here, because these are
+ * exactly the values that were measured and a conversion would drift off
+ * them. Copper leads because this product's accent is copper.
+ *
+ * Three of the light steps sit under 3:1 against the light surface, so every
+ * chart carries a legend and visible labels rather than relying on colour to
+ * carry identity.
+ */
+:root {
+  --background: oklch(0.978 0.005 88);
+  --foreground: oklch(0.212 0.018 264);
+  --surface: oklch(0.962 0.007 86);
+  --surface-foreground: oklch(0.34 0.018 264);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.212 0.018 264);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.212 0.018 264);
+  --primary: oklch(0.554 0.163 44);
+  --primary-foreground: oklch(0.99 0.006 88);
+  --secondary: oklch(0.938 0.009 85);
+  --secondary-foreground: oklch(0.28 0.018 264);
+  --muted: oklch(0.949 0.008 85);
+  --muted-foreground: oklch(0.505 0.019 258);
+  --accent: oklch(0.928 0.026 55);
+  --accent-foreground: oklch(0.32 0.06 40);
+  --destructive: oklch(0.545 0.204 25);
+  --border: oklch(0.897 0.011 82);
+  --input: oklch(0.886 0.012 82);
+  --ring: oklch(0.554 0.163 44);
+  --chart-1: oklch(0.72 0.14 55);
+  --chart-2: oklch(0.6 0.16 45);
+  --chart-3: oklch(0.52 0.1 250);
+  --chart-4: oklch(0.4 0.07 255);
+  --chart-5: oklch(0.3 0.035 258);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.959 0.007 85);
+  --sidebar-foreground: oklch(0.28 0.018 264);
+  --sidebar-primary: oklch(0.554 0.163 44);
+  --sidebar-primary-foreground: oklch(0.99 0.006 88);
+  --sidebar-accent: oklch(0.914 0.016 60);
+  --sidebar-accent-foreground: oklch(0.28 0.05 40);
+  --sidebar-border: oklch(0.897 0.011 82);
+  --sidebar-ring: oklch(0.554 0.163 44);
+  --status-running: oklch(0.63 0.155 52);
+  --status-waiting: oklch(0.56 0.15 296);
+  --status-done: oklch(0.56 0.12 158);
+  --status-failed: oklch(0.545 0.204 25);
+  --status-stopped: oklch(0.53 0.014 260);
+  --series-1: #eb6834;
+  --series-2: #2a78d6;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+}
+
+.dark {
+  --background: oklch(0.176 0.014 262);
+  --foreground: oklch(0.945 0.008 85);
+  --surface: oklch(0.213 0.016 262);
+  --surface-foreground: oklch(0.86 0.01 85);
+  --card: oklch(0.222 0.017 262);
+  --card-foreground: oklch(0.945 0.008 85);
+  --popover: oklch(0.236 0.018 262);
+  --popover-foreground: oklch(0.945 0.008 85);
+  --primary: oklch(0.735 0.148 52);
+  --primary-foreground: oklch(0.165 0.02 50);
+  --secondary: oklch(0.283 0.016 262);
+  --secondary-foreground: oklch(0.945 0.008 85);
+  --muted: oklch(0.258 0.015 262);
+  --muted-foreground: oklch(0.688 0.019 250);
+  --accent: oklch(0.32 0.042 50);
+  --accent-foreground: oklch(0.93 0.035 60);
+  --destructive: oklch(0.695 0.19 25);
+  --border: oklch(1 0 0 / 11%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.735 0.148 52);
+  --chart-1: oklch(0.8 0.13 55);
+  --chart-2: oklch(0.7 0.15 45);
+  --chart-3: oklch(0.6 0.09 250);
+  --chart-4: oklch(0.48 0.06 255);
+  --chart-5: oklch(0.38 0.03 258);
+  --sidebar: oklch(0.158 0.016 262);
+  --sidebar-foreground: oklch(0.9 0.008 85);
+  --sidebar-primary: oklch(0.735 0.148 52);
+  --sidebar-primary-foreground: oklch(0.165 0.02 50);
+  --sidebar-accent: oklch(0.288 0.032 50);
+  --sidebar-accent-foreground: oklch(0.93 0.035 60);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.735 0.148 52);
+  --status-running: oklch(0.77 0.145 55);
+  --status-waiting: oklch(0.73 0.13 296);
+  --status-done: oklch(0.72 0.12 158);
+  --status-failed: oklch(0.695 0.19 25);
+  --status-stopped: oklch(0.63 0.014 260);
+  --series-1: #d95926;
+  --series-2: #3987e5;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+}
+
+@layer components {
+  /*
+   * The one horizontal bar. Every panel header on a split screen uses it, so
+   * their bottom borders form a single unbroken line across the app.
+   *
+   * This exists because they did not. The conversations panel header and the
+   * chat header both used `py-2` and both drew a border, but their contents
+   * differed in height (11px uppercase text and an icon button against 14px
+   * text, a status pill and three buttons). Same padding, different content,
+   * so the two borders sat a few pixels apart and read as one broken line.
+   * Nobody thinks "that separator is misaligned"; they think the product is
+   * unfinished. Shared padding cannot fix it. A shared height can.
+   */
+  .bar {
+    @apply flex h-12 shrink-0 items-center gap-2 border-b border-border px-3;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  /*
+   * Motion carries meaning here or it does not happen: a panel opening, an
+   * answer arriving, a status changing. Anyone who has asked their system to
+   * stop animating gets exactly that, rather than a shorter version of it.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Focus is visible on purpose rather than inherited: an app someone drives
+     from the keyboard has to show them where they are. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv05" 1;
+  }
+  html {
+    @apply font-sans;
+  }
+  /* Headings carry the display face; body text never does. */
+  h1,
+  h2,
+  h3 {
+    @apply font-heading tracking-tight;
+    font-variation-settings: "SOFT" 20;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  /*
+   * For identifiers only: a run id, a hash, a tool name, a URL. Not for a
+   * tenant, a model, a label or a number in a table. When most of the page is
+   * monospace, monospace stops meaning "this is an identifier", which is the
+   * one job it has.
+   */
+  .font-technical {
+    font-family: var(--font-technical), ui-monospace, monospace;
+    font-feature-settings: "tnum" 1, "zero" 1;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Numbers in a table or a stat, aligned in their columns. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  /* One elevation, used for anything that floats above the page. */
+  .elevated {
+    box-shadow:
+      0 1px 2px oklch(0 0 0 / 4%),
+      0 8px 24px -12px oklch(0 0 0 / 12%);
+  }
+  .dark .elevated {
+    box-shadow:
+      0 1px 2px oklch(0 0 0 / 24%),
+      0 8px 24px -12px oklch(0 0 0 / 45%);
+  }
+}

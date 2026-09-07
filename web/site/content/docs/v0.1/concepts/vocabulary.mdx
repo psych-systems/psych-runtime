@@ -1,0 +1,35 @@
+---
+title: Vocabulary
+description: Twelve words, used exactly. Do not invent synonyms for these.
+---
+
+Most confusion about Psych Runtime is a word being used two ways. These are the
+definitions the code uses, and the ones a change is reviewed against.
+
+| Word | Means |
+|---|---|
+| **Spec** | The agent or workflow as data. `AgentSpec` or `WorkflowSpec`. |
+| **Version** | An immutable, content-hashed publication of a Spec. |
+| **Run** | One execution of a Version, with its own log. |
+| **Record** | One sequenced entry in a Run's log. Not a log line. |
+| **Attempt** | One execution pass by one Worker holding a lease. |
+| **Lease** | A Worker's time-bounded claim on a Run. |
+| **Step** | A workflow step, memoised so a resume does not redo it. |
+| **Turn** | One model call plus the tool calls it asked for. |
+| **Scope** | Tenancy and identity, threaded through every call. |
+| **Port** | An interface you implement: Store, ModelClient, Policy, Sandbox, Telemetry, MemoryStore, SecretResolver, BlobStore. |
+| **Tool** | Something an agent may call: code, HTTP, MCP or another agent. |
+| **Skill** | An instruction pack inside a Spec, loaded on demand. |
+
+The three people get wrong most often:
+
+**A Version is not a release.** It is the content hash of one Spec. Publishing
+the same Spec twice returns the same Version, which is what makes redeploying on
+every boot free rather than merely harmless.
+
+**An Attempt is not a Run.** A Run that survives its Worker being killed has one
+Run id and two Attempts. The report shows both.
+
+**A Record is not a log line.** It is a typed, sequenced, immutable entry the
+reducer folds into state. Nothing is written for a human to read; that the log
+is also readable is a consequence, not the purpose.

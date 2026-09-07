@@ -1,0 +1,41 @@
+name: Feature request
+description: Something the library should do, or do differently.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Psych deliberately does not own an HTTP server, auth, a database, a
+        scheduler, a UI, a prompt library, an eval framework, a vector store,
+        budget enforcement or a model router (`DESIGN.md` section 1). A request
+        for one of those is answered with "write it in your application, and
+        here is the port it plugs into". Everything else is welcome.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The task, in your application's terms, and where Psych gets in the way or stops short.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today
+      description: The workaround, if there is one, and what it costs you.
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+      description: >
+        A sketch of the API is enough. If it touches the design (a new Record
+        type, a change to how leases or approvals work), say so; that is a
+        discussion before it is a pull request.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `psych doctor`, or the commit you are on.

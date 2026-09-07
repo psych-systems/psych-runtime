@@ -1,0 +1,29 @@
+# Security headers for every path. The build appends grouped, hash-based CSP
+# rules for HTML routes to the exported copy of this file. Grouping related
+# documentation routes keeps the result within Cloudflare's rule limit.
+#
+# The rest is narrow on purpose: fonts are self-hosted by the build, there is
+# no analytics, no embed and no third-party script, so anything the policy
+# would have to be widened for is a change worth noticing rather than waving
+# through.
+#
+# HSTS is a year with subdomains, and deliberately not `preload`: preloading is
+# effectively irreversible and belongs to a decision about the whole domain, not
+# to this site's build.
+/*
+  X-Content-Type-Options: nosniff
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# The exported search index has no file extension, so the host has no way to
+# guess its type and serves it with none at all. `fetch().json()` does not care,
+# which is why this was invisible; a proxy or a stricter client would. Say what
+# it is.
+/api/search
+  Content-Type: application/json; charset=utf-8
+
+# Hashed build assets never change under their name.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable

@@ -1,0 +1,209 @@
+---
+name: psych-quickstart
+description: >-
+  Get Psych running for the first time: install it, write the smallest working
+  agent, and read back what it did. Use this whenever someone is adding the
+  Psych agent runtime to a project, asks how to start with Psych, wants a
+  minimal or "hello world" Psych example, hits an ImportError or a
+  SpecValidationError on their first Run, or asks why their Run never finishes
+  (usually: no Worker is running). Covers `psych_runtime.session()`, the long-form
+  wiring it stands in for, and the four mistakes that stop a first Run cold.
+  Read this before writing any first-time Psych setup code, since the required
+  call order (register, publish, start a Worker, dispatch, read) is not
+  discoverable from the API and a missing step fails silently rather than loudly.
+---
+
+# First run with Psych
+
+## Install
+
+Requires Python 3.12 or newer. Core dependencies are `pydantic` and `httpx`.
+
+```sh
+pip install psych-runtime                       # or: uv add psych-runtime
+pip install "psych-runtime[postgres]"           # asyncpg, for PostgresStore
+pip install "psych-runtime[mysql]"              # aiomysql
+pip install "psych-runtime[dynamodb]"           # aioboto3
+pip install "psych-runtime[otel]"               # OpenTelemetry API and SDK
+pip install "psych-runtime[all]"                # every adapter above
+```
+
+## The fastest path: the CLI
+
+```sh
+psych new demo && cd demo && python main.py
+```
+
+That prints an answer with no API key, no database and no Docker: with no
+provider configured, the generated project runs against the fake model, so the
+whole agent loop executes offline.
+
+Three templates, answering three questions in the order people ask them:
+
+| Template | Answers |
+|---|---|
+| `minimal` (default) | Does this work at all? One agent, one tool, one file. |
+| `tour` | What else is there? An approval suspending, a skill loading on demand, a durable fact, a memoised workflow step, the report. |
+| `fastapi` | How do I put this behind my API? Routes that admit and read Runs, plus a separate `worker.py` that executes them. |
+
+`fastapi` is the one to reach for when somebody asks how to integrate Psych into
+an existing service. It shows the split that matters: admitting a Run is a fast
+write that belongs in a request handler, executing one is minutes of model and
+tool calls that belongs in its own process, and they share a `Store` and nothing
+else. It also demonstrates `idempotency_key` against webhook redelivery, SSE
+resumed with `Last-Event-ID` as `after=`, an approval resumed from a different
+process, and `scope=` on every read with `AccessDenied` returned as 404 rather
+than 403.
+
+```sh
+psych new <name> [--template minimal|tour|fastapi] [--force]
+psych skills install [--dest .agents/skills] [--force]   # these 26 guides
+psych skills list
+psych doctor            # version, adapters, env vars, skills. Opens no socket.
+```
+
+The CLI scaffolds and reports and **never executes a Run**. `psych new` writes a
+`main.py` the developer owns and runs themselves. That boundary is deliberate: a
+command that could start a Worker would make Psych something a consumer
+operates rather than something they import, which is exactly what DESIGN.md §1
+refuses. Do not add `psych run`, `psych serve` or `psych worker`.
+
+When something does not work, `psych doctor` first. It reports the version, which
+optional adapters import, which environment variables are set and where the
+skills are, without opening a socket or a database connection.
+
+## The smallest thing that works
+
+`psych_runtime.session()` assembles a store, a tool registry, a `Runtime` and a running
+`Worker`, and stops them again on the way out. This runs against the scriptable
+fake model, so it touches no network and costs nothing:
+
+```python
+import asyncio
+
+import psych_runtime
+from psych_runtime.testing.fake_model import FakeModel
+
+
+async def lookup_order(order_id: str) -> dict[str, str]:
+    """Look up an order by its id."""
+    return {"order_id": order_id, "status": "shipped"}
+
+
+spec = psych_runtime.AgentSpec(
+    name="support",
+    instructions="Help the customer with their order.",
+    model=psych_runtime.ModelRef(model="fake-standard"),
+    tools=(psych_runtime.CodeTool(name="lookup_order"),),
+)
+
+
+async def main() -> None:
+    model = (
+        FakeModel()
+        .turn(text="Checking.", tool_calls=[("lookup_order", {"order_id": "A1"})])
+        .turn(text="A1 has shipped.")
+    )
+    async with psych_runtime.session(model, tools=[lookup_order]) as s:
+        view = await s.ask(spec, "where is order A1?")
+        print(view.text)  # A1 has shipped.
+        print(view.summary())  # 1 turn, 1 tool call
+
+        report = await psych_runtime.report(s.store, view.run_id)
+        print(report.terminal_state, report.totals.usage, report.totals.cost)
+
+
+asyncio.run(main())
+```
+
+Swap `FakeModel()` for a real provider and nothing else changes:
+
+```python
+model = psych_runtime.OpenAICompatibleClient(
+    base_url="https://api.example.com/v1",  # any compatible gateway
+    api_key="...",
+    transport=psych_runtime.HttpTransport(),
+    scope=psych_runtime.Scope(tenant="acme"),
+)
+```
+
+## What `session()` is, and when to stop using it
+
+It is wiring, not a second way to run agents. `s.store`, `s.registry`,
+`s.runtime` and `s.worker` are the real objects, and reaching past them is the
+expected path out rather than a failure. Move to the long form as soon as any of
+these is true: your Workers run in a different process from your web handlers,
+each tenant needs its own model client or credential, or you want a Worker fleet.
+
+The long form is the same thing written out:
+
+```python
+store = PostgresStore(dsn=...)
+await store.migrate()
+
+registry = psych_runtime.ToolRegistry()
+registry.register(lookup_order)
+
+version = await psych_runtime.publish(
+    store, spec, context=psych_runtime.ValidationContext(registered_tools=registry.names)
+)
+
+runtime = psych_runtime.Runtime(store=store, model=model, registry=registry)
+worker = psych_runtime.Worker(store, runtime, concurrency=8)
+asyncio.create_task(worker.run())  # usually its own process
+
+run = await psych_runtime.dispatch(
+    store,
+    version,
+    psych_runtime.Scope(tenant="acme", principal="user-42"),
+    input={"message": "where is order A1?"},
+    idempotency_key="webhook-evt-8891",
+)
+
+async for record in psych_runtime.stream(store, run.run_id):
+    ...
+```
+
+## Session API
+
+| Call | Does |
+|---|---|
+| `s.ask(spec, "text")` | Publish if needed, dispatch, wait, return an `AnswerView`. |
+| `s.start(spec, "text")` | Dispatch and return immediately, so you can stream it yourself. |
+| `s.wait(run_id)` | Wait for a Run to settle, then project its answer. |
+| `s.publish(spec)` | Publish with the registry's names already in the validation context. |
+
+`ask()` accepts an `AgentSpec`, a `WorkflowSpec`, a builder, a `Version`, or a
+version hash. It takes `scope=` per call, so one Session serves many tenants.
+
+## The four things that stop a first Run
+
+**Nothing runs and `dispatch()` returned fine.** No Worker is claiming. A Run
+sits RUNNABLE forever until a `Worker` picks it up. `psych_runtime.session()` starts one
+for you; the long form needs `asyncio.create_task(worker.run())`.
+
+**`SpecValidationError: unknown tool`.** The Spec names a tool that was never
+registered. Register the function before publishing, and pass
+`context=psych_runtime.ValidationContext(registered_tools=registry.names)` so the error
+arrives at publish rather than mid-conversation. `session.publish()` passes it
+for you.
+
+**`ToolSchemaError` on registration.** The function has no type hints, or no
+docstring for its description. Both are required: the schema comes from the
+hints so it cannot drift from the code, and a tool the model cannot read is a
+tool it will misuse.
+
+**`ask()` returns with `finished=False` and empty text.** The Run failed or is
+still going. That is deliberate rather than an exception, because a failed Run
+is fully recorded and readable. Ask `psych_runtime.status(store, run_id)` for the
+lifecycle and `psych_runtime.report(store, run_id)` for what happened.
+
+## Next
+
+- `psych-agents` for what else an `AgentSpec` carries.
+- `psych-code-tools` for tool registration in full.
+- `psych-stores` before anything that has to survive a restart. `MemoryStore` is
+  a real Store and an entirely in-process one, right for a script and wrong for
+  a deployment.
+- `psych-testing` for scripting multi-step runs, malformed tool calls and
+  aborted streams against `FakeModel`.

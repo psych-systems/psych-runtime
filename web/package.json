@@ -1,0 +1,23 @@
+{
+  "name": "psych-runtime-web",
+  "private": true,
+  "description": "psychruntime.com: the marketing site and the documentation, one static Next.js export in site/.",
+  "scripts": {
+    "dev": "pnpm --filter psych-runtime-site dev",
+    "build": "pnpm --filter psych-runtime-site build",
+    "build:preview": "pnpm --filter psych-runtime-site build:preview",
+    "check": "pnpm --filter psych-runtime-site check",
+    "sync": "node scripts/sync-from-repo.mjs",
+    "cut": "node scripts/cut-version.mjs",
+    "deploy:preview": "pnpm build:preview && wrangler deploy --config site/wrangler.preview.jsonc",
+    "release-gate": "pnpm --filter psych-runtime-site release-gate",
+    "deploy": "pnpm build && pnpm release-gate && wrangler deploy --config site/wrangler.jsonc",
+    "preview": "wrangler dev --config site/wrangler.preview.jsonc --port 8788",
+    "smoke": "pnpm --filter psych-runtime-site smoke",
+    "verify": "pnpm --filter psych-runtime-site verify"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "devDependencies": {
+    "wrangler": "^4.129.0"
+  }
+}

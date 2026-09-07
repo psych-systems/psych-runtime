@@ -1,0 +1,39 @@
+---
+title: Design notes
+description: Why each area of Psych Runtime is shaped the way it is, and what breaks under the obvious alternative.
+---
+
+Eight documents, one per area. Each says what the area does, why it is built
+that way, and what fails under the alternative somebody reaches for first.
+
+They are copied from `docs/design-notes/` in the repository and reviewed with
+the code that makes them true. The order of precedence is unchanged: `DESIGN.md`
+decides what gets built, and a design note that contradicts it is the thing that
+is wrong.
+
+Read the relevant one before changing a component. Read any of them to decide
+whether you agree with the runtime enough to depend on it.
+
+- [Durability and leases](/docs/v0.1/design/durability-and-leases): why
+  supervision and execution are separate loops, why a lease and a deadline are
+  two mechanisms rather than one, and what happens to a tool call nobody
+  finished.
+- [The record log and its reducer](/docs/v0.1/design/record-log-and-reducer):
+  the append-only log, the pure fold over it, and why a contradictory log is
+  failed loudly instead of repaired.
+- [Spec versioning and tool access](/docs/v0.1/design/spec-versioning-and-tool-access):
+  content hashing, the canonicalisation rules chosen rather than inherited, and
+  the three-plane narrowing that access passes through.
+- [Tool disclosure and the prompt budget](/docs/v0.1/design/tool-disclosure-and-prompt-budget):
+  what reaches the model each turn, and what a large MCP catalogue would
+  otherwise cost on every call.
+- [Metering and telemetry](/docs/v0.1/design/metering-and-telemetry): usage split
+  by cache state, why an unknown price is `None`, and the span schema.
+- [Subagents and delegation](/docs/v0.1/design/subagents-and-delegation): the
+  roster an author writes, the envelope a model composes within, and why a
+  parent suspends rather than holding its lease.
+- [Code execution and sandboxing](/docs/v0.1/design/code-execution-and-sandboxing):
+  why in-process sandboxing is rejected outright, and what each backend can
+  honestly promise about the network.
+- [MCP 2026-07-28](/docs/v0.1/design/mcp-2026-07-28): the protocol version Psych
+  implements, and the decisions its spec leaves to a client.

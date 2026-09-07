@@ -1,0 +1,32 @@
+"""Where Runs live, chosen once and imported by both processes.
+
+`PSYCH_POSTGRES_DSN` unset gives an in-memory store, which is a real `Store` and
+an entirely in-process one. That is right for `python main.py` on a laptop and
+wrong for anything else, and the difference matters more here than in a
+single-file script: **two processes cannot share an in-memory store.** With no
+DSN set, `main.py` runs a Worker inside the web process so the demo works at
+all; with one set, run `worker.py` separately, which is the real shape.
+"""
+
+import os
+
+from psych_runtime.store.memory import InMemoryStore
+from psych_runtime.store.port import Store
+
+
+def build_store() -> Store:
+    dsn = os.getenv("PSYCH_POSTGRES_DSN")
+    if dsn:
+        from psych_runtime.store.postgres import PostgresStore
+
+        return PostgresStore(dsn=dsn)
+    return InMemoryStore()
+
+
+def runs_in_one_process() -> bool:
+    """Whether the web process must host the Worker itself.
+
+    True only for the in-memory store, where there is nothing for a second
+    process to connect to.
+    """
+    return not os.getenv("PSYCH_POSTGRES_DSN")

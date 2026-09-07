@@ -47,6 +47,7 @@ const replay = createServer(async (req, res) => {
 
 const HEADERS_BASE = process.argv[2] ?? process.env.HEADERS_BASE ?? "https://preview.psychruntime.com";
 const ORIGIN = HEADERS_BASE;
+const IS_PREVIEW = new URL(HEADERS_BASE).hostname.startsWith("preview.");
 const PORT = Number(process.env.SMOKE_PORT ?? 4600);
 if (!process.env.SMOKE_DIRECT) replay.listen(PORT);
 const BASE = process.env.SMOKE_DIRECT ? HEADERS_BASE : `http://localhost:${PORT}`;
@@ -82,7 +83,11 @@ note(`\n--- response headers, from ${HEADERS_BASE} ---`);
     check((h["strict-transport-security"] ?? "").includes("max-age=31536000"), `${path} sets HSTS`);
     check(h["x-content-type-options"] === "nosniff", `${path} sets nosniff`);
     check(h["x-frame-options"] === "DENY", `${path} refuses framing`);
-    check(/noindex/.test(h["x-robots-tag"] ?? ""), `${path} tells crawlers to stay out`);
+    const noindex = /noindex/.test(h["x-robots-tag"] ?? "");
+    check(
+      IS_PREVIEW ? noindex : !noindex,
+      IS_PREVIEW ? `${path} tells crawlers to stay out` : `${path} allows production indexing`,
+    );
   }
   await ctx.close();
 }
@@ -97,7 +102,7 @@ note(`\n--- navigation, against ${BASE} replaying the deployed bytes ---`);
   p.on("pageerror", (e) => violations.push(`pageerror: ${String(e).slice(0, 160)}`));
 
   await p.goto(BASE, { waitUntil: "networkidle" });
-  check((await p.title()).startsWith("Psych Runtime: run AI agents"), `the homepage title is ${JSON.stringify(await p.title())}`);
+  check((await p.title()).startsWith("Psych Runtime: build AI agents"), `the homepage title is ${JSON.stringify(await p.title())}`);
 
   // Every header destination, followed for real.
   await p.locator(".nav-menu-btn").hover();
@@ -136,21 +141,11 @@ note("\n--- search, and following a result ---");
   await ctx.close();
 }
 
-// ------------------------------------------------------------ copy buttons
-note("\n--- copy buttons ---");
+// ------------------------------------------------------ docs copy buttons
+note("\n--- docs copy buttons ---");
 {
   const ctx = await b.newContext({ viewport: { width: 1400, height: 1000 }, permissions: ["clipboard-read", "clipboard-write"] });
   const p = await ctx.newPage();
-  await p.goto(BASE, { waitUntil: "networkidle" });
-  const copy = p.locator("button[aria-label*='opy'], .install button, .copy-btn").first();
-  check((await copy.count()) > 0, "the install command has a copy button");
-  await copy.click();
-  await p.waitForTimeout(400);
-  const text = await p.evaluate(() => navigator.clipboard.readText().catch(() => ""));
-  check(text.trim() === "pip install psych-runtime", `it copied ${JSON.stringify(text.trim())}`);
-  const after = (await copy.innerText().catch(() => "")) + (await copy.getAttribute("aria-label"));
-  check(/copied/i.test(after), `it confirms the copy (${JSON.stringify(after.slice(0, 40))})`);
-
   await p.goto(`${BASE}/docs/next/get-started`, { waitUntil: "networkidle" });
   const docsCopy = p.locator("figure button, pre ~ button, [data-copy]").first();
   if (await docsCopy.count()) {

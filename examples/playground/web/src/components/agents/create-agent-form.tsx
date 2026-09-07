@@ -9,6 +9,7 @@ import {
   PencilIcon,
   Loader2Icon,
   MessageSquareIcon,
+  SparklesIcon,
   WrenchIcon,
 } from "lucide-react";
 
@@ -75,6 +76,36 @@ import { FieldError, IssuesSummary } from "@/components/settings/validation";
  *  form accepts is one the publish accepts. */
 const NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
 
+const STARTERS = [
+  {
+    name: "general-assistant",
+    label: "General assistant",
+    description: "Handles everyday questions and coordinates work across available systems.",
+    instructions:
+      "You are the workspace's general assistant. Understand the goal before acting, use available tools and agents when they improve the result, state assumptions plainly, and finish with a clear answer or next action.",
+    ask: true,
+    plan: true,
+  },
+  {
+    name: "research-analyst",
+    label: "Research analyst",
+    description: "Investigates questions and turns evidence into practical recommendations.",
+    instructions:
+      "Investigate the question using the sources and tools available to you. Separate verified facts from assumptions, reconcile conflicting evidence, and finish with a concise recommendation supported by what you found.",
+    ask: true,
+    plan: false,
+  },
+  {
+    name: "operations-coordinator",
+    label: "Operations coordinator",
+    description: "Plans multi-step work and keeps execution moving to completion.",
+    instructions:
+      "Turn the requested outcome into a short plan, complete each step with the available tools, surface blockers early, and report what changed, what was verified, and what still needs attention.",
+    ask: true,
+    plan: true,
+  },
+] as const;
+
 function choiceToMcpServer(choice: ConnectionChoice, preset: McpServerPreset): McpServerIn {
   return {
     name: preset.name,
@@ -103,7 +134,7 @@ type FieldKey = "name" | "instructions" | "model" | "temperature" | "tools" | "c
  *
  * Two different shapes arrive here. The request body's own validation names
  * a field directly (`name`, `limits.max_turns`), while the publish check
- * names it under the agent's own name (`support-triage.tools.lookup_order`).
+ * names it under the agent's own name (`research-assistant.tools.search`).
  * Stripping that prefix is what lets the second kind land on a field at all;
  * anything still unrecognised goes to the summary rather than being guessed
  * onto a field it might not belong to.
@@ -414,6 +445,44 @@ export function CreateAgentForm() {
 
   return (
     <div className="flex flex-col gap-6">
+      {duplicateOf === null && (
+        <section className="rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/10 via-card to-card p-5 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+              <SparklesIcon className="size-4" aria-hidden />
+            </span>
+            <div>
+              <h2 className="font-heading text-lg font-medium">Start with a useful shape</h2>
+              <p className="mt-1 text-body text-muted-foreground">
+                Pick one to fill the essentials, then make it yours before publishing.
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            {STARTERS.map((starter) => (
+              <button
+                key={starter.name}
+                type="button"
+                onClick={() => {
+                  setName(starter.name);
+                  setDescription(starter.description);
+                  setInstructions(starter.instructions);
+                  setMayAskQuestions(starter.ask);
+                  setTasksEnabled(starter.plan);
+                  setPeers(settings?.a2a_peers.map((peer) => peer.name) ?? []);
+                }}
+                className="rounded-xl border border-border bg-background/70 p-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:bg-background hover:shadow-md focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/25"
+              >
+                <span className="text-body font-semibold">{starter.label}</span>
+                <span className="mt-1 block text-caption leading-relaxed text-muted-foreground">
+                  {starter.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {duplicatedFrom !== null && (
         <Alert>
           {editing !== null ? <PencilIcon /> : <CopyIcon />}
@@ -458,7 +527,7 @@ export function CreateAgentForm() {
             <Label htmlFor="agent-name">Name</Label>
             <Input
               id="agent-name"
-              placeholder="support-triage"
+              placeholder="research-assistant"
               value={name}
               onChange={(event) => setName(event.target.value)}
               aria-invalid={fieldErrors.name !== undefined || !nameValid}
@@ -479,7 +548,7 @@ export function CreateAgentForm() {
             <Input
               id="agent-description"
               value={description}
-              placeholder="Answers questions about orders and issues refunds."
+              placeholder="Turns scattered source material into clear, useful briefs."
               onChange={(event) => setDescription(event.target.value)}
             />
             <p className="text-micro text-muted-foreground">
@@ -493,7 +562,7 @@ export function CreateAgentForm() {
             <Textarea
               id="agent-instructions"
               className="min-h-44"
-              placeholder="You help the support team triage incoming tickets. Look up the customer's order before answering, and never promise a refund without checking the policy first."
+              placeholder="You investigate the question, use available tools to verify key facts, separate evidence from assumptions, and finish with a clear recommendation."
               value={instructions}
               onChange={(event) => setInstructions(event.target.value)}
               aria-invalid={fieldErrors.instructions !== undefined}
@@ -652,85 +721,28 @@ export function CreateAgentForm() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Asking you questions</CardTitle>
-          <CardDescription>
-            Whether this agent may stop and ask you something when it cannot carry on without an
-            answer. The conversation waits until you reply, so leave it off for anything that runs
-            unattended.
-          </CardDescription>
+          <CardTitle>How it works</CardTitle>
+          <CardDescription>Optional abilities for longer or more interactive work.</CardDescription>
         </CardHeader>
-        <CardContent>
-          <label className="flex items-start gap-3 rounded-lg border border-border px-3 py-2.5">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={mayAskQuestions}
-              onChange={(event) => setMayAskQuestions(event.target.checked)}
-            />
-            <span className="flex flex-col gap-0.5">
-              <span className="text-body">Let it ask</span>
-              <span className="text-caption text-muted-foreground">
-                It gets a tool for asking, and can offer you options to pick from. You can always
-                answer in your own words instead.
-              </span>
-            </span>
-          </label>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Keeping a plan</CardTitle>
-          <CardDescription>
-            Whether this agent writes down the steps it intends to take and ticks them off as it
-            works. Useful when a job has several parts; noise when it has one.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <label className="flex items-start gap-3 rounded-lg border border-border px-3 py-2.5">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={tasksEnabled}
-              onChange={(event) => setTasksEnabled(event.target.checked)}
-            />
-            <span className="flex flex-col gap-0.5">
-              <span className="text-body">Let it keep a plan</span>
-              <span className="text-caption text-muted-foreground">
-                The plan shows in the conversation as it changes, so a long job is readable while
-                it runs rather than only afterwards.
-              </span>
-            </span>
-          </label>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Showing things, not only saying them</CardTitle>
-          <CardDescription>
-            Whether this agent may answer with a product, a set of them to compare, an order, an
-            itinerary, a chart or a single figure, alongside what it writes. Worth it when the
-            answer has a shape; noise when it is a sentence.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <label className="flex items-start gap-3 rounded-lg border border-border px-3 py-2.5">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={componentsEnabled}
-              onChange={(event) => setComponentsEnabled(event.target.checked)}
-            />
-            <span className="flex flex-col gap-0.5">
-              <span className="text-body">Let it show things</span>
-              <span className="text-caption text-muted-foreground">
-                It sends the data and this console draws it, so what appears follows the console
-                rather than the agent. Links and images have to be http or https; anything else is
-                refused before it reaches the screen.
-              </span>
-            </span>
-          </label>
+        <CardContent className="divide-y divide-border rounded-lg border border-border p-0">
+          <AbilityRow
+            label="Ask me questions"
+            description="Pause when it needs information from me before it can continue."
+            checked={mayAskQuestions}
+            onCheckedChange={setMayAskQuestions}
+          />
+          <AbilityRow
+            label="Keep a plan"
+            description="Show and update its steps while it works through a larger task."
+            checked={tasksEnabled}
+            onCheckedChange={setTasksEnabled}
+          />
+          <AbilityRow
+            label="Show structured results"
+            description="Present comparisons, orders, itineraries, charts and key figures in the conversation."
+            checked={componentsEnabled}
+            onCheckedChange={setComponentsEnabled}
+          />
         </CardContent>
       </Card>
 
@@ -999,6 +1011,28 @@ export function CreateAgentForm() {
         </Button>
       </div>
     </div>
+  );
+}
+
+function AbilityRow({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-4 px-4 py-3 transition-colors hover:bg-surface/60">
+      <span className="min-w-0 flex-1">
+        <span className="block text-body font-medium">{label}</span>
+        <span className="block text-caption text-muted-foreground">{description}</span>
+      </span>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </label>
   );
 }
 

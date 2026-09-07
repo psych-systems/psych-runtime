@@ -485,11 +485,9 @@ class OAuthClient:
 
         Raises:
             NoActiveSession: no session exists for ``resource``.
-            ReauthorizationRequired: the token is expiring, no refresh token
-                is available (or the authorization server refused the
-                refresh), and the session was discarded as a result -- the
-                caller must treat this like a fresh 401 and call ``start``
-                again.
+            ReauthorizationRequired: an authorization-code token cannot be
+                refreshed, or the authorization server refused renewal. The
+                session is discarded and the caller must start again.
         """
         canonical_resource = canonicalize_resource_uri(resource)
         key = _SessionKey.from_scope(scope=scope, resource=canonical_resource)
@@ -503,13 +501,23 @@ class OAuthClient:
             if session.tokens.is_expiring(
                 now=now, safety_margin_seconds=self._refresh_safety_margin_seconds
             ):
-                if session.tokens.refresh_token is None:
+                if session.grant != "client_credentials" and session.tokens.refresh_token is None:
                     self._sessions.pop(key, None)
                     raise ReauthorizationRequired(
-                        canonical_resource, "access token expired and no refresh_token was issued"
+                        canonical_resource,
+                        "access token expired and no refresh_token was issued",
                     )
                 try:
-                    new_tokens = await self._refresh(scope, session)
+                    if session.grant == "client_credentials":
+                        new_tokens = await self._client_credentials_token(
+                            scope,
+                            as_metadata=session.as_metadata,
+                            client=session.identity,
+                            resource=canonical_resource,
+                            requested_scope=session.requested_scope,
+                        )
+                    else:
+                        new_tokens = await self._refresh(scope, session)
                 except TokenRequestFailed as err:
                     self._sessions.pop(key, None)
                     raise ReauthorizationRequired(canonical_resource, str(err)) from err

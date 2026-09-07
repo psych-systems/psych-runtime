@@ -6,8 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export default function NewAgentPage() {
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <Page className="max-w-3xl">
+    <Page className="max-w-3xl">
         <PageHeader
           title="New agent"
           description="Everything is checked when you publish, so nothing here can go wrong later in front of someone waiting for an answer."
@@ -19,7 +18,6 @@ export default function NewAgentPage() {
         <Suspense fallback={<Skeleton className="h-96 w-full rounded-xl" />}>
           <CreateAgentForm />
         </Suspense>
-      </Page>
-    </div>
+    </Page>
   );
 }

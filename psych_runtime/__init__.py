@@ -174,7 +174,7 @@ from psych_runtime.tools.secrets import (
     SecretResolver,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 """A library does not decide where its own log lines go.

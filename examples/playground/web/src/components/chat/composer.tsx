@@ -14,18 +14,18 @@ import type { AgentSummary, QueueKind } from "@/lib/types";
 const QUEUES: { kind: QueueKind; label: string; help: string }[] = [
   {
     kind: "steer",
-    label: "Steer now",
-    help: "Reaches the reply being written, at its next step.",
+    label: "Guide this run",
+    help: "The agent reads this before its next model step.",
   },
   {
     kind: "follow_up",
-    label: "After this reply",
-    help: "Read once the current reply finishes, before the answer settles.",
+    label: "Add a follow-up",
+    help: "The current step finishes, then the agent continues with this.",
   },
   {
     kind: "next_run",
-    label: "Next message",
-    help: "Kept for the next turn of this conversation. The only one that survives a stop.",
+    label: "Save for next message",
+    help: "Kept for the next run, even if you stop this one.",
   },
 ];
 
@@ -118,8 +118,17 @@ export function Composer({
   return (
     <form
       onSubmit={submit}
-      className="flex w-full flex-col gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm transition-colors focus-within:border-ring/60"
+      className={
+        "flex w-full flex-col gap-2 rounded-2xl border bg-card p-2.5 shadow-sm transition-colors " +
+        (midRun ? "border-primary/45 ring-4 ring-primary/5" : "border-border focus-within:border-ring/60")
+      }
     >
+      {midRun && (
+        <div className="flex items-center gap-2 px-1 pt-0.5 text-micro font-medium text-primary">
+          <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />
+          Agent working · choose when it should read your note
+        </div>
+      )}
       <Textarea
         value={message}
         onChange={(event) => setMessage(event.target.value)}
@@ -128,10 +137,10 @@ export function Composer({
           blockedReason ??
           (midRun
             ? chosenQueue.kind === "steer"
-              ? "Say something to the reply being written"
+              ? "Guide what the agent is doing now"
               : chosenQueue.kind === "follow_up"
-                ? "Something for after this reply"
-                : "Something for the next turn"
+                ? "Add something after its current step"
+                : "Write the next message now"
             : busy
               ? "Waiting for the answer"
               : `Message ${selectedAgent?.name ?? "an agent"}`)
@@ -140,7 +149,7 @@ export function Composer({
         rows={1}
         className="max-h-48 min-h-11 resize-none rounded-none border-none bg-transparent! p-1 text-prose shadow-none focus-visible:border-transparent focus-visible:ring-0"
       />
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {noAgents ? (
           <Button asChild variant="outline" size="sm" className="rounded-full">
             <Link href="/agents/new">Create an agent</Link>
@@ -156,12 +165,12 @@ export function Composer({
           />
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {midRun && (
             <Select value={queue} onValueChange={(kind) => setQueue(kind as QueueKind)}>
               <SelectTrigger
                 size="sm"
-                className="rounded-full"
+                className="min-w-40 rounded-full"
                 aria-label="Where this message goes"
                 title={chosenQueue.help}
               >

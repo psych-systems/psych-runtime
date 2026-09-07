@@ -1153,7 +1153,7 @@ class TestOAuthProtectedServer:
 
             await pool.close_all()
 
-    async def test_a_refresh_does_not_change_the_pool_key_or_reconnect(
+    async def test_client_credentials_renewal_does_not_change_the_pool_key_or_reconnect(
         self, transport: HttpTransport
     ) -> None:
         async with (
@@ -1164,7 +1164,7 @@ class TestOAuthProtectedServer:
             secrets = InMemorySecretResolver()
             scope = Scope(tenant="tenant-a")
             # A huge safety margin makes every issued token read as
-            # "expiring" immediately, so the very next request refreshes
+            # "expiring" immediately, so the very next request renews
             # deterministically rather than waiting out a real expiry.
             oauth = OAuthClient(transport=transport, refresh_safety_margin_seconds=1_000_000.0)
             pool = McpPool(transport=transport, secrets=secrets, oauth=oauth)
@@ -1177,10 +1177,14 @@ class TestOAuthProtectedServer:
             await connection.call_tool("echo", {})
 
             assert connection.credential_identity == identity_before
-            refresh_requests = [
-                r for r in auth.token_requests if r.get("grant_type") == "refresh_token"
+            renewal_requests = [
+                r for r in auth.token_requests if r.get("grant_type") == "client_credentials"
             ]
-            assert len(refresh_requests) == 1
+            # Every protected request sees this deliberately extreme margin,
+            # so discovery and the tool call may each renew. The contract is
+            # that an expired machine grant is reacquired without reconnecting.
+            assert len(renewal_requests) >= 2
+            assert not any(r.get("grant_type") == "refresh_token" for r in auth.token_requests)
             assert stub.discover_count == 1  # no reconnect happened
             post_auth_key = McpPoolKey.from_scope(
                 scope=scope, server=server, credential_identity=identity_before

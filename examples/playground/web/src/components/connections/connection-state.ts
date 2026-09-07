@@ -14,7 +14,7 @@
  * showing to an operator and means nothing to anyone else.
  */
 
-import type { McpServerPreset } from "@/components/settings/types";
+import type { McpServerPreset, McpServerPresetIn } from "@/components/settings/types";
 
 export type ConnectionHealth = "connected" | "failed" | "untested";
 
@@ -136,7 +136,7 @@ export const DESCRIPTION_LIMIT = 400;
  * the wire in both directions; this is the local view of it, so reading and
  * writing it goes through one place instead of a cast at each call site.
  */
-export interface ConnectionPreset extends McpServerPreset {
+export interface ConnectionPreset extends McpServerPresetIn {
   description?: string;
 }
 

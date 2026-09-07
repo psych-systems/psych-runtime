@@ -111,8 +111,7 @@ export function AgentDetail({ agentId }: { agentId: string }) {
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <Page>
+    <Page>
         <div>
           <Button asChild variant="ghost" size="sm" className="-ml-2">
             <Link href="/agents">
@@ -303,8 +302,7 @@ export function AgentDetail({ agentId }: { agentId: string }) {
             </TechnicalDetails>
           </>
         )}
-      </Page>
-    </div>
+    </Page>
   );
 }
 

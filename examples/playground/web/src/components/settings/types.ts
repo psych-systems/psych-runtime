@@ -120,6 +120,10 @@ export interface McpServerPreset {
   live?: McpLiveConnection | null;
 }
 
+/** The writable part of a connection preset. Health and live-connection
+ * fields are computed by the backend and never belong in a settings PUT. */
+export type McpServerPresetIn = Omit<McpServerPreset, "last_connection" | "live">;
+
 import type { ModelPrice, RuntimeSettings } from "@/lib/types";
 
 export interface PlaygroundSettings {

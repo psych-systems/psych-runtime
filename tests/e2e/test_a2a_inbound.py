@@ -215,6 +215,9 @@ async def _harness(tmp_path: Path, model: FakeModel) -> AsyncIterator[_Harness]:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(worker_task, timeout=10)
             await transport.aclose()
+            # The Windows proactor completes socket teardown on the next loop
+            # turn after httpx closes its pool.
+            await asyncio.sleep(0)
 
 
 @pytest_asyncio.fixture
@@ -419,10 +422,11 @@ class TestPushNotifications:
 
         async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             headers, body = await _read_http_request(reader)
-            received.append((headers, body))
             writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
             await writer.drain()
             writer.close()
+            await writer.wait_closed()
+            received.append((headers, body))
 
         server = await asyncio.start_server(handle, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]

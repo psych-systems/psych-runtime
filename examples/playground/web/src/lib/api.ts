@@ -29,6 +29,7 @@ import type {
   ForkRequest,
   InterruptRequest,
   McpServerPreset,
+  McpServerPresetIn,
   MemoriesResponse,
   ModelPrice,
   ModelsResponse,
@@ -147,6 +148,33 @@ export class ApiError extends Error {
   }
 }
 
+function normalizeProblem(
+  problem: ProblemResponse | null,
+  fallback: string,
+): { detail: string; issues: ValidationProblem[] } {
+  if (problem === null) return { detail: fallback || "Request failed", issues: [] };
+  const explicitIssues = Array.isArray(problem.issues) ? problem.issues : [];
+  if (typeof problem.detail === "string") {
+    return { detail: problem.detail, issues: explicitIssues };
+  }
+  if (Array.isArray(problem.detail)) {
+    const issues = problem.detail.flatMap((value): ValidationProblem[] => {
+      if (!value || typeof value !== "object") return [];
+      const item = value as Record<string, unknown>;
+      if (typeof item.msg !== "string") return [];
+      const path = Array.isArray(item.loc)
+        ? item.loc.filter((part) => part !== "body").map(String).join(".")
+        : "request";
+      return [{ path: path || "request", message: item.msg }];
+    });
+    return {
+      detail: issues.length > 0 ? "Check the highlighted fields." : fallback || "Request failed",
+      issues: [...explicitIssues, ...issues],
+    };
+  }
+  return { detail: fallback || "Request failed", issues: explicitIssues };
+}
+
 /** The backend never answered at all -- DNS, connection refused, timeout,
  * CORS. Distinct from `ApiError` because there is no status code or problem
  * body to show, only the URL that was tried. */
@@ -209,12 +237,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Not a JSON problem body (a proxy 502, say). Fall through.
     }
-    if (res.status === 401) throw new NotSignedInError(problem?.detail);
-    throw new ApiError(
-      res.status,
-      problem?.detail ?? res.statusText,
-      problem?.issues ?? [],
-    );
+    const normalized = normalizeProblem(problem, res.statusText);
+    if (res.status === 401) throw new NotSignedInError(normalized.detail);
+    throw new ApiError(res.status, normalized.detail, normalized.issues);
   }
 
   if (res.status === 204) return undefined as T;
@@ -600,11 +625,8 @@ export async function* streamScenarioRun(
     } catch {
       // Not a JSON problem body.
     }
-    throw new ApiError(
-      res.status,
-      problem?.detail ?? res.statusText,
-      problem?.issues ?? [],
-    );
+    const normalized = normalizeProblem(problem, res.statusText);
+    throw new ApiError(res.status, normalized.detail, normalized.issues);
   }
 
   const reader = res.body.getReader();
@@ -694,11 +716,19 @@ export function testProvider(providerId: string): Promise<ProviderTestResult> {
 /** Replaces the whole connection list. Each entry's stored last-connection
  *  record survives an edit that leaves its connection details alone. */
 export function updateMcpSettings(
-  mcpServers: McpServerPreset[],
+  mcpServers: Array<
+    McpServerPresetIn & Partial<Pick<McpServerPreset, "last_connection" | "live">>
+  >,
 ): Promise<PlaygroundSettings> {
+  const writable = mcpServers.map((server) => {
+    const { last_connection, live, ...preset } = server;
+    void last_connection;
+    void live;
+    return preset;
+  });
   return request<PlaygroundSettings>("/api/settings/mcp", {
     method: "PUT",
-    body: json({ mcp_servers: mcpServers }),
+    body: json({ mcp_servers: writable }),
   });
 }
 
@@ -888,11 +918,8 @@ export async function* streamRun(
     } catch {
       // Not a JSON problem body.
     }
-    throw new ApiError(
-      res.status,
-      problem?.detail ?? res.statusText,
-      problem?.issues ?? [],
-    );
+    const normalized = normalizeProblem(problem, res.statusText);
+    throw new ApiError(res.status, normalized.detail, normalized.issues);
   }
 
   const reader = res.body.getReader();

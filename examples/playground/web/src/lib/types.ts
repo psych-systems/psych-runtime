@@ -1457,6 +1457,7 @@ export type {
   McpLiveConnection,
   McpOAuthPreset,
   McpServerPreset,
+  McpServerPresetIn,
   McpTransport,
   PlaygroundSettings,
   ProviderIn,
@@ -1497,8 +1498,8 @@ export interface ValidationProblem {
 }
 
 export interface ProblemResponse {
-  detail: string;
-  issues: ValidationProblem[];
+  detail?: unknown;
+  issues?: ValidationProblem[];
 }
 
 /**

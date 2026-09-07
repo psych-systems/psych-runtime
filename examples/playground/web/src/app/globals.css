@@ -134,7 +134,7 @@
   --chart-3: oklch(0.52 0.1 250);
   --chart-4: oklch(0.4 0.07 255);
   --chart-5: oklch(0.3 0.035 258);
-  --radius: 0.625rem;
+  --radius: 0.75rem;
   --sidebar: oklch(0.959 0.007 85);
   --sidebar-foreground: oklch(0.28 0.018 264);
   --sidebar-primary: oklch(0.554 0.163 44);
@@ -248,9 +248,17 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "cv05" 1;
+    background-image:
+      radial-gradient(circle at 78% -20%, color-mix(in oklch, var(--primary) 8%, transparent), transparent 34rem),
+      linear-gradient(to bottom, color-mix(in oklch, var(--background) 96%, var(--card)), var(--background));
+    background-attachment: fixed;
   }
   html {
     @apply font-sans;
+  }
+  * {
+    scrollbar-color: color-mix(in oklch, var(--muted-foreground) 32%, transparent) transparent;
+    scrollbar-width: thin;
   }
   /* Headings carry the display face; body text never does. */
   h1,

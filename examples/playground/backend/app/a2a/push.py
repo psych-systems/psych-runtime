@@ -129,12 +129,15 @@ class PushSender:
             except Exception as err:
                 _LOG.warning("push to %s failed (%s)", config.url, err)
             else:
-                # §13.2: "Clients MUST respond with HTTP 2xx status codes to
-                # acknowledge successful receipt", so anything else is a
-                # delivery that did not happen.
-                if 200 <= response.status_code < 300:
-                    return
-                _LOG.warning("push to %s answered HTTP %s", config.url, response.status_code)
+                try:
+                    # §13.2: "Clients MUST respond with HTTP 2xx status codes to
+                    # acknowledge successful receipt", so anything else is a
+                    # delivery that did not happen.
+                    if 200 <= response.status_code < 300:
+                        return
+                    _LOG.warning("push to %s answered HTTP %s", config.url, response.status_code)
+                finally:
+                    await response.aclose()
             if attempt < len(delays):
                 await asyncio.sleep(delays[attempt])
         _LOG.warning("giving up on push to %s after %d attempts", config.url, self._max_attempts)

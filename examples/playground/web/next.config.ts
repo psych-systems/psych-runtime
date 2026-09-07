@@ -42,6 +42,7 @@ const proxyTarget = process.env.PSYCH_API_PROXY?.replace(/\/$/, "");
 const standalone = process.env.PSYCH_STANDALONE === "1";
 
 const nextConfig: NextConfig = {
+  agentRules: false,
   ...(standalone ? { output: "standalone" as const } : {}),
   async rewrites() {
     if (!proxyTarget) return [];

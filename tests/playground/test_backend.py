@@ -969,6 +969,13 @@ class TestRunStatus:
         # within one Run's log, so a flattened thread needs it to key them.
         assert {m["run_id"] for m in thread["messages"]} == {first, second}
 
+        from_first = (await client.get(f"/api/runs/{first}/thread")).json()
+        assert from_first["run_ids"] == [first, second]
+        assert [m["content"] for m in from_first["messages"] if m["role"] == "user"] == [
+            "first",
+            "second",
+        ]
+
 
 class TestConnections:
     """What the console reads back after a refresh.

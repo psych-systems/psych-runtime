@@ -21,7 +21,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { describeApiError } from "@/lib/errors";
 import type {
-  McpServerPreset,
+  McpServerPresetIn,
   PlaygroundSettings,
   ProviderIn,
   ProviderOut,
@@ -118,7 +118,7 @@ export function useSettings() {
   }, []);
 
   const savePreset = useCallback(
-    async (edited: McpServerPreset, previousName: string | null) => {
+    async (edited: McpServerPresetIn, previousName: string | null) => {
       const current = settings?.mcp_servers ?? [];
       const others = current.filter((p) => p.name !== (previousName ?? edited.name));
       await updateMcpSettings([...others, edited]);

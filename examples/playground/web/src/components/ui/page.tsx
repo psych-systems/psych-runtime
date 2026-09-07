@@ -46,7 +46,7 @@ import { cn } from "@/lib/utils";
 export function Page({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className={cn("mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-7", className)}>
+      <div className={cn("mx-auto flex w-full max-w-6xl flex-col gap-7 px-4 py-6 sm:px-7 sm:py-8 lg:px-10", className)}>
         {children}
       </div>
     </div>
@@ -63,11 +63,11 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <h1 className="text-2xl leading-tight font-semibold">{title}</h1>
+    <header className="flex flex-wrap items-start justify-between gap-5 border-b border-border/70 pb-5">
+      <div className="flex min-w-0 flex-col gap-2">
+        <h1 className="text-3xl leading-tight font-semibold">{title}</h1>
         {description && (
-          <p className="max-w-2xl text-body text-muted-foreground">{description}</p>
+          <p className="max-w-2xl text-prose text-muted-foreground">{description}</p>
         )}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
@@ -89,7 +89,7 @@ export function Section({
   className?: string;
 }) {
   return (
-    <section className={cn("flex flex-col gap-3", className)}>
+    <section className={cn("flex flex-col gap-3.5", className)}>
       {(title || actions) && (
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-col gap-1">

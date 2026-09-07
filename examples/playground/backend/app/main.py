@@ -2242,9 +2242,11 @@ async def get_run_thread(run_id: str, request: Request) -> ThreadResponse:
     two drifting, which is what said plainly that the library should provide it.
     """
     state = _state(request)
-    header = await _require_run(state, run_id, await _account(request))
+    account = await _account(request)
+    header = await _require_run(state, run_id, account)
+    newest = await _newest_in_thread(state, account, RunId(run_id))
     try:
-        view = await psych_runtime.thread(state.store, RunId(run_id), scope=header.scope)
+        view = await psych_runtime.thread(state.store, newest, scope=header.scope)
     except AccessDenied as err:
         raise ApiProblem(403, str(err)) from err
     return ThreadResponse(

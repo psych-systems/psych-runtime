@@ -58,8 +58,7 @@ export default function SettingsPage() {
   }, []);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <Page>
+    <Page>
         <PageHeader
           title="Settings"
           description="Model access, the skills your agents can be given, the secrets your connections use, and how this app looks."
@@ -148,7 +147,6 @@ export default function SettingsPage() {
             </p>
           </div>
         )}
-      </Page>
-    </div>
+    </Page>
   );
 }

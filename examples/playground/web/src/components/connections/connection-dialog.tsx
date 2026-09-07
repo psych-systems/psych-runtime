@@ -37,14 +37,19 @@ import {
   type ConnectionPreset,
   type PreloadChoice,
 } from "@/components/connections/connection-state";
-import type { McpGrant, McpServerPreset, McpTransport } from "@/components/settings/types";
+import type {
+  McpGrant,
+  McpServerPreset,
+  McpServerPresetIn,
+  McpTransport,
+} from "@/components/settings/types";
 
 interface ConnectionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The connection being edited, or null to add one. */
   connection: McpServerPreset | null;
-  onSave: (edited: McpServerPreset, previousName: string | null) => Promise<void>;
+  onSave: (edited: McpServerPresetIn, previousName: string | null) => Promise<void>;
   /** Every connection's name, so this form can refuse a duplicate. */
   existingNames: string[];
   /** Names of the secrets this backend holds, offered wherever a credential
@@ -53,6 +58,13 @@ interface ConnectionDialogProps {
 }
 
 const NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
+type Authentication = "none" | "bearer" | "oauth";
+
+function initialAuthentication(connection: McpServerPreset | null): Authentication {
+  if (connection?.oauth != null) return "oauth";
+  if (connection?.credential) return "bearer";
+  return "none";
+}
 
 export function ConnectionDialog({
   open,
@@ -72,7 +84,9 @@ export function ConnectionDialog({
   const [allow, setAllow] = useState((connection?.allow ?? []).join(", "));
   const [optional, setOptional] = useState(connection?.optional ?? false);
   const [preload, setPreload] = useState<PreloadChoice>(preloadChoice(connection?.preload));
-  const [useOAuth, setUseOAuth] = useState(connection?.oauth != null);
+  const [authentication, setAuthentication] = useState<Authentication>(
+    initialAuthentication(connection)
+  );
   const [grant, setGrant] = useState<McpGrant>(connection?.oauth?.grant ?? "client_credentials");
   const [clientId, setClientId] = useState(connection?.oauth?.preregistered_client_id ?? "");
   const [clientSecretCredential, setClientSecretCredential] = useState(
@@ -96,7 +110,7 @@ export function ConnectionDialog({
     setAllow((connection?.allow ?? []).join(", "));
     setOptional(connection?.optional ?? false);
     setPreload(preloadChoice(connection?.preload));
-    setUseOAuth(connection?.oauth != null);
+    setAuthentication(initialAuthentication(connection));
     setGrant(connection?.oauth?.grant ?? "client_credentials");
     setClientId(connection?.oauth?.preregistered_client_id ?? "");
     setClientSecretCredential(connection?.oauth?.client_secret_credential ?? "");
@@ -124,14 +138,17 @@ export function ConnectionDialog({
         url: url.trim(),
         description: description.trim(),
         transport,
-        credential: credential.trim() === "" ? null : credential.trim(),
+        credential:
+          authentication === "bearer" && credential.trim() !== ""
+            ? credential.trim()
+            : null,
         allow: allow
           .split(",")
           .map((entry) => entry.trim())
           .filter((entry) => entry.length > 0),
         optional,
         preload: preloadValue(preload),
-        oauth: useOAuth
+        oauth: authentication === "oauth"
           ? {
               grant,
               preregistered_client_id: clientId.trim() === "" ? null : clientId.trim(),
@@ -139,10 +156,6 @@ export function ConnectionDialog({
                 clientSecretCredential.trim() === "" ? null : clientSecretCredential.trim(),
             }
           : null,
-        // Carried through untouched: the record of the last real connection is
-        // the backend's to write, and an edit to the allow-list is not a
-        // reason to forget that this server once worked.
-        last_connection: connection?.last_connection ?? null,
       };
       await onSave(edited, connection?.name ?? null);
       onOpenChange(false);
@@ -160,7 +173,7 @@ export function ConnectionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="flex max-h-[min(90vh,760px)] flex-col sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit connection" : "Add a connection"}</DialogTitle>
           <DialogDescription>
@@ -169,14 +182,14 @@ export function ConnectionDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex max-h-[65vh] flex-col gap-3 overflow-y-auto pr-1">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-0.5 py-1 pr-2">
           {formError && (
             <Alert variant="destructive">
               <AlertDescription>{formError}</AlertDescription>
             </Alert>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <Label htmlFor="connection-name">Name</Label>
               <Input
@@ -294,15 +307,37 @@ export function ConnectionDialog({
           </div>
 
           <div>
-            <Label htmlFor="connection-credential">Credential</Label>
-            <SecretSelect
-              id="connection-credential"
-              value={credential}
-              onChange={setCredential}
-              secretNames={secretNames}
-            />
-            <CredentialNameNote />
+            <Label htmlFor="connection-authentication">Authentication</Label>
+            <Select
+              value={authentication}
+              onValueChange={(next) => setAuthentication(next as Authentication)}
+            >
+              <SelectTrigger id="connection-authentication" className="mt-1.5 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No authentication</SelectItem>
+                <SelectItem value="bearer">Access token</SelectItem>
+                <SelectItem value="oauth">OAuth</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-caption text-muted-foreground">
+              Choose how this server expects the Playground to identify itself.
+            </p>
           </div>
+
+          {authentication === "bearer" && (
+            <div className="rounded-xl border border-border bg-surface/35 p-4">
+              <Label htmlFor="connection-credential">Access token credential</Label>
+              <SecretSelect
+                id="connection-credential"
+                value={credential}
+                onChange={setCredential}
+                secretNames={secretNames}
+              />
+              <CredentialNameNote />
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2">
             <div>
@@ -315,18 +350,8 @@ export function ConnectionDialog({
             <Switch checked={optional} onCheckedChange={setOptional} />
           </div>
 
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2">
-            <div>
-              <p className="text-body font-medium">Sign in with OAuth</p>
-              <p className="text-caption text-muted-foreground">
-                Turn this on when the server issues its own tokens.
-              </p>
-            </div>
-            <Switch checked={useOAuth} onCheckedChange={setUseOAuth} />
-          </div>
-
-          {useOAuth && (
-            <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+          {authentication === "oauth" && (
+            <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface/35 p-4">
               <div>
                 <Label htmlFor="connection-grant">Sign-in style</Label>
                 <Select value={grant} onValueChange={(next) => setGrant(next as McpGrant)}>
@@ -370,7 +395,7 @@ export function ConnectionDialog({
           )}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="border-t border-border pt-4">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>

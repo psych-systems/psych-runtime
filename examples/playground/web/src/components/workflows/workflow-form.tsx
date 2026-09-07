@@ -241,7 +241,7 @@ export function WorkflowForm() {
               id="wf-name"
               value={name}
               spellCheck={false}
-              placeholder="nightly-refund-check"
+              placeholder="weekly-research-brief"
               aria-invalid={!nameValid || undefined}
               onChange={(e) => setName(e.target.value)}
             />
@@ -252,7 +252,7 @@ export function WorkflowForm() {
             <Input
               id="wf-desc"
               value={description}
-              placeholder="Looks up order A1 and refunds it if it never shipped."
+              placeholder="Collects the latest inputs, checks them, and prepares a concise brief."
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>

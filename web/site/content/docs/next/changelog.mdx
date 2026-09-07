@@ -9,6 +9,33 @@ and breaking changes are expected until the design survives a second consumer.
 
 ## Unreleased
 
+## 0.1.1
+
+### Fixed
+
+- MCP connection edits now send only writable fields, and validation failures
+  are shown as readable field errors.
+- OAuth client-credentials connections renew expired access tokens without
+  requiring a manual reconnect.
+- Opening any message from Activity now keeps the complete conversation
+  available, including later messages.
+- A2A webhook responses are closed after delivery so connection resources are
+  released promptly.
+
+### Changed
+
+- The Playground has a more compact visual system across agents, workflows,
+  connections, settings, chat and Activity. Forms use one page scroll, common
+  agent abilities share one control group, and connection authentication shows
+  only the fields required by the selected method.
+- Activity traces now present each message as a readable sequence of model,
+  tool and waiting events instead of a dense proportional lane chart.
+- Active chat controls use clearer timing choices for guiding the current run,
+  adding a follow-up, or saving a message for the next run.
+- New agents can begin from general assistant, research analyst, or operations
+  coordinator starters. The general starter includes every A2A peer currently
+  saved in the workspace.
+
 ## 0.1.0
 
 The first working runtime. `psych_runtime.dispatch()` admits a Run, a `Worker` claims and

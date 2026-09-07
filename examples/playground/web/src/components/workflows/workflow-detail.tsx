@@ -85,8 +85,7 @@ export function WorkflowDetail({ workflowId }: { workflowId: string }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <Page>
+    <Page>
         <div>
           <Button asChild variant="ghost" size="sm" className="-ml-2">
             <Link href="/workflows">
@@ -244,7 +243,6 @@ export function WorkflowDetail({ workflowId }: { workflowId: string }) {
             </TechnicalDetails>
           </>
         )}
-      </Page>
-    </div>
+    </Page>
   );
 }

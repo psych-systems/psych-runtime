@@ -12,6 +12,12 @@
   // the preview it is a second URL to confuse a reviewer. One hostname each.
   "workers_dev": false,
   "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "psychruntime.com",
+      "custom_domain": true
+    }
+  ],
   "compatibility_date": "2026-09-01",
   "assets": {
     "directory": "out",

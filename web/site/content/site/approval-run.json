@@ -1,6 +1,6 @@
 {
   "generated_by": "scripts/generate_site_fixtures.py",
-  "psych_runtime": "0.1.0",
+  "psych_runtime": "0.1.1",
   "input": "refund order A1, it arrived broken",
   "model": "gpt-4o-mini",
   "approval_selectors": [

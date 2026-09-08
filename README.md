@@ -15,9 +15,10 @@ it back. You supply the model, the tools and the database.
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-green)
 
-**Status: pre-alpha, 0.1.0.** The public API changes between minor releases,
-and every breaking change is in `CHANGELOG.md` before it ships. Names
-scheduled for removal warn for at least one minor release first.
+**Status: pre-alpha.** The public API changes between minor releases, and
+every breaking change is in `CHANGELOG.md` before it ships. Names scheduled
+for removal warn for at least one minor release first. The PyPI badge above
+shows the current release.
 
 ## What it looks like
 

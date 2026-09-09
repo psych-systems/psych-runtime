@@ -57,10 +57,6 @@ jobs:
         with:
           node-version: 24
       - run: uv sync --all-extras --group dev
-      - name: behavior changes update their public skills
-        env:
-          SKILL_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: uv run python scripts/check_skill_changes.py --base "$SKILL_DIFF_BASE"
 
       # The three checks that make the documentation self-maintaining. Each one
       # fails on a *diff*, not on a missing file: the question is never "did

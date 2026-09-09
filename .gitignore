@@ -65,3 +65,13 @@ web/site/out/
 web/**/.wrangler/
 # Local launch builds and isolated install checks.
 /.release-artifacts/
+
+# Local review inputs and security-tool scratch data.
+/.corepack-audit/
+/.pnpm-runner/
+/.pytest-mcp-sdk/
+/.pytest-work/
+/.tmp-tests/
+/.tmp_*.py
+/.trivy-*.tar
+/examples/playground/web/*-win32-x64-msvc-*.tgz

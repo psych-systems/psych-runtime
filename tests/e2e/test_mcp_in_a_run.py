@@ -97,7 +97,7 @@ class TestAnMcpToolInsideARun:
 
             model = (
                 FakeModel()
-                .turn(tool_calls=[("lookup_order", {"order_id": "A1"})])
+                .turn(tool_calls=[("support__lookup_order", {"order_id": "A1"})])
                 .turn(text="It shipped.")
             )
 
@@ -109,9 +109,60 @@ class TestAnMcpToolInsideARun:
             await pool.close_all()
 
         assert report.terminal_state is TerminalState.COMPLETED
-        assert "lookup_order" in offered, "the server's tools never reached the model"
+        assert "support__lookup_order" in offered, "the server's tools never reached the model"
         settled = [(c.tool, c.outcome.value if c.outcome else None) for c in report.tool_calls]
-        assert settled == [("lookup_order", "ok")]
+        assert settled == [("support__lookup_order", "ok")]
+
+    async def test_same_named_tools_are_qualified_and_reach_the_selected_server(
+        self, transport: HttpTransport
+    ) -> None:
+        called: list[str] = []
+        async with (
+            McpStubServer([wire_tool("get_tool_context")]) as admin,
+            McpStubServer([wire_tool("get_tool_context")]) as notification,
+        ):
+
+            def admin_context(_args: dict[str, object]) -> tuple[str, bool]:
+                called.append("eq-admin")
+                return "admin", False
+
+            def notification_context(_args: dict[str, object]) -> tuple[str, bool]:
+                called.append("eq-notification")
+                return "notification", False
+
+            admin.call_handlers["get_tool_context"] = admin_context
+            notification.call_handlers["get_tool_context"] = notification_context
+            pool = McpPool(transport=transport, secrets=InMemorySecretResolver())
+            spec = psych_runtime.AgentSpec(
+                name="support",
+                instructions="use the tools",
+                model=psych_runtime.ModelRef(model="fake-standard"),
+                mcp_servers=(
+                    make_server(admin.url, name="eq-admin"),
+                    make_server(notification.url, name="eq-notification"),
+                ),
+                limits=psych_runtime.Limits(max_turns=6, deadline_seconds=60),
+            )
+            model = (
+                FakeModel()
+                .turn(
+                    tool_calls=[
+                        ("eq-notification__get_tool_context", {"tool_id": "sendNotification"})
+                    ]
+                )
+                .turn(text="Done.")
+            )
+
+            report = await _run(spec, model, McpTools(pool))
+            offered = {tool.name for request in model.requests for tool in request.tools}
+            await pool.close_all()
+
+        assert {
+            "eq-admin__get_tool_context",
+            "eq-notification__get_tool_context",
+        } <= offered
+        assert called == ["eq-notification"]
+        assert report.terminal_state is TerminalState.COMPLETED
 
     async def test_a_tool_the_spec_excluded_is_refused_even_when_named_directly(
         self, transport: HttpTransport
@@ -248,6 +299,7 @@ class TestAnOAuthProtectedServerInsideARun:
                             grant="client_credentials",
                             preregistered_client_id="shop-client",
                             client_secret_credential="shop-secret",
+                            issuer=auth.base_url,
                         ),
                     ),
                 ),
@@ -255,7 +307,7 @@ class TestAnOAuthProtectedServerInsideARun:
             )
             model = (
                 FakeModel()
-                .turn(tool_calls=[("search_products", {"query": "socks"})])
+                .turn(tool_calls=[("support__search_products", {"query": "socks"})])
                 .turn(text="Found three.")
             )
 
@@ -265,7 +317,7 @@ class TestAnOAuthProtectedServerInsideARun:
 
         assert report.terminal_state is TerminalState.COMPLETED
         settled = [(c.tool, c.outcome.value if c.outcome else None) for c in report.tool_calls]
-        assert settled == [("search_products", "ok")]
+        assert settled == [("support__search_products", "ok")]
         assert "client_credentials" in token_grants, (
             f"the client-credentials grant was never exercised: {token_grants}"
         )

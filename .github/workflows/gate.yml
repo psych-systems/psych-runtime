@@ -1,5 +1,8 @@
 name: gate
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: ["**"]
@@ -18,11 +21,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
+      - name: runtime behavior changes update their skills
+        env:
+          SKILL_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: uv run python scripts/check_skill_changes.py --base "$SKILL_DIFF_BASE"
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy --strict .
@@ -34,17 +44,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
-          version: 10
-      - uses: actions/setup-node@v4
+          version: 12.3.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
       - run: uv sync --all-extras --group dev
+      - name: behavior changes update their public skills
+        env:
+          SKILL_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: uv run python scripts/check_skill_changes.py --base "$SKILL_DIFF_BASE"
 
       # The three checks that make the documentation self-maintaining. Each one
       # fails on a *diff*, not on a missing file: the question is never "did
@@ -77,8 +93,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
@@ -99,8 +117,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
@@ -118,8 +138,10 @@ jobs:
     # scratch on every run. The four that do need one are the `stores` jobs
     # below, and they run in parallel with this rather than in front of it.
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
@@ -157,14 +179,16 @@ jobs:
           --health-cmd "pg_isready -U psych -d psych_test" --health-interval 2s
           --health-timeout 5s --health-retries 30
       dynamodb:
-        image: amazon/dynamodb-local:latest
+        image: amazon/dynamodb-local:latest@sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab
         ports: ["8000:8000"]
     env:
       PSYCH_TEST_POSTGRES_DSN: postgresql://psych:psych@127.0.0.1:5432/psych_test
       PSYCH_TEST_DYNAMODB_ENDPOINT: http://127.0.0.1:8000
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
@@ -193,8 +217,10 @@ jobs:
     env:
       PSYCH_TEST_MYSQL_DSN: mysql://psych:psych@127.0.0.1:3306/psych_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
@@ -210,8 +236,10 @@ jobs:
     # everything else, so the gate's wall clock is the slowest job rather than
     # the sum of all of them.
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
@@ -305,8 +333,10 @@ jobs:
     env:
       PSYCH_TEST_POSTGRES_DSN: postgresql://psych:psych@127.0.0.1:5432/psych_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --all-extras --group dev
@@ -320,10 +350,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
       # 25k lines of TypeScript that only `next build` inside the image job
       # ever checked, which is a Docker build away from the change that broke
       # them. `typecheck` runs `next typegen` first: the pages annotate
@@ -337,14 +369,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The development container has no container runtime, so this job is the
       # only place the image is ever built. A Dockerfile nobody builds is a
       # Dockerfile that has stopped working.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - name: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           load: true

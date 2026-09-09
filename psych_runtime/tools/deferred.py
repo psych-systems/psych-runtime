@@ -69,6 +69,7 @@ from psych_runtime.core.errors import AccessDenied
 from psych_runtime.core.messages import ToolDefinition
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.spec import AgentSpec, McpServer
+from psych_runtime.tools.mcp_names import mcp_tool_name
 
 __all__ = [
     "CALL_TOOL",
@@ -422,5 +423,8 @@ class DeferredDiscovery:
                 # it again against all three planes. Reaching a tool the Spec
                 # excluded is refused there, whichever door the model used.
                 return await self._catalog.call(
-                    spec, self._scope, target, dict(raw) if isinstance(raw, dict) else {}
+                    spec,
+                    self._scope,
+                    mcp_tool_name(server, target),
+                    dict(raw) if isinstance(raw, dict) else {},
                 )

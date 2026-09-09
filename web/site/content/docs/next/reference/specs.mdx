@@ -385,7 +385,7 @@ offers, which is the third link in the chain of DESIGN.md §10.5.
 *model*
 
 ```python
-class McpOAuth(*, grant: Literal['authorization_code', 'client_credentials'] = 'client_credentials', preregistered_client_id: Annotated[str | None, MaxLen(max_length=512)] = None, client_secret_credential: Annotated[str | None, MaxLen(max_length=256)] = None, cimd_url: Annotated[str | None, MaxLen(max_length=2048)] = None, allow_dynamic_registration: bool = True, application_type: Literal['native', 'web'] = 'native', client_name: Annotated[str, MaxLen(max_length=256)] = 'psych', redirect_uris: tuple[str, ...] = ())
+class McpOAuth(*, grant: Literal['authorization_code', 'client_credentials'] = 'client_credentials', preregistered_client_id: Annotated[str | None, MaxLen(max_length=512)] = None, client_secret_credential: Annotated[str | None, MaxLen(max_length=256)] = None, issuer: Annotated[str | None, MaxLen(max_length=2048)] = None, cimd_url: Annotated[str | None, MaxLen(max_length=2048)] = None, allow_dynamic_registration: bool = True, application_type: Literal['native', 'web'] = 'native', client_name: Annotated[str, MaxLen(max_length=256)] = 'psych', redirect_uris: tuple[str, ...] = ())
 ```
 
 OAuth 2.1 configuration for one MCP server: which grant this
@@ -462,6 +462,7 @@ verified against running code rather than assumed.
 | `grant` | `Literal` |  |
 | `preregistered_client_id` | `str | None` |  |
 | `client_secret_credential` | `str | None` |  |
+| `issuer` | `str | None` |  |
 | `cimd_url` | `str | None` |  |
 | `allow_dynamic_registration` | `bool` |  |
 | `application_type` | `Literal` |  |

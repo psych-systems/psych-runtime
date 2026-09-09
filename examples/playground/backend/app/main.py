@@ -479,6 +479,11 @@ def _server_from_preset(preset: McpServerPreset, callback_url: str) -> psych_run
                 grant=preset.oauth.grant,
                 preregistered_client_id=preset.oauth.preregistered_client_id,
                 client_secret_credential=preset.oauth.client_secret_credential,
+                issuer=preset.oauth.issuer,
+                cimd_url=preset.oauth.cimd_url,
+                allow_dynamic_registration=preset.oauth.allow_dynamic_registration,
+                application_type=preset.oauth.application_type,
+                client_name=preset.oauth.client_name,
                 redirect_uris=(
                     (callback_url,) if preset.oauth.grant == "authorization_code" else ()
                 ),

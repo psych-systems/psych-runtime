@@ -452,6 +452,7 @@ export interface McpOAuthIn {
   grant?: "authorization_code" | "client_credentials";
   preregistered_client_id?: string | null;
   client_secret_credential?: string | null;
+  issuer?: string | null;
 }
 
 export interface McpServerIn {

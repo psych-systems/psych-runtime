@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertCircleIcon,
   ArrowLeftIcon,
@@ -12,10 +12,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { StatusPill, toLifecycle } from "@/components/ui/status";
 import { SubagentPanel } from "@/components/chat/subagent-panel";
-import { TraceDetail } from "@/components/trace/trace-detail";
-import { TraceList } from "@/components/trace/trace-list";
-import { ThreadSummary } from "@/components/trace/thread-summary";
+import { TraceWorkspace } from "@/components/trace/trace-workspace";
+import { costText, ThreadSummary } from "@/components/trace/thread-summary";
 import { TraceTimeline } from "@/components/trace/trace-timeline";
+import type { TimeRange } from "@/components/trace/trace-timeline";
 import {
   buildThreadTraceModel,
   buildTraceModel,
@@ -25,6 +25,7 @@ import { useRunStatus } from "@/hooks/use-run-status";
 import { useSubagents } from "@/hooks/use-subagents";
 import { useThreadReport } from "@/hooks/use-thread-report";
 import { Copyable } from "@/components/activity/copyable";
+import { formatDuration } from "@/lib/format";
 import type { RunReport, ThreadReport, ThreadTotals } from "@/lib/types";
 
 /**
@@ -68,6 +69,7 @@ import type { RunReport, ThreadReport, ThreadTotals } from "@/lib/types";
 type Scope = string | null;
 
 export function TraceView({ runId }: { runId: string }) {
+  const router = useRouter();
   const { thread, loading, error, refresh } = useThreadReport(runId);
   const [scope, setScope] = useState<Scope>(null);
 
@@ -108,6 +110,7 @@ export function TraceView({ runId }: { runId: string }) {
   }, [thread, report]);
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [timeRange, setTimeRange] = useState<TimeRange>({ start: 0, end: 0 });
   const [selectionFor, setSelectionFor] = useState<unknown>(null);
   if (model !== selectionFor) {
     // A freshly loaded model, or a change of scope, resets the selection to
@@ -115,10 +118,16 @@ export function TraceView({ runId }: { runId: string }) {
     // would commit a second update after mount.
     setSelectionFor(model);
     setSelectedKey(model?.entries[0]?.key ?? null);
+    setTimeRange({ start: 0, end: model?.totalSeconds ?? 0 });
   }
 
   const selectedEntry =
     model?.entries.find((e) => e.key === selectedKey) ?? null;
+  const visibleEntries = model?.entries.filter((entry) => {
+    if (!entry.timed || entry.offsetSeconds === null || entry.durationSeconds === null) return true;
+    const end = entry.offsetSeconds + entry.durationSeconds;
+    return end >= timeRange.start && entry.offsetSeconds <= timeRange.end;
+  }) ?? [];
   const totals = thread === null ? null : scopedTotals(thread, report);
   // The report's terminal state is the fallback only while the status read is
   // in flight, and `toLifecycle` knows the terminal vocabulary.
@@ -140,14 +149,15 @@ export function TraceView({ runId }: { runId: string }) {
             switcher below can move `viewing` to an earlier turn, and this
             link used to send you to the newest one regardless. */}
         <Button
-          asChild
           variant="ghost"
           size="icon-sm"
-          aria-label="Back to this conversation"
+          aria-label="Go back"
+          onClick={() => {
+            if (window.history.length > 1) router.back();
+            else router.push(`/activity/${scope ?? runId}`);
+          }}
         >
-          <Link href={`/activity/${scope ?? runId}`}>
-            <ArrowLeftIcon className="size-4" />
-          </Link>
+          <ArrowLeftIcon className="size-4" />
         </Button>
         <span className="text-body font-medium">Trace</span>
         {lifecycle && <StatusPill state={lifecycle} size="sm" />}
@@ -183,10 +193,20 @@ export function TraceView({ runId }: { runId: string }) {
           </div>
         )}
 
+        {totals && (
+          <span className="ml-auto hidden whitespace-nowrap text-micro text-muted-foreground xl:inline">
+            {totals.messages.toLocaleString()} {totals.messages === 1 ? "message" : "messages"}
+            {" / "}{totals.model_calls.toLocaleString()} model calls
+            {" / "}{totals.tool_calls.toLocaleString()} tool calls
+            {" / "}{totals.cost_amount === null ? "cost unknown" : costText(totals)}
+            {" / "}{formatDuration(totals.wall_clock_seconds)}
+          </span>
+        )}
+
         <Button
           variant="ghost"
           size="icon-sm"
-          className="ml-auto"
+          className={totals ? undefined : "ml-auto"}
           aria-label="Refresh"
           onClick={refresh}
           disabled={loading}
@@ -235,8 +255,10 @@ export function TraceView({ runId }: { runId: string }) {
           <TraceTimeline
             entries={model.entries}
             totalSeconds={model.totalSeconds}
+            range={timeRange}
             selectedKey={selectedKey}
             onSelect={setSelectedKey}
+            onRangeChange={setTimeRange}
           />
 
           {model.entries.length === 0 ? (
@@ -245,23 +267,12 @@ export function TraceView({ runId }: { runId: string }) {
               suspension or step.
             </div>
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-              <TraceList
-                entries={model.entries}
-                selectedKey={selectedKey}
-                onSelect={setSelectedKey}
-                className="md:w-[420px] md:flex-none md:border-r md:border-border"
-              />
-              <div className="min-h-0 flex-1 overflow-y-auto border-t border-border md:border-t-0">
-                {selectedEntry ? (
-                  <TraceDetail entry={selectedEntry} />
-                ) : (
-                  <div className="flex h-full items-center justify-center p-6 text-body text-muted-foreground">
-                    Select a row to see its detail.
-                  </div>
-                )}
-              </div>
-            </div>
+            <TraceWorkspace
+              entries={visibleEntries}
+              selectedEntry={selectedEntry}
+              selectedKey={selectedKey}
+              onSelect={setSelectedKey}
+            />
           )}
         </>
       )}

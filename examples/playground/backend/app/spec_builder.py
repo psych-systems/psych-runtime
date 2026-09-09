@@ -167,6 +167,7 @@ def _build_mcp_server(
             grant=entry.oauth.grant,
             preregistered_client_id=entry.oauth.preregistered_client_id,
             client_secret_credential=entry.oauth.client_secret_credential,
+            issuer=entry.oauth.issuer,
             cimd_url=entry.oauth.cimd_url,
             allow_dynamic_registration=entry.oauth.allow_dynamic_registration,
             application_type=entry.oauth.application_type,

@@ -343,6 +343,7 @@ class TestMcpOAuthHashImpact:
             "grant",
             "preregistered_client_id",
             "client_secret_credential",
+            "issuer",
             "cimd_url",
             "allow_dynamic_registration",
             "application_type",

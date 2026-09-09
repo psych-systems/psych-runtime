@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 # The console, built once.
 # ---------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS web
+FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS web
 
 WORKDIR /build
 COPY examples/playground/web/package.json examples/playground/web/package-lock.json ./
@@ -62,7 +62,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Python dependencies, resolved into a virtualenv that gets copied whole.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS deps
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS deps
 
 # Build tools live here and nowhere near the final image. A wheel that needs
 # compiling gets compiled once, and the compiler stays behind.
@@ -70,7 +70,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.7.8 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /usr/local/bin/uv
 
 WORKDIR /src
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
@@ -96,7 +96,7 @@ RUN uv sync --frozen --no-dev --extra playground --extra mysql --extra dynamodb
 # ---------------------------------------------------------------------------
 # What actually ships: two runtimes, no toolchain.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS runtime
 
 # Node is needed at run time because the console is a server-rendered Next
 # app, not a static bundle. The npm CLI and the build toolchain are not.

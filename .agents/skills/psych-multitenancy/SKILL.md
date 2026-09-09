@@ -131,6 +131,12 @@ The policy is checked **before** the connection opens, so a denial never touches
 the network. It runs on every outbound call, including the read side of a
 streamed response, so keep it fast and side-effect free.
 
+When a protocol SDK must own its streaming connection, `HttpTransport` creates
+the SDK client with a request hook that applies the same policy. Metadata
+discovery, OAuth token exchange, redirects, retries, and ordinary MCP requests
+all cross that hook. Constructing a separate SDK HTTP client at the MCP call
+site bypasses the seam and is rejected by the egress tests.
+
 Passing an `httpx` client with `follow_redirects=True` raises. A redirect is a
 second request to a host the policy never saw, which turns one allowed URL into
 an arbitrary one.

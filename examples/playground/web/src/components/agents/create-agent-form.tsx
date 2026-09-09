@@ -122,6 +122,7 @@ function choiceToMcpServer(choice: ConnectionChoice, preset: McpServerPreset): M
           grant: preset.oauth.grant,
           preregistered_client_id: preset.oauth.preregistered_client_id ?? null,
           client_secret_credential: preset.oauth.client_secret_credential ?? null,
+          issuer: preset.oauth.issuer ?? null,
         }
       : null,
   };

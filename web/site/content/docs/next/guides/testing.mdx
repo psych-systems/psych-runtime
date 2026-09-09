@@ -128,6 +128,11 @@ It records what it was asked on `.requests` and `.calls`, and can be told to
 stall, break a stream mid-response, demand OAuth, or return each documented
 error code. `make_server` and `wire_tool` assemble a Spec against one.
 
+Set `tools_page_size` to exercise catalogue pagination and
+`structured_results[tool_name]` to return typed result data. Use
+`modern_listener_ids` to observe active subscriptions and
+`close_modern_listeners()` to prove that a client reconnects its listener.
+
 It lives in the shipped package rather than the test suite because it has two
 consumers and only one is a test: the playground drives it for the scenarios a
 person clicks through. Nothing in it imports pytest, so depending on it costs an

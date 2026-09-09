@@ -6,18 +6,9 @@ through ``AgentLoop`` and ``FakeModel``, the same shape as
 ``tests/e2e/test_agent_run.py``, so the assertions go through the log rather
 than through internal state.
 
-## A historical note on the classes below
-
-``TestReadingALargeResultByHandle`` and ``TestReadingAHandleFromAnotherRun``
-wire ``read_tool_output`` in locally, through a ``ToolResolver`` subclass and a
-``ToolExecutor`` ``mcp_caller``, from a time when ``AgentLoop`` did not yet do
-this natively. It now does (``_turn`` already offers
-``read_tool_output_tools(state)`` and ``_execute_and_record`` already routes
-``READ_TOOL_OUTPUT`` calls to ``psych_runtime.tools.large_results`` directly), so the
-local wiring below is redundant rather than load-bearing; it is left in place
-because it still passes and rewriting passing tests is not this ticket's job.
-``TestOffloadAcrossStoreAdapters`` below, added later, uses the native path
-with no local wiring, which is now the shape every new test should use.
+The tests use the runtime's native reader path. The reader is a built-in whose
+availability changes with Run state; registering a second local copy would hide
+name collisions that the resolver must reject.
 """
 
 from __future__ import annotations
@@ -47,9 +38,9 @@ from psych_runtime.store.mysql import MySQLStore
 from psych_runtime.store.port import RunHeader, RunState, Store
 from psych_runtime.store.postgres import PostgresStore
 from psych_runtime.testing.fake_model import FakeModel, ToolCallScript
-from psych_runtime.tools.large_results import TOOL_NAME, read_tool_output, read_tool_output_tools
+from psych_runtime.tools.large_results import TOOL_NAME, read_tool_output
 from psych_runtime.tools.registry import ToolRegistry
-from psych_runtime.tools.resolver import ResolvedTools, ToolResolver
+from psych_runtime.tools.resolver import ToolResolver
 
 pytestmark = pytest.mark.e2e
 
@@ -84,39 +75,6 @@ def build_registry() -> ToolRegistry:
         return "\n".join(f"line {i} of the big result" for i in range(rows))
 
     return registry
-
-
-class _ResolverWithReader(ToolResolver):
-    """Adds ``read_tool_output`` to the offered set when the Run has one to
-    read, the way ``AgentLoop`` should call ``read_tool_output_tools`` and
-    pass it as ``extra=`` (see the module docstring)."""
-
-    def __init__(self, registry: ToolRegistry, journal: Journal) -> None:
-        super().__init__(registry)
-        self._journal = journal
-
-    async def resolve(
-        self,
-        spec: Any,
-        scope: Scope,
-        *,
-        failure_streaks: Any = None,
-        extra: Any = (),
-    ) -> ResolvedTools:
-        combined = (*extra, *read_tool_output_tools(self._journal.state))
-        return await super().resolve(spec, scope, failure_streaks=failure_streaks, extra=combined)
-
-
-def _mcp_caller(journal: Journal) -> Any:
-    """Routes ``read_tool_output`` to this module; anything else is an error,
-    the same as a Run with no MCP servers configured at all."""
-
-    async def caller(name: str, arguments: dict[str, Any]) -> Any:
-        if name == TOOL_NAME:
-            return read_tool_output(journal.state, arguments)
-        raise AccessDenied(f"tool {name!r}", "no mcp server is configured for this run")
-
-    return caller
 
 
 async def start_run(store: Store, spec: AgentSpec, message: str = "read me the report") -> RunId:
@@ -162,8 +120,8 @@ async def make_loop(
         journal,
         spec,
         model,
-        _ResolverWithReader(registry, journal),
-        ToolExecutor(registry, mcp_caller=_mcp_caller(journal)),
+        ToolResolver(registry),
+        ToolExecutor(registry),
     )
 
 

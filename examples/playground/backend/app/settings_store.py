@@ -87,6 +87,7 @@ class McpOAuthPreset(BaseModel):
     """A credential *name*, resolved later through ``SecretResolver`` -- never
     a raw secret, matching ``McpOAuth.client_secret_credential`` in
     ``psych_runtime.core.spec`` (DESIGN.md §10.4)."""
+    issuer: str | None = None
     cimd_url: str | None = None
     allow_dynamic_registration: bool = True
     application_type: Literal["native", "web"] = "native"

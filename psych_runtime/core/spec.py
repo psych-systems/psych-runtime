@@ -280,6 +280,14 @@ class McpOAuth(_SpecModel):
     ``McpServer.credential``. Never a literal secret: only a pre-registered
     confidential client needs this, and even then this Spec carries its name,
     not its value."""
+    issuer: str | None = Field(default=None, max_length=2048)
+    """The authorization server issuer for a pre-registered client.
+
+    Set this for ``client_credentials`` so the SDK will send the client
+    secret only to metadata belonging to the expected issuer. It remains
+    optional for compatibility with servers that discover the issuer from
+    protected-resource metadata.
+    """
     cimd_url: str | None = Field(default=None, max_length=2048)
     """An HTTPS URL, controlled by the consumer, hosting this client's own
     Client ID Metadata Document. Public by construction -- it is meant to be
@@ -293,7 +301,7 @@ class McpOAuth(_SpecModel):
     when a caller does not pass a more specific redirect URI -- so, like
     ``ModelRef.fallbacks``, this is never sorted."""
 
-    @field_validator("preregistered_client_id", "client_secret_credential", "cimd_url")
+    @field_validator("preregistered_client_id", "client_secret_credential", "issuer", "cimd_url")
     @classmethod
     def _normalise(cls, value: str | None) -> str | None:
         return _normalise_text(value) if value is not None else None
@@ -315,16 +323,10 @@ class McpServer(_SpecModel):
     the ``initialize``-handshake dialect for a 2025-11-25 or 2025-06-18
     server, all through one connection.
 
-    ``"sse"`` selects the pre-2025-03-26 HTTP+SSE transport as a pool-key
-    discriminator, kept only so a Spec that already declares it keeps
-    resolving: it is Deprecated under MCP's feature lifecycle policy (a
-    twelve-month window applies) and new Specs should use ``"http"``.
-    ``psych_runtime.tools.mcp`` does not implement HTTP+SSE's distinct two-endpoint
-    wire dialect separately from Streamable HTTP's; a server old enough to
-    need it should still be reachable through the same
-    ``initialize``-handshake fallback path Streamable HTTP negotiates down
-    to, but that is incidental compatibility, not a dedicated
-    implementation, and it receives no further investment.
+    ``"sse"`` selects the pre-2025-03-26 HTTP+SSE transport. The official MCP
+    client implements its separate event and message endpoints. MCP has
+    deprecated this transport, so new Specs should use ``"http"`` unless they
+    must connect to an older server.
 
     ``"stdio"`` was removed from this enum rather than kept alongside a real
     implementation. The MCP spec has not deprecated it, and it is the

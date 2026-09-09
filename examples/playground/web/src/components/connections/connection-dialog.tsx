@@ -92,6 +92,7 @@ export function ConnectionDialog({
   const [clientSecretCredential, setClientSecretCredential] = useState(
     connection?.oauth?.client_secret_credential ?? ""
   );
+  const [issuer, setIssuer] = useState(connection?.oauth?.issuer ?? "");
 
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -114,6 +115,7 @@ export function ConnectionDialog({
     setGrant(connection?.oauth?.grant ?? "client_credentials");
     setClientId(connection?.oauth?.preregistered_client_id ?? "");
     setClientSecretCredential(connection?.oauth?.client_secret_credential ?? "");
+    setIssuer(connection?.oauth?.issuer ?? "");
     setFormError(null);
     setFieldErrors({});
   }
@@ -154,6 +156,7 @@ export function ConnectionDialog({
               preregistered_client_id: clientId.trim() === "" ? null : clientId.trim(),
               client_secret_credential:
                 clientSecretCredential.trim() === "" ? null : clientSecretCredential.trim(),
+              issuer: issuer.trim() === "" ? null : issuer.trim(),
             }
           : null,
       };
@@ -391,6 +394,22 @@ export function ConnectionDialog({
                 />
                 <CredentialNameNote />
               </div>
+              {grant === "client_credentials" && (
+                <div>
+                  <Label htmlFor="connection-oauth-issuer">Authorization server</Label>
+                  <Input
+                    id="connection-oauth-issuer"
+                    className="mt-1.5 font-technical"
+                    placeholder="https://auth.example.com"
+                    value={issuer}
+                    onChange={(event) => setIssuer(event.target.value)}
+                  />
+                  <p className="mt-1 text-caption text-muted-foreground">
+                    The issuer that registered this client. Credentials are sent only to this
+                    authorization server.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

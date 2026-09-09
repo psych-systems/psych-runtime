@@ -71,6 +71,14 @@ the model was shown, and that is not a control, because the model chooses the
 name it sends. A name that does not survive narrowing is refused however the
 model got hold of it.
 
+Every remote tool is exposed to the model as `server__tool`, for example
+`github__search_issues`. The qualified name preserves the owning connection
+through execution and replay, and lets two servers safely publish the same raw
+tool name. Deferred `call_tool` accepts a server plus its raw tool name and
+performs the same qualification internally. If any local, remote, built-in, or
+peer tool still resolves to a duplicate public name, resolution fails instead
+of silently choosing one.
+
 ## Resolution is per turn, never at boot
 
 `resolve_mcp_server` re-narrows against the live catalogue on every turn, so a
@@ -80,6 +88,12 @@ and it is one of the ten things Psych's e2e suite asserts.
 
 The catalogue itself refreshes on connect, on a TTL sweep, on demand, and on
 `notifications/tools/list_changed`.
+
+The official client follows every `nextCursor` from `tools/list`; a paginated
+server therefore contributes its complete catalogue. Modern
+`subscriptions/listen` and the older tools-list-changed notification both
+invalidate the same scoped cache. Structured tool results are retained and
+rendered alongside text instead of being discarded.
 
 ## Large servers: deferred disclosure
 
@@ -124,8 +138,9 @@ quietly, so the default is the strict one.
 client negotiates down to 2025-11-25 and 2025-06-18 servers through one
 connection, deciding once at connect rather than branching per request.
 
-`"sse"` is kept only so an existing Spec keeps resolving. It is Deprecated under
-MCP's lifecycle policy; use `"http"` for anything new.
+`"sse"` uses the older HTTP+SSE transport through the official MCP client. MCP
+has deprecated it, so use `"http"` for new connections unless the server only
+supports the older transport.
 
 `"stdio"` is **not** an option. It was removed rather than left as an enum
 member Psych never implemented: a Spec could ask for it, validation passed, and
@@ -139,6 +154,8 @@ a silent revival.
 - **A server behind OAuth needs an `OAuthClient` on the pool.** Without one, its
   first 401 is `McpServerUnreachable` with a message saying the server wants
   OAuth. See `psych-mcp-oauth`.
+- **Structured tool results are preserved.** Text content is returned as text;
+  `structuredContent` is serialized when it carries additional information.
 - **`describe_server` on `McpTools` is called at every turn boundary,** so it
   must be a cheap in-memory lookup. It is deliberately not `async`, which is
   that signature's way of saying "no IO here".

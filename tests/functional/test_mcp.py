@@ -18,12 +18,15 @@ mocking of the client under test.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import pytest
+from mcp.client.auth import OAuthClientProvider
+from mcp.client.auth.extensions.client_credentials import ClientCredentialsOAuthProvider
 
 from psych_runtime.core.errors import AccessDenied
 from psych_runtime.core.messages import ToolDefinition
@@ -243,6 +246,29 @@ class TestCredentialNeverLeaks:
 
 
 class TestCatalogueCaching:
+    @pytest.mark.parametrize("modern", [False, True])
+    async def test_every_catalogue_page_is_loaded(
+        self, transport: HttpTransport, modern: bool
+    ) -> None:
+        async with McpStubServer(
+            [wire_tool(f"tool_{index}") for index in range(5)], modern=modern
+        ) as stub:
+            stub.tools_page_size = 2
+            stub.tools_ttl_ms = 60_000
+            pool = McpPool(transport=transport, secrets=InMemorySecretResolver())
+
+            connection = await pool.get_or_connect(Scope(tenant="tenant-a"), make_server(stub.url))
+
+            assert [tool.name for tool in await connection.list_tools()] == [
+                "tool_0",
+                "tool_1",
+                "tool_2",
+                "tool_3",
+                "tool_4",
+            ]
+            assert stub.list_count == 3
+            await pool.close_all()
+
     async def test_a_newly_connected_server_is_usable_with_no_restart(
         self, transport: HttpTransport
     ) -> None:
@@ -346,10 +372,14 @@ class TestCatalogueCaching:
             await stub.wait_for_sse_listener()
             stub.set_tools([wire_tool("echo"), wire_tool("read_orders")])
             await stub.push_list_changed()
-            await asyncio.sleep(0.2)  # let the background listener react
+            after = before
+            for _ in range(100):
+                await asyncio.sleep(0.01)
+                after = await connection.list_tools()
+                if sorted(tool.name for tool in after) == ["echo", "read_orders"]:
+                    break
 
             assert stub.list_count > list_count_before  # refreshed by the push
-            after = await connection.list_tools()  # within the (long) TTL
             assert sorted(t.name for t in after) == ["echo", "read_orders"]
             assert stub.list_count == list_count_before + 1  # not re-requested above
 
@@ -472,6 +502,22 @@ class TestCallTool:
 
             assert result.content == "hello world"
             assert result.is_error is False
+            await pool.close_all()
+
+    async def test_structured_content_is_preserved_for_the_model(
+        self, transport: HttpTransport
+    ) -> None:
+        async with McpStubServer([wire_tool("lookup")], modern=True) as stub:
+            stub.call_handlers["lookup"] = lambda _args: ("record found", False)
+            stub.structured_results["lookup"] = {"id": "A1", "active": True}
+            pool = McpPool(transport=transport, secrets=InMemorySecretResolver())
+            connection = await pool.get_or_connect(Scope(tenant="tenant-a"), make_server(stub.url))
+
+            result = await connection.call_tool("lookup", {})
+
+            assert result.content == (
+                'record found\n\nStructured content:\n{"active":true,"id":"A1"}'
+            )
             await pool.close_all()
 
     async def test_an_error_result_is_reported_as_such(self, transport: HttpTransport) -> None:
@@ -735,6 +781,7 @@ class TestCacheableResult:
         stub actually received, not against internal state."""
         async with McpStubServer([wire_tool("echo")], modern=True) as stub:
             stub.tools_cache_scope = "private"
+            stub.tools_ttl_ms = 60_000
             secrets = InMemorySecretResolver()
             secrets.set(Scope(tenant="tenant-a"), "api_key", "token-a")
             secrets.set(Scope(tenant="tenant-b"), "api_key", "token-b")
@@ -764,6 +811,7 @@ class TestSubscriptionsListen:
         self, transport: HttpTransport
     ) -> None:
         async with McpStubServer([wire_tool("echo")], modern=True) as stub:
+            stub.tools_ttl_ms = 60_000
             secrets = InMemorySecretResolver()
             scope = Scope(tenant="tenant-a")
             pool = McpPool(transport=transport, secrets=secrets, catalogue_ttl_seconds=60.0)
@@ -777,13 +825,48 @@ class TestSubscriptionsListen:
             await stub.wait_for_sse_listener()
             stub.set_tools([wire_tool("echo"), wire_tool("read_orders")])
             await stub.push_list_changed()
-            await asyncio.sleep(0.2)
+            after = before
+            for _ in range(100):
+                after = await connection.list_tools()
+                if sorted(t.name for t in after) == ["echo", "read_orders"]:
+                    break
+                await asyncio.sleep(0.01)
 
             assert stub.list_count > list_count_before  # invalidated by the push
-            after = await connection.list_tools()  # within the (long) TTL
             assert sorted(t.name for t in after) == ["echo", "read_orders"]
             assert stub.list_count == list_count_before + 1  # not re-requested above
 
+            await pool.close_all()
+
+    async def test_a_closed_subscription_is_reopened_and_refetched(
+        self, transport: HttpTransport
+    ) -> None:
+        async with McpStubServer([wire_tool("echo")], modern=True) as stub:
+            stub.tools_ttl_ms = 60_000
+            pool = McpPool(
+                transport=transport,
+                secrets=InMemorySecretResolver(),
+                catalogue_ttl_seconds=60.0,
+            )
+            connection = await pool.get_or_connect(Scope(tenant="tenant-a"), make_server(stub.url))
+            await stub.wait_for_sse_listener()
+            previous_ids = await stub.close_modern_listeners()
+            list_count_before = stub.list_count
+
+            for _ in range(200):
+                current_ids = stub.modern_listener_ids
+                if current_ids and current_ids != previous_ids:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert current_ids
+            assert current_ids != previous_ids
+            for _ in range(200):
+                if stub.list_count > list_count_before:
+                    break
+                await asyncio.sleep(0.01)
+            assert stub.list_count > list_count_before
+            assert [tool.name for tool in await connection.list_tools()] == ["echo"]
             await pool.close_all()
 
 
@@ -989,14 +1072,20 @@ class _AuthServerStub:
 
     async def _on_connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            _method, path, _headers, body = await _read_request(reader)
-            await self._handle(writer, path, body)
+            _method, path, headers, body = await _read_request(reader)
+            await self._handle(writer, path, headers, body)
         finally:
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
 
-    async def _handle(self, writer: asyncio.StreamWriter, path: str, body: bytes) -> None:
+    async def _handle(
+        self,
+        writer: asyncio.StreamWriter,
+        path: str,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> None:
         if path in (
             "/.well-known/oauth-authorization-server",
             "/.well-known/openid-configuration",
@@ -1011,7 +1100,7 @@ class _AuthServerStub:
             await self._handle_authorize(writer, path)
             return
         if path == "/token":
-            await self._handle_token(writer, body)
+            await self._handle_token(writer, headers, body)
             return
         await _write_json(writer, 404, {"error": "not_found"})
 
@@ -1032,8 +1121,14 @@ class _AuthServerStub:
         location = f"{redirect_uri}{separator}{urlencode(params)}"
         await _write_status(writer, 302, headers={"Location": location, "Content-Length": "0"})
 
-    async def _handle_token(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+    async def _handle_token(
+        self, writer: asyncio.StreamWriter, headers: dict[str, str], body: bytes
+    ) -> None:
         params = dict(parse_qsl(body.decode(), keep_blank_values=True))
+        authorization = headers.get("authorization", "")
+        if authorization.startswith("Basic "):
+            decoded = base64.b64decode(authorization.removeprefix("Basic ")).decode()
+            params.setdefault("client_id", decoded.split(":", 1)[0])
         self.token_requests.append(params)
         grant_type = params.get("grant_type")
         if grant_type == "authorization_code":
@@ -1117,6 +1212,37 @@ class TestOAuthProtectedServer:
             assert connection.credential_identity is not None
             await pool.close_all()
 
+    async def test_registered_client_credentials_without_issuer_use_compatibility_flow(
+        self, transport: HttpTransport
+    ) -> None:
+        async with (
+            McpStubServer([wire_tool("echo")], modern=True) as stub,
+            _AuthServerStub() as auth,
+        ):
+            _protect(stub, auth)
+            scope = Scope(tenant="tenant-a")
+            secrets = InMemorySecretResolver()
+            secrets.set(scope, "oauth-secret", "secret-value")
+            pool = McpPool(
+                transport=transport,
+                secrets=secrets,
+                oauth=OAuthClient(transport=transport),
+            )
+            server = make_server(
+                stub.url,
+                oauth=McpOAuth(
+                    preregistered_client_id="client",
+                    client_secret_credential="oauth-secret",
+                ),
+            )
+
+            connection = await pool.get_or_connect(scope, server)
+
+            assert not isinstance(connection._sdk_auth, ClientCredentialsOAuthProvider)
+            assert auth.registrations == 0
+            assert await connection.call_tool_text("echo", {}) == "called echo"
+            await pool.close_all()
+
     async def test_pooled_under_the_post_auth_key_not_the_pre_auth_key(
         self, transport: HttpTransport
     ) -> None:
@@ -1153,7 +1279,7 @@ class TestOAuthProtectedServer:
 
             await pool.close_all()
 
-    async def test_client_credentials_renewal_does_not_change_the_pool_key_or_reconnect(
+    async def test_sdk_refresh_does_not_change_the_pool_key_or_reconnect(
         self, transport: HttpTransport
     ) -> None:
         async with (
@@ -1163,28 +1289,30 @@ class TestOAuthProtectedServer:
             _protect(stub, auth)
             secrets = InMemorySecretResolver()
             scope = Scope(tenant="tenant-a")
-            # A huge safety margin makes every issued token read as
-            # "expiring" immediately, so the very next request renews
-            # deterministically rather than waiting out a real expiry.
-            oauth = OAuthClient(transport=transport, refresh_safety_margin_seconds=1_000_000.0)
+            secrets.set(scope, "oauth-secret", "secret-value")
+            oauth = OAuthClient(transport=transport)
             pool = McpPool(transport=transport, secrets=secrets, oauth=oauth)
-            server = make_server(stub.url)
+            server = make_server(
+                stub.url,
+                oauth=McpOAuth(
+                    preregistered_client_id="client",
+                    client_secret_credential="oauth-secret",
+                    issuer=auth.base_url,
+                ),
+            )
 
             connection = await pool.get_or_connect(scope, server)
             identity_before = connection.credential_identity
             assert identity_before is not None
+            assert isinstance(connection._sdk_auth, ClientCredentialsOAuthProvider)
+            connection._sdk_auth.context.token_expiry_time = 1.0
 
             await connection.call_tool("echo", {})
 
             assert connection.credential_identity == identity_before
-            renewal_requests = [
-                r for r in auth.token_requests if r.get("grant_type") == "client_credentials"
-            ]
-            # Every protected request sees this deliberately extreme margin,
-            # so discovery and the tool call may each renew. The contract is
-            # that an expired machine grant is reacquired without reconnecting.
-            assert len(renewal_requests) >= 2
-            assert not any(r.get("grant_type") == "refresh_token" for r in auth.token_requests)
+            assert any(r.get("grant_type") == "refresh_token" for r in auth.token_requests), (
+                auth.token_requests
+            )
             assert stub.discover_count == 1  # no reconnect happened
             post_auth_key = McpPoolKey.from_scope(
                 scope=scope, server=server, credential_identity=identity_before
@@ -1203,11 +1331,20 @@ class TestOAuthProtectedServer:
             _protect(stub, auth)
             secrets = InMemorySecretResolver()
             scope = Scope(tenant="tenant-a")
+            secrets.set(scope, "oauth-secret", "secret-value")
             oauth = OAuthClient(transport=transport)
             pool = McpPool(transport=transport, secrets=secrets, oauth=oauth)
-            server = make_server(stub.url)
+            server = make_server(
+                stub.url,
+                oauth=McpOAuth(
+                    preregistered_client_id="client",
+                    client_secret_credential="oauth-secret",
+                    issuer=auth.base_url,
+                ),
+            )
 
             connection = await pool.get_or_connect(scope, server)
+            assert isinstance(connection._sdk_auth, ClientCredentialsOAuthProvider)
             identity_before = connection.credential_identity
 
             # Only once connected does this server start demanding a scope
@@ -1258,23 +1395,29 @@ class TestOAuthProtectedServer:
             secrets = InMemorySecretResolver()
             scope_a = Scope(tenant="tenant-a")
             scope_b = Scope(tenant="tenant-b")
+            secrets.set(scope_a, "oauth-secret", "tenant-a-secret")
+            secrets.set(scope_b, "oauth-secret", "tenant-b-secret")
             oauth = OAuthClient(transport=transport)
             pool = McpPool(transport=transport, secrets=secrets, oauth=oauth)
-            server = make_server(stub.url)
+            server = make_server(
+                stub.url,
+                oauth=McpOAuth(
+                    preregistered_client_id="client",
+                    client_secret_credential="oauth-secret",
+                    issuer=auth.base_url,
+                ),
+            )
 
             connection_a = await pool.get_or_connect(scope_a, server)
             connection_b = await pool.get_or_connect(scope_b, server)
 
             assert connection_a is not connection_b
             assert connection_a.credential_identity != connection_b.credential_identity
-            assert auth.registrations == 2  # a distinct client identity per tenant
+            assert isinstance(connection_a._sdk_auth, ClientCredentialsOAuthProvider)
+            assert isinstance(connection_b._sdk_auth, ClientCredentialsOAuthProvider)
+            assert auth.registrations == 0
 
-            credential_a = connection_a._credential
-            credential_b = connection_b._credential
-            assert credential_a is not None
-            assert credential_b is not None
-            token_a = credential_a.secret.get_secret_value()
-            token_b = credential_b.secret.get_secret_value()
+            token_a, token_b = auth.issued_scopes
             assert token_a != token_b
 
             await connection_a.call_tool("echo", {})
@@ -1350,6 +1493,7 @@ class TestOAuthMultipleServersOnOnePool:
             _protect(ticketing_stub, ticketing_auth)
             secrets = InMemorySecretResolver()
             scope = Scope(tenant="tenant-a")
+            secrets.set(scope, "crm-secret", "crm-secret-value")
             # One OAuthClient, shared by both servers, exactly the point:
             # OAuthClient already keys sessions by (scope, resource) and
             # registrations by (scope, issuer), so nothing about serving two
@@ -1364,7 +1508,12 @@ class TestOAuthMultipleServersOnOnePool:
             crm_server = make_server(
                 crm_stub.url,
                 name="crm",
-                oauth=McpOAuth(grant="client_credentials", preregistered_client_id="crm-app"),
+                oauth=McpOAuth(
+                    grant="client_credentials",
+                    preregistered_client_id="crm-app",
+                    client_secret_credential="crm-secret",
+                    issuer=crm_auth.base_url,
+                ),
             )
             ticketing_server = make_server(
                 ticketing_stub.url,
@@ -1380,6 +1529,8 @@ class TestOAuthMultipleServersOnOnePool:
             ticketing_connection = await pool.get_or_connect(scope, ticketing_server)
 
             assert crm_connection is not ticketing_connection
+            assert isinstance(crm_connection._sdk_auth, ClientCredentialsOAuthProvider)
+            assert isinstance(ticketing_connection._sdk_auth, OAuthClientProvider)
             assert crm_connection.credential_identity is not None
             assert ticketing_connection.credential_identity is not None
             assert crm_connection.credential_identity != ticketing_connection.credential_identity
@@ -1403,12 +1554,8 @@ class TestOAuthMultipleServersOnOnePool:
             assert crm_result.content == "called echo"
             assert ticketing_result.content == "called echo"
 
-            crm_credential = crm_connection._credential
-            ticketing_credential = ticketing_connection._credential
-            assert crm_credential is not None
-            assert ticketing_credential is not None
-            crm_token = crm_credential.secret.get_secret_value()
-            ticketing_token = ticketing_credential.secret.get_secret_value()
+            crm_token = next(iter(crm_auth.issued_scopes))
+            ticketing_token = next(iter(ticketing_auth.issued_scopes))
             assert crm_token != ticketing_token
 
             # Proven against the wire, the same discipline TestTenantIsolation
@@ -1680,7 +1827,7 @@ class TestDeferredDisclosure:
             await pool.close_all()
 
         names = {definition.name for definition in resolved.definitions}
-        assert len([name for name in names if name.startswith("tool_")]) == 60
+        assert len([name for name in names if name.startswith("support__tool_")]) == 60
         assert resolved.deferred_servers == ()
         assert "list_tools" not in names
 
@@ -1697,7 +1844,7 @@ class TestDeferredDisclosure:
             await pool.close_all()
 
         names = {definition.name for definition in resolved.definitions}
-        assert names == {"tool_000", "tool_001", "tool_002"}
+        assert names == {"support__tool_000", "support__tool_001", "support__tool_002"}
         assert resolved.deferred_servers == ()
         assert "list_tools" not in names
 
@@ -1938,7 +2085,7 @@ class TestServerDescriptions:
             resolved = await resolver.resolve(spec, Scope(tenant="acme"))
             await pool.close_all()
 
-        assert {d.name for d in resolved.definitions} == {"lookup"}
+        assert {d.name for d in resolved.definitions} == {"support__lookup"}
         block = "\n".join(resolved.advisories)
         assert "Customer records." in block
         assert "in your tool list" in block
@@ -1973,4 +2120,4 @@ class TestServerDescriptions:
             resolved = await resolver.resolve(spec, Scope(tenant="acme"))
             await pool.close_all()
 
-        assert {d.name for d in resolved.definitions} == {"lookup"}
+        assert {d.name for d in resolved.definitions} == {"support__lookup"}

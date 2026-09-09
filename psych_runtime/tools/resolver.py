@@ -49,6 +49,7 @@ from psych_runtime.tools.deferred import (
     summarise_description,
 )
 from psych_runtime.tools.failure_streak import advisory_message, assess
+from psych_runtime.tools.mcp_names import mcp_tool_name
 from psych_runtime.tools.narrowing import narrow
 from psych_runtime.tools.registry import ToolRegistry
 
@@ -238,7 +239,14 @@ class ToolResolver:
         extra = (*extra, *deferred_definitions([server.name for server in deferred_servers]))
         advisories.extend(servers_advisory(servers))
 
+        seen: set[str] = set()
         for definition in [*local, *mcp, *peers, *extra]:
+            if definition.name in seen:
+                raise AccessDenied(
+                    f"tool catalogue name {definition.name!r}",
+                    "more than one callable tool resolved to this name",
+                )
+            seen.add(definition.name)
             verdict = assess(
                 definition.name,
                 streaks.get(definition.name, 0),
@@ -355,7 +363,12 @@ class ToolResolver:
                 # difference between a tool it can discover and one that
                 # silently is not there (DESIGN.md §10.7).
                 continue
-            collected.extend(visible)
+            # A model tool call carries a name and arguments, but no MCP
+            # server. Keep the owner explicit through execution and replay.
+            collected.extend(
+                definition.model_copy(update={"name": mcp_tool_name(server.name, definition.name)})
+                for definition in visible
+            )
 
         return collected, unavailable, advisories, summaries
 

@@ -42,7 +42,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
     environment:
       POSTGRES_USER: psych
       POSTGRES_PASSWORD: psych
@@ -71,9 +71,7 @@ services:
     # In-memory storage, deliberately. Traces last as long as the container,
     # which matches how long anyone looks at them here, and it keeps the
     # compose file to one more service rather than a storage backend as well.
-    image: jaegertracing/all-in-one:1.62.0
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
     ports:
       # The UI. Open it and search for the `psych-playground` service to see a
       # Run as a span tree: the Run, its Attempt, each Turn, and the model,

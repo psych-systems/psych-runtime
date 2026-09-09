@@ -194,6 +194,42 @@ class TestWhatAPublishedAgentActuallyCarries:
         spec = await _stored_spec(client, version_hash)
         assert spec["mcp_servers"][0]["oauth"]["redirect_uris"] == []
 
+    async def test_oauth_identity_configuration_survives_publication(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        version_hash = await _publish(
+            client,
+            tools=[],
+            mcp=[
+                {
+                    "name": "records",
+                    "url": "http://127.0.0.1:1/mcp",
+                    "oauth": {
+                        "grant": "client_credentials",
+                        "preregistered_client_id": "psych-service",
+                        "client_secret_credential": "records-oauth-secret",
+                        "issuer": "https://auth.example.com",
+                        "cimd_url": "https://client.example.com/metadata.json",
+                        "allow_dynamic_registration": False,
+                        "application_type": "web",
+                        "client_name": "records-worker",
+                    },
+                }
+            ],
+        )
+        oauth = (await _stored_spec(client, version_hash))["mcp_servers"][0]["oauth"]
+        assert oauth == {
+            "grant": "client_credentials",
+            "preregistered_client_id": "psych-service",
+            "client_secret_credential": "records-oauth-secret",
+            "issuer": "https://auth.example.com",
+            "cimd_url": "https://client.example.com/metadata.json",
+            "allow_dynamic_registration": False,
+            "application_type": "web",
+            "client_name": "records-worker",
+            "redirect_uris": [],
+        }
+
     async def test_preload_is_carried_so_a_large_catalogue_can_be_deferred(
         self, client: httpx.AsyncClient
     ) -> None:

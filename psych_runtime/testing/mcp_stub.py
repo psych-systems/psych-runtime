@@ -210,6 +210,8 @@ class McpStubServer:
         self.received_calls: list[ReceivedCall] = []
         self.received_requests: list[ReceivedRequest] = []
         self.call_handlers: dict[str, CallHandler] = {}
+        self.structured_results: dict[str, object] = {}
+        self.tools_page_size: int | None = None
         self.instructions: str | None = None
         """What this server says it is for, returned from the handshake. MCP
         allows it at ``initialize`` and at ``server/discover``; the client
@@ -317,6 +319,17 @@ class McpStubServer:
                 }
             ).encode()
             await queue.put(b"data: " + modern_message + b"\n\n")
+
+    async def close_modern_listeners(self) -> tuple[object, ...]:
+        """End each modern subscription so a client can prove it re-listens."""
+        subscription_ids = tuple(item[0] for item in self._modern_listeners)
+        for _, queue in list(self._modern_listeners):
+            await queue.put(None)
+        return subscription_ids
+
+    @property
+    def modern_listener_ids(self) -> tuple[object, ...]:
+        return tuple(item[0] for item in self._modern_listeners)
 
     async def _on_connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
@@ -436,7 +449,7 @@ class McpStubServer:
             self._sessions[sid] = []
             result: dict[str, object] = {
                 "protocolVersion": self.legacy_protocol_version,
-                "capabilities": {},
+                "capabilities": {"tools": {"listChanged": True}},
                 "serverInfo": {"name": "stub", "version": "1.0"},
             }
             if self.instructions is not None:
@@ -467,13 +480,24 @@ class McpStubServer:
 
         if rpc_method == "tools/list":
             self.list_count += 1
+            params = payload.get("params") or {}
+            cursor = int(params.get("cursor", 0)) if isinstance(params, dict) else 0
+            tools = self._wire_tools()
+            end = (
+                len(tools)
+                if self.tools_page_size is None
+                else min(len(tools), cursor + self.tools_page_size)
+            )
             await _write_json(
                 writer,
                 200,
                 {
                     "jsonrpc": "2.0",
                     "id": payload.get("id"),
-                    "result": {"tools": self._wire_tools()},
+                    "result": {
+                        "tools": tools[cursor:end],
+                        **({} if end == len(tools) else {"nextCursor": str(end)}),
+                    },
                 },
             )
             return
@@ -549,11 +573,25 @@ class McpStubServer:
 
         if rpc_method == "tools/list":
             self.list_count += 1
-            result: dict[str, object] = {"resultType": "complete", "tools": self._wire_tools()}
-            if self.tools_ttl_ms is not None:
-                result["ttlMs"] = self.tools_ttl_ms
-            if self.tools_cache_scope is not None:
-                result["cacheScope"] = self.tools_cache_scope
+            params = payload.get("params") or {}
+            cursor = int(params.get("cursor", 0)) if isinstance(params, dict) else 0
+            tools = self._wire_tools()
+            end = (
+                len(tools)
+                if self.tools_page_size is None
+                else min(len(tools), cursor + self.tools_page_size)
+            )
+            result: dict[str, object] = {
+                "resultType": "complete",
+                "tools": tools[cursor:end],
+                # These fields have protocol defaults, but the 2026 wire
+                # schema still requires servers to send them. Keeping the
+                # stub strict lets it catch responses the typed SDK rejects.
+                "ttlMs": self.tools_ttl_ms if self.tools_ttl_ms is not None else 0,
+                "cacheScope": self.tools_cache_scope or "private",
+            }
+            if end < len(tools):
+                result["nextCursor"] = str(end)
             await _write_json(writer, 200, {"jsonrpc": "2.0", "id": request_id, "result": result})
             return
 
@@ -612,7 +650,14 @@ class McpStubServer:
                         "inputRequests": {
                             "confirm": {
                                 "method": "elicitation/create",
-                                "params": {"mode": "form", "message": "confirm?"},
+                                "params": {
+                                    "mode": "form",
+                                    "message": "confirm?",
+                                    "requestedSchema": {
+                                        "type": "object",
+                                        "properties": {},
+                                    },
+                                },
                             }
                         },
                     },
@@ -631,6 +676,11 @@ class McpStubServer:
                 "result": {
                     "resultType": "complete",
                     "content": [{"type": "text", "text": content}],
+                    **(
+                        {}
+                        if name not in self.structured_results
+                        else {"structuredContent": self.structured_results[name]}
+                    ),
                     "isError": is_error,
                 },
             },

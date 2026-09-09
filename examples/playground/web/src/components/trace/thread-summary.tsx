@@ -108,7 +108,7 @@ export function ThreadSummary({
   );
 }
 
-function costText(totals: ThreadTotals): string {
+export function costText(totals: ThreadTotals): string {
   if (totals.cost_amount === null) return "unknown";
   const amount = Number(totals.cost_amount);
   const currency = totals.cost_currency ?? "USD";

@@ -272,6 +272,11 @@ export function ConnectionCard({
                 {connection.oauth.client_secret_credential ?? "none"}
               </span>
             </DetailRow>
+            {connection.oauth.issuer && (
+              <DetailRow label="Authorization server">
+                <span className="font-technical">{connection.oauth.issuer}</span>
+              </DetailRow>
+            )}
           </>
         )}
         {connection.last_connection?.error_type && (

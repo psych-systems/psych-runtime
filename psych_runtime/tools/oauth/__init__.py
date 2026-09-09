@@ -1,10 +1,15 @@
-"""OAuth 2.1 authorization for MCP clients.
+"""OAuth configuration and scope-aware adapters for MCP clients.
 
 DESIGN.md §10.4's isolation discipline extended to OAuth: never key a
 registration, a session, or a pool identity by less than
 ``(tenant, principal, issuer/resource)``, the same reasoning that keeps
 ``psych_runtime.tools.mcp`` from pooling MCP connections by URL alone. See
 ``psych_runtime.tools.oauth.client`` for the detail.
+
+The official MCP Python SDK performs the active MCP authorization flow.
+``OAuthClient`` supplies per-Scope storage and the host application's browser
+handoff. Its older public flow methods remain as a compatibility path for
+client-credentials identity modes the SDK does not yet expose.
 
 ## What this package does not do
 
@@ -16,21 +21,15 @@ performs the browser's one HTTP hop itself, over a real loopback socket.
 
 ## The call surface ``psych_runtime.tools.mcp`` uses
 
-``OAuthClient`` is the only class that module needs to construct or hold:
+``OAuthClient.sdk_auth`` constructs the official SDK provider for a scoped MCP
+connection. Registered client credentials should set ``McpOAuth.issuer`` so
+credentials can be bound to the authorization server that issued them.
 
-* ``start(scope, resource=..., challenge=..., identity=..., grant=...)`` on a
-  401, returning a ``ResolvedCredential`` shaped exactly like
-  ``psych_runtime.tools.secrets.SecretResolver.resolve``'s.
-* ``step_up(scope, resource=..., challenge=...)`` on a 403
-  ``insufficient_scope``, returning the same shape.
-* ``bearer_token(scope, resource=...)`` for every subsequent request on an
-  already-authorized connection -- refreshes transparently, and concurrent
-  callers for the same key share one refresh.
-* ``evict(scope, resource=...)`` to forget a session outside the normal
-  expiry path.
-
-All four take a plain ``resource`` string (the MCP server's URL) and
-canonicalise it internally; none of them need the caller to track an issuer.
+The older ``start``, ``step_up`` and ``bearer_token`` methods remain public for
+client-credentials configurations that rely on dynamic registration or a
+Client ID Metadata Document. Those are compatibility paths the SDK does not
+currently represent. Both paths use the same tenant and principal isolation
+rules, and ``evict`` clears their stored credentials together.
 """
 
 from __future__ import annotations

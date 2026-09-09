@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Final, Protocol, Self, runtime_checkable
 
 import httpx
+import httpx2
 
 from psych_runtime.core.errors import AccessDenied
 from psych_runtime.core.scope import Scope
@@ -136,6 +137,51 @@ class HttpTransport:
         effective = str(httpx.URL(url).copy_merge_params(params)) if params else url
         if not await self._policy.allow(scope, effective):
             raise AccessDenied(effective, f"egress policy refused {method} {effective} for {scope}")
+
+    async def authorize(
+        self,
+        method: str,
+        url: str,
+        *,
+        scope: Scope,
+        params: Mapping[str, str] | None = None,
+    ) -> None:
+        """Apply this transport's egress policy to an externally sent request.
+
+        Protocol SDKs may need to own their connection and streaming state.
+        They call this hook for every outbound hop so the same tenant-aware
+        policy still gates the network path, including redirects and retries.
+        """
+        await self._check(method, url, scope, params)
+
+    def protocol_client(
+        self,
+        *,
+        scope: Scope,
+        auth: httpx2.Auth | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: httpx2.Timeout | None = None,
+    ) -> httpx2.AsyncClient:
+        """Create an SDK-owned HTTP client without bypassing egress policy.
+
+        Protocol SDKs need to control connection and streaming state, so they
+        cannot use this seam's request methods. They receive a client created
+        here instead. Its request hook checks every ordinary request, retry,
+        OAuth metadata lookup, token exchange, and redirect before it reaches
+        the network.
+
+        The caller owns and closes the returned client.
+        """
+
+        async def check_request(request: httpx2.Request) -> None:
+            await self._check(request.method, str(request.url), scope)
+
+        return httpx2.AsyncClient(
+            auth=auth,
+            headers=headers,
+            timeout=timeout or httpx2.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
+            event_hooks={"request": [check_request]},
+        )
 
     async def request(
         self,

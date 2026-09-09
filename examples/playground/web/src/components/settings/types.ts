@@ -68,6 +68,8 @@ export interface McpOAuthPreset {
   /** A credential NAME the secret resolver looks up at connect time --
    * never a literal secret. */
   client_secret_credential?: string | null;
+  /** Authorization server that may receive registered client credentials. */
+  issuer?: string | null;
   cimd_url?: string | null;
   allow_dynamic_registration?: boolean;
   application_type?: "native" | "web";

@@ -210,6 +210,19 @@ it, one leaked run id is a readable conversation.
 
 Read the one that matches the task. Do not read all of them.
 
+## Keep the skills with the code
+
+The `psych-*` skills are part of the public developer experience. A runtime
+behavior change is incomplete until the matching skill is updated in the same
+change. Do this immediately after the implementation, before tests or release
+work, while the new contract and its edge cases are still clear.
+
+Update every affected skill when a change crosses feature boundaries. At a
+minimum, keep examples executable, describe new required fields and defaults,
+remove behavior that no longer exists, and add the failure mode that would
+otherwise surprise a user. Dependency-only refactors and internal changes that
+do not alter behavior need no skill edit.
+
 **Starting out**
 - `psych-quickstart`, install, first working Run, `psych_runtime.session()`.
 - `psych-agents`, `AgentSpec`: instructions, model, limits, stop conditions.

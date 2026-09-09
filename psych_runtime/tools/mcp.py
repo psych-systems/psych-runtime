@@ -1,167 +1,15 @@
-"""MCP servers, connectable at runtime, pooled without leaking credentials.
+"""MCP tool connections for Psych agents.
 
-DESIGN.md §10.3 and §10.4. An ``McpServer`` in a Spec (``psych_runtime.core.spec``) is
-data: a URL, a transport, a credential name, an allowlist. This module is what
-turns that data into a live connection, a cached tool catalogue, and a
-narrowed set of ``ToolDefinition``s for one turn.
+Psych uses the official Python MCP SDK for protocol negotiation, typed wire
+validation, Streamable HTTP, the older HTTP and SSE transport, notifications,
+tool calls, OAuth discovery, grants, refresh, and scope step-up. Psych owns the
+runtime concerns around that client: tenant-scoped storage and pooling,
+credential resolution, egress policy, catalogue freshness, access narrowing,
+and model-facing tool names.
 
-## Protocol revision and backward compatibility
-
-This module speaks MCP revision ``2026-07-28`` and negotiates down to
-``2025-11-25`` and ``2025-06-18`` servers. ``docs/design-notes/mcp-2026-07-28.md``
-records what changed and why; the spec itself is the source of truth, not
-that summary.
-
-2026-07-28 replaced the ``initialize``/``notifications/initialized``
-handshake and the ``Mcp-Session-Id`` header with a stateless core: every
-request carries its protocol version, capabilities and identity in ``_meta``,
-and every result carries a ``resultType``. Servers **MUST** implement
-``server/discover``, which this module uses for exactly two things at once:
-up-front version selection, and the backward-compatibility probe. A server
-that does not implement it is, by construction, an older one, so **one
-connection makes one era decision, once, at connect** (``_negotiate_era``),
-and every request after that follows ``McpConnection._era`` alone. This is
-the "one code path that negotiates, not three forks" the revision asks for:
-there is no per-request branching on server version, only a single
-connect-time fork between the modern (``_modern_*``) and legacy
-(``_legacy_*``) request-building methods.
-
-What legacy support does *not* need to distinguish is ``2025-11-25`` from
-``2025-06-18``: both predate ``server/discover`` and per-request ``_meta``,
-both use the same ``initialize``-handshake-plus-``Mcp-Session-Id`` wire shape
-this module already spoke before this revision, and neither changes anything
-this client depends on. Both fall back to the same legacy path.
-
-## The rule that matters more than everything else in this module
-
-**Never pool MCP clients by URL alone.** DESIGN.md §10.4 calls this the bug
-that ends the project: pooling by URL will eventually send tenant A's OAuth
-token on tenant B's call, because two Scopes that happen to name the same
-server URL are not the same tenant, and two credentials that happen to
-resolve for the same server are not interchangeable.
-
-``McpPool`` keys by ``McpPoolKey``, a frozen dataclass carrying the Scope's
-tenant and principal (via ``Scope.pool_key``), the server URL and transport,
-and the *resolved credential's identity*, never the credential name from the
-Spec, and never the credential value. All four fields are required, by name;
-there is no bare tuple or f-string concatenation standing in for the key, so
-there is no positional shortcut that silently drops the tenant half.
-
-Because a connection (and the catalogue it caches) already lives inside one
-pool key, a server's ``cacheScope: "private"`` on a cacheable result
-(``tools/list`` among them, §"``CacheableResult``" below) is satisfied by
-construction: nothing in this module caches a catalogue anywhere other than
-inside the one ``McpConnection`` a pool key owns, so a "private" entry can
-never reach a second tenant, principal, or credential. ``_Catalogue`` still
-records ``cache_scope`` for anyone reading it later, but there is no second
-cache for it to leak into.
-
-## Why the key is named fields rather than a concatenated string
-
-A pool key built by joining a session id, a server row id and a user key into
-one string is fine in a runtime that already isolates every session in its own
-process or sandbox: the key never has to prove isolation, because something
-underneath it does. Psych is a library sharing one process across every tenant
-the consumer serves, and has no such structural isolation to lean on. The key
-is the only thing standing between tenant A's call and tenant B's connection.
-So it is named fields, with the Scope's tenant explicitly present, and the
-credential's *resolved identity* rather than a name that might resolve
-differently per Scope.
-
-## Freshness, not caching, of the resolved tool set
-
-The catalogue this module caches is *what one server currently offers*,
-refreshed on connect, on a TTL sweep, on demand, and on
-``notifications/tools/list_changed`` (§10.3). Under 2026-07-28 that arrives on
-the ``subscriptions/listen`` stream rather than the old standalone GET.
-What is never cached is *which tools one Spec, for one turn, is allowed to
-see* (§10.2): ``resolve_mcp_server`` re-narrows against the live catalogue on
-every call, so a Spec's grant is re-evaluated every turn rather than pinned
-at connect time.
-
-## Where the OAuth hook lives
-
-``McpPool`` takes an optional ``psych_runtime.tools.oauth.OAuthClient``. Absent, this
-module behaves exactly as before: a static credential from ``SecretResolver``
-or none at all, and any 401/403 falls straight into ``McpServerUnreachable``.
-
-### One pool, many OAuth identities and grants
-
-The client identity and grant kind a connection authorizes with come from
-``McpServer.oauth`` (``psych_runtime.core.spec.McpOAuth``) when the Spec declares
-one, resolved fresh per ``get_or_connect`` call by ``McpPool._oauth_config_for``
-alongside the static ``credential`` resolution right beside it. A Spec naming
-two servers behind two different authorization servers, or one needing
-``authorization_code`` and another ``client_credentials``, is served by one
-``McpPool`` and one ``OAuthClient`` without either server's identity leaking
-into the other's connection: each server's ``McpConnection`` is constructed
-with its own ``oauth_identity``/``oauth_grant``, and ``OAuthClient`` itself
-already keys every session by ``(scope, resource)`` and every registration by
-``(scope, issuer)`` (see ``psych_runtime.tools.oauth.client``), so two identities in
-flight for the same tenant were already safe there. What was missing was
-purely that this module had nowhere per-server to read an identity or a grant
-kind *from*, and passed one pool-wide pair to every connection it made.
-``McpServer.oauth``'s own docstring records why that configuration is
-Spec-carried rather than sitting in runtime configuration keyed by server
-name, which was the design question to settle before writing any of this.
-
-``McpPool.__init__``'s ``oauth_identity``/``oauth_grant`` parameters remain as
-the *default* used for a server whose Spec sets no ``oauth`` at all, so
-existing callers relying on one pool-wide identity keep working unchanged.
-
-Present, ``McpConnection`` recognises a ``WWW-Authenticate: Bearer`` challenge
-on the era-negotiation probe, the legacy handshake, and every ordinary
-request (``_send``, below), and drives the OAuth exchange itself:
-
-* A 401 calls ``OAuthClient.start`` and retries the same request exactly
-  once, with a fresh id, never a loop. A 403 whose challenge names
-  ``error="insufficient_scope"`` calls ``OAuthClient.step_up`` instead, with
-  the same one retry.
-* Every ordinary request (``_request``) calls ``OAuthClient.bearer_token``
-  first, so an expiring token refreshes before it ever produces a 401,
-  rather than after.
-* A 401 with no ``OAuthClient`` configured still raises
-  ``McpServerUnreachable``, but the message says the server wants OAuth and
-  none is configured. "HTTP 401" alone would send a consumer debugging the
-  wrong thing.
-
-The status code and the parsed challenge travel together as one typed value
-(``_OAuthChallenge``, private to this module) from the response straight to
-the retry decision, never round-tripped through a formatted string and
-re-parsed.
-
-``McpConnection`` resolves the server's URL to its RFC 8707 canonical form
-(``psych_runtime.tools.oauth.canonicalize_resource_uri``) once, at construction, and
-uses that, never the raw ``McpServer.url``, as the ``resource`` on every
-``OAuthClient`` call, per DESIGN.md §14 (the OAuth exchange goes through the
-same egress seam) and the MCP authorization spec's resource-indicator rule.
-
-### The pool key moves when a token is acquired
-
-``McpPoolKey.credential_identity`` is resolved before a connection exists
-(``McpPool._resolve_credential``, from ``SecretResolver``, unrelated to
-OAuth), so a server that authenticates only via OAuth starts that resolution
-at ``None``. If ``McpConnection.connect()`` then acquires an OAuth token, its
-credential identity changes from ``None`` to the OAuth grant's identity, and
-the pool key computed before connecting is no longer the key the connection
-should live under: storing it there would let a future unauthenticated
-lookup (the same tenant, still resolving no static credential) find an
-already-authenticated connection, which is exactly the cross-tenant hazard
-DESIGN.md §10.4 exists to prevent, just aimed at one tenant's own two
-requests instead of two tenants.
-
-``McpPool.get_or_connect`` handles this by always taking its lock on the
-pre-auth key (deterministic and known before ``connect()`` runs, so every
-caller for the same ``(scope, server, static credential)`` contends on the
-same lock), then, once ``connect()`` returns, computing the post-auth key
-from the connection's live ``credential_identity`` and storing the connection
-there instead. A small redirect map (pre-auth key to post-auth key),
-populated in that same critical section, lets a second caller for the same
-pre-auth key find the already-established connection instead of repeating
-the OAuth exchange. A refresh or a step-up never touches this map: both
-replace the session's token in place without changing its identity (see
-``psych_runtime.tools.oauth.client``'s docstring), so a connection already pooled
-stays pooled under the same key for as long as it lives.
+A model tool call does not contain an MCP server id. Psych therefore exposes a
+remote tool as ``server__tool`` and carries that qualified name through the
+run log. The server receives its original tool name.
 """
 
 from __future__ import annotations
@@ -169,21 +17,30 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import itertools
 import json
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from typing import Any, Final, Literal, Protocol, runtime_checkable
 
 import httpx
-from pydantic import BaseModel, ConfigDict, SecretStr
+import httpx2
+from mcp import Client as SdkClient
+from mcp.client.auth import OAuthFlowError, OAuthRegistrationError, OAuthTokenError
+from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost
+from mcp.shared.exceptions import MCPError
+from mcp.shared.subscriptions import ToolsListChanged
+from mcp_types import Implementation, InputRequiredResult, ToolListChangedNotification
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from psych_runtime.core.errors import AccessDenied, PsychError
 from psych_runtime.core.messages import ToolDefinition
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.spec import AgentSpec, McpServer
+from psych_runtime.tools.mcp_names import mcp_tool_name
 from psych_runtime.tools.narrowing import narrow
 from psych_runtime.tools.oauth import (
     BearerChallenge,
@@ -230,32 +87,8 @@ _MODERN_PROTOCOL_VERSION: Final = "2026-07-28"
 """The revision this module speaks natively: stateless, per-request ``_meta``,
 ``server/discover``, ``resultType``, ``subscriptions/listen``."""
 
-_LEGACY_PROTOCOL_VERSION: Final = "2025-11-25"
-"""Offered in the ``initialize`` handshake to a server that does not
-implement ``server/discover``. Both ``2025-11-25`` and ``2025-06-18`` servers
-accept and reply to this the same way this module already spoke before this
-revision (session id, GET SSE, ``notifications/tools/list_changed`` on it),
-so there is no need to offer both or to branch on which one a server
-actually reports back."""
-
 _CLIENT_NAME: Final = "psych"
 _CLIENT_VERSION: Final = "0.1.0"
-
-_REQUEST_TIMEOUT: Final = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
-"""Every ordinary MCP request is bounded by this, passed explicitly rather
-than left to whatever the transport was constructed with. A server that
-accepts a connection and then says nothing is a tenant-controlled endpoint
-holding a Worker's turn open until the Run's deadline, with the lease
-heartbeat keeping it pinned there.
-"""
-
-# Only the standalone notification stream needs a disabled read timeout,
-# because it is legitimately silent for as long as the server has nothing to
-# push (the same reasoning as the model client's idle handling,
-# psych_runtime.model.openai_compat, minus the idle-timeout enforcement: a dropped
-# notification stream degrades to polling via the TTL sweep, not to a stuck
-# turn, so there is nothing here worth failing loudly over).
-_NOTIFY_STREAM_TIMEOUT: Final = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
 
 # Error code allocation, MCP basic index §Error Codes. -32000..-32019 stays
 # implementation-defined (legacy); -32020..-32099 is reserved for the spec.
@@ -267,16 +100,6 @@ _RESOURCE_NOT_FOUND_CODE: Final = -32602
 specifically for a missing resource. Renumbered from ``-32002``."""
 _LEGACY_RESOURCE_NOT_FOUND_CODE: Final = -32002
 """2025-11-25 and earlier. Clients SHOULD still accept it from older servers."""
-_MODERN_ERROR_CODES: Final = frozenset(
-    {_HEADER_MISMATCH_CODE, _MISSING_CLIENT_CAPABILITY_CODE, _UNSUPPORTED_PROTOCOL_VERSION_CODE}
-)
-"""A response carrying one of these identifies a modern server even when the
-request that triggered it (``server/discover`` itself, during era
-negotiation) otherwise failed. Streamable HTTP's backward-compatibility rule
-turns on exactly this: a body containing one of these is never grounds to
-fall back to the legacy handshake."""
-
-
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -515,6 +338,16 @@ class McpTransport(Protocol):
     without a layering violation, not an exception to it.
     """
 
+    def protocol_client(
+        self,
+        *,
+        scope: Scope,
+        auth: httpx2.Auth | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: httpx2.Timeout | None = None,
+    ) -> httpx2.AsyncClient:
+        """Create an SDK-owned client whose requests still pass egress policy."""
+
     async def request(
         self,
         method: str,
@@ -536,6 +369,15 @@ class McpTransport(Protocol):
         json: Any = None,
         timeout: httpx.Timeout | float | None = None,
     ) -> AbstractAsyncContextManager[httpx.Response]: ...
+
+    async def authorize(
+        self,
+        method: str,
+        url: str,
+        *,
+        scope: Scope,
+        params: Mapping[str, str] | None = None,
+    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +457,96 @@ class _Catalogue:
     module's structure rather than by a check here."""
 
 
+@dataclass(slots=True)
+class _SdkCommand:
+    kind: Literal["list", "call", "close"]
+    future: asyncio.Future[Any]
+    name: str | None = None
+    arguments: dict[str, Any] | None = None
+
+
+class _SdkAuth(httpx2.Auth):
+    """Bridge Psych's scoped credentials and OAuth client into the SDK."""
+
+    requires_request_body = True
+
+    def __init__(
+        self,
+        *,
+        scope: Scope,
+        server: McpServer,
+        credential: ResolvedCredential | None,
+        oauth: OAuthClient | None,
+        oauth_identity: ClientIdentityConfig,
+        oauth_grant: GrantKind,
+    ) -> None:
+        self.scope = scope
+        self.server = server
+        self.credential = credential
+        self.oauth = oauth
+        self.oauth_identity = oauth_identity
+        self.oauth_grant = oauth_grant
+        self.resource = canonicalize_resource_uri(server.url) if oauth is not None else ""
+        self._lock = asyncio.Lock()
+
+    async def async_auth_flow(
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+        await request.aread()
+        async with self._lock:
+            await self._refresh_if_available()
+            self._set_header(request)
+            sent_token = self._token()
+        response = yield request
+        challenge = _oauth_challenge_from(response)  # type: ignore[arg-type]
+        if challenge is None:
+            return
+        async with self._lock:
+            # A concurrent request may already have satisfied the same
+            # challenge while this response was in flight. Reuse that newer
+            # token instead of performing a duplicate authorization or
+            # scope step-up.
+            if self._token() == sent_token:
+                await self._authorize(challenge)
+            self._set_header(request)
+        yield request
+
+    async def _refresh_if_available(self) -> None:
+        if self.oauth is None:
+            return
+        with contextlib.suppress(NoActiveSession, ReauthorizationRequired):
+            self.credential = await self.oauth.bearer_token(self.scope, resource=self.resource)
+
+    def _token(self) -> str | None:
+        if self.credential is None:
+            return None
+        return self.credential.secret.get_secret_value()
+
+    def _set_header(self, request: httpx2.Request) -> None:
+        if self.credential is not None:
+            request.headers["Authorization"] = f"Bearer {self.credential.secret.get_secret_value()}"
+
+    async def _authorize(self, challenge: _OAuthChallenge) -> None:
+        if self.oauth is None:
+            raise McpServerUnreachable(
+                self.server.name,
+                f"HTTP {challenge.status_code}: the server requires OAuth authorization "
+                "but this MCP pool has no OAuthClient",
+            )
+        if challenge.status_code == 403:
+            self.credential = await self.oauth.step_up(
+                self.scope, resource=self.resource, challenge=challenge.challenge
+            )
+        else:
+            self.credential = await self.oauth.start(
+                self.scope,
+                resource=self.resource,
+                challenge=challenge.challenge,
+                identity=self.oauth_identity,
+                grant=self.oauth_grant,
+            )
+
+
 def _catalogue_etag(tools: tuple[ToolDefinition, ...]) -> str:
     """A content hash of a tool list, independent of the order the server
     returned it in or of key order inside any one tool's JSON Schema."""
@@ -635,10 +567,6 @@ def _coerce_ttl_seconds(ttl_ms: Any) -> float | None:
     if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, (int, float)):
         return None
     return ttl_ms / 1000.0
-
-
-def _coerce_cache_scope(value: Any) -> Literal["public", "private"] | None:
-    return value if value in ("public", "private") else None
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +670,6 @@ class McpConnection:
         self._oauth_resource = canonicalize_resource_uri(server.url) if oauth is not None else ""
 
         self._era: Literal["modern", "legacy"] | None = None
-        self._session_id: str | None = None
         self._instructions: str | None = None
         """What the server says it is for, from the handshake.
 
@@ -755,18 +682,20 @@ class McpConnection:
         nobody has described."""
         self._catalogue: _Catalogue | None = None
         self._catalogue_lock = asyncio.Lock()
-        self._ids = itertools.count(1)
-
         self._closed = False
         self._sweep_task: asyncio.Task[None] | None = None
-        self._notify_task: asyncio.Task[None] | None = None
+        self._sdk_task: asyncio.Task[None] | None = None
+        self._sdk_commands: asyncio.Queue[_SdkCommand] = asyncio.Queue()
+        self._sdk_auth: httpx2.Auth | None = None
+        self._oauth_credential_identity: str | None = None
+        self._catalogue_changed = asyncio.Event()
 
     def __repr__(self) -> str:
         # Deliberately never includes the credential secret, only its
         # identity: this is the object most likely to be printed while
         # debugging a pooling issue, which is exactly the moment a leaked
         # secret in a repr would be most damaging.
-        identity = self._credential.identity if self._credential is not None else None
+        identity = self.credential_identity
         return (
             f"McpConnection(server={self._server.name!r}, url={self._server.url!r}, "
             f"tenant={self._scope.tenant!r}, principal={self._scope.principal!r}, "
@@ -823,13 +752,18 @@ class McpConnection:
         token is acquired"). A refresh or a step-up afterwards never change
         this value.
         """
-        return self._credential.identity if self._credential is not None else None
+        if self._credential is not None:
+            return self._credential.identity
+        if self._oauth_credential_identity is not None:
+            return self._oauth_credential_identity
+        if isinstance(self._sdk_auth, _SdkAuth) and self._sdk_auth.credential is not None:
+            return self._sdk_auth.credential.identity
+        return None
 
     # -- lifecycle ------------------------------------------------------
 
     async def connect(self) -> None:
-        """Negotiate an era, handshake if legacy, populate the catalogue, and
-        start the refresh tasks.
+        """Open the official SDK client, negotiate, and populate the catalogue.
 
         Raises:
             McpServerUnreachable: the server could not be reached at all.
@@ -837,74 +771,274 @@ class McpConnection:
                 not a usable MCP handshake, or a typed subclass for a
                 recognised MCP error code.
         """
-        await self._negotiate_era()
-        if self._era == "legacy":
-            await self._legacy_initialize()
-        await self._refresh_catalogue()
+        loop = asyncio.get_running_loop()
+        ready: asyncio.Future[None] = loop.create_future()
+        self._sdk_task = asyncio.create_task(self._run_sdk(ready))
+        await ready
         self._sweep_task = asyncio.create_task(self._sweep_loop())
-        self._notify_task = asyncio.create_task(self._listen_for_notifications())
 
     async def close(self) -> None:
         self._closed = True
-        for task in (self._sweep_task, self._notify_task):
-            if task is not None:
-                task.cancel()
-        for task in (self._sweep_task, self._notify_task):
-            if task is not None:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+        if self._sweep_task is not None:
+            self._sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sweep_task
+        if self._sdk_task is not None and not self._sdk_task.done():
+            future = asyncio.get_running_loop().create_future()
+            await self._sdk_commands.put(_SdkCommand("close", future))
+            await future
+        if self._sdk_task is not None:
+            await self._sdk_task
 
-    # -- era negotiation --------------------------------------------------
+    async def _run_sdk(  # noqa: PLR0912, PLR0915 - lifecycle state machine
+        self, ready: asyncio.Future[None]
+    ) -> None:
+        """Own the SDK context on one task and serialize calls through it.
 
-    async def _negotiate_era(self) -> None:
-        """Decide, once, whether this server speaks the modern (2026-07-28,
-        stateless, per-request ``_meta``) or legacy (``initialize``-handshake)
-        protocol.
-
-        ``server/discover`` does double duty here exactly as the ticket that
-        added this asks: it is both the spec's up-front version-selection
-        call and this module's backward-compatibility probe, because
-        2026-07-28 servers **MUST** implement it, so a server that does not is,
-        by construction, an older one. This follows the Streamable HTTP
-        transport's own backward-compatibility rule: a response body
-        containing a recognised modern JSON-RPC error (``_MODERN_ERROR_CODES``)
-        identifies a modern server even when the probe itself failed; anything
-        else identifies a legacy one, whether a non-JSON body or an unrelated
-        error such as the "unknown session" a session-based server returns for
-        an unrecognised method before its handshake.
+        The SDK uses task-bound AnyIO cancel scopes. A pool may be closed by a
+        different Worker task than the one that opened it, so connection
+        setup, requests, and teardown are deliberately kept on this runner.
         """
+        listener: asyncio.Task[None] | None = None
+        watcher: asyncio.Task[None] | None = None
+        pending: _SdkCommand | None = None
+        try:
+            official_auth: tuple[httpx2.Auth, str] | None = None
+            if self._oauth is not None and self._credential is None:
+                official_auth = await self._oauth.sdk_auth(
+                    self._scope,
+                    resource=self._server.url,
+                    identity=self._oauth_identity,
+                    grant=self._oauth_grant,
+                    issuer=(self._server.oauth.issuer if self._server.oauth is not None else None),
+                )
+            if official_auth is not None:
+                self._sdk_auth, self._oauth_credential_identity = official_auth
+            else:
+                self._sdk_auth = _SdkAuth(
+                    scope=self._scope,
+                    server=self._server,
+                    credential=self._credential,
+                    oauth=self._oauth,
+                    oauth_identity=self._oauth_identity,
+                    oauth_grant=self._oauth_grant,
+                )
 
-        def build_body() -> dict[str, Any]:
-            return {
-                "jsonrpc": "2.0",
-                "id": self._next_id(),
-                "method": "server/discover",
-                "params": {"_meta": self._modern_meta()},
-            }
+            if self._server.transport == "sse":
 
-        def build_headers() -> dict[str, str]:
-            return self._modern_headers(method="server/discover", name=None)
+                def client_factory(
+                    headers: dict[str, str] | None = None,
+                    timeout: httpx2.Timeout | None = None,
+                    auth: httpx2.Auth | None = None,
+                ) -> httpx2.AsyncClient:
+                    return self._transport.protocol_client(
+                        scope=self._scope,
+                        headers=headers,
+                        timeout=timeout
+                        or httpx2.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
+                        auth=auth,
+                    )
 
-        response = await self._send(build_body=build_body, build_headers=build_headers)
+                sdk_transport = sse_client(
+                    self._server.url,
+                    auth=self._sdk_auth,
+                    httpx_client_factory=client_factory,
+                )
+            else:
+                http_client = self._transport.protocol_client(
+                    scope=self._scope,
+                    auth=self._sdk_auth,
+                )
+                sdk_transport = streamable_http_client(self._server.url, http_client=http_client)
 
-        payload = _try_decode_json_rpc_body(self._server.name, response)
-        error = payload.get("error") if isinstance(payload, dict) else None
-        if isinstance(error, dict) and error.get("code") in _MODERN_ERROR_CODES:
-            raise _error_to_exception(self._server.name, error)
+            async with contextlib.AsyncExitStack() as stack:
+                if self._server.transport != "sse":
+                    await stack.enter_async_context(http_client)
+                client = await stack.enter_async_context(
+                    SdkClient(
+                        sdk_transport,
+                        raise_exceptions=True,
+                        client_info=Implementation(name=_CLIENT_NAME, version=_CLIENT_VERSION),
+                        message_handler=self._sdk_message_handler,
+                        cache=None,
+                    )
+                )
+                version = client.protocol_version or ""
+                self._era = "modern" if version == _MODERN_PROTOCOL_VERSION else "legacy"
+                self._instructions = client.instructions
+                await self._sdk_refresh_catalogue(client)
+                if isinstance(self._sdk_auth, _SdkAuth):
+                    self._credential = self._sdk_auth.credential
+                if not ready.done():
+                    ready.set_result(None)
+                listener = asyncio.create_task(self._sdk_listen(client))
+                watcher = asyncio.create_task(self._sdk_watch_catalogue_changes())
 
-        result = payload.get("result") if isinstance(payload, dict) else None
-        if response.status_code < 400 and isinstance(result, dict):
-            supported = result.get("supportedVersions")
-            supported_list = (
-                [v for v in supported if isinstance(v, str)] if isinstance(supported, list) else []
+                while True:
+                    pending = await self._sdk_commands.get()
+                    if pending.kind == "close":
+                        if not pending.future.done():
+                            pending.future.set_result(None)
+                        pending = None
+                        break
+                    try:
+                        value: Any
+                        if pending.kind == "list":
+                            value = await self._sdk_refresh_catalogue(client)
+                        else:
+                            assert pending.name is not None
+                            value = await self._sdk_call_tool(client, pending)
+                        if not pending.future.done():
+                            pending.future.set_result(value)
+                    except BaseException as err:
+                        mapped = _sdk_exception(self._server.name, err)
+                        if not pending.future.done():
+                            pending.future.set_exception(mapped)
+                    finally:
+                        pending = None
+        except BaseException as err:
+            mapped = _sdk_exception(self._server.name, err)
+            if not ready.done():
+                ready.set_exception(mapped)
+            elif pending is not None and not pending.future.done():
+                pending.future.set_exception(mapped)
+        finally:
+            if listener is not None:
+                listener.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await listener
+            if watcher is not None:
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
+            while not self._sdk_commands.empty():
+                command = self._sdk_commands.get_nowait()
+                if not command.future.done():
+                    command.future.set_exception(
+                        McpServerUnreachable(self._server.name, "connection closed")
+                    )
+
+    async def _sdk_call_tool(self, client: SdkClient, command: _SdkCommand) -> McpToolResult:
+        assert command.name is not None
+        result = await client.session.call_tool(
+            command.name,
+            command.arguments or {},
+            allow_input_required=True,
+        )
+        dumped = result.model_dump(by_alias=True, mode="json", exclude_none=True)
+        if isinstance(result, InputRequiredResult):
+            raise McpInputRequiredError(self._server.name, dumped)
+        return McpToolResult(
+            content=_render_tool_result(dumped),
+            is_error=bool(getattr(result, "is_error", False)),
+        )
+
+    async def _sdk_refresh_catalogue(self, client: SdkClient) -> tuple[ToolDefinition, ...]:
+        tools: list[ToolDefinition] = []
+        cursor: str | None = None
+        ttl_ms: int | None = None
+        cache_scope: Literal["public", "private"] | None = None
+        while True:
+            listed = await client.list_tools(cursor=cursor, cache_mode="refresh")
+            tools.extend(
+                _tool_definition_from_mcp(
+                    tool.model_dump(by_alias=True, mode="json", exclude_none=True)
+                )
+                for tool in listed.tools
             )
-            if _MODERN_PROTOCOL_VERSION in supported_list:
-                self._era = "modern"
-                self._instructions = _instructions_of(result)
-                return
-            raise McpUnsupportedProtocolVersionError(self._server.name, None, supported_list)
+            if self._era == "modern":
+                ttl_ms = listed.ttl_ms
+                cache_scope = listed.cache_scope
+            cursor = listed.next_cursor
+            if cursor is None:
+                break
+        return self._install_catalogue(tuple(tools), ttl_ms, cache_scope)
 
-        self._era = "legacy"
+    def _install_catalogue(
+        self,
+        tools: tuple[ToolDefinition, ...],
+        ttl_ms: int | None,
+        cache_scope: Literal["public", "private"] | None,
+    ) -> tuple[ToolDefinition, ...]:
+        etag = _catalogue_etag(tools)
+        now = time.monotonic()
+        ttl_override = _coerce_ttl_seconds(ttl_ms)
+        if self._catalogue is not None and self._catalogue.etag == etag:
+            self._catalogue = replace(
+                self._catalogue,
+                fetched_at=now,
+                ttl_override_seconds=ttl_override,
+                cache_scope=cache_scope,
+            )
+        else:
+            self._catalogue = _Catalogue(
+                tools=tools,
+                etag=etag,
+                fetched_at=now,
+                ttl_override_seconds=ttl_override,
+                cache_scope=cache_scope,
+            )
+        return self._catalogue.tools
+
+    async def _sdk_listen(self, client: SdkClient) -> None:
+        if self._era != "modern":
+            return
+        delay = 0.1
+        while not self._closed:
+            try:
+                async with client.listen(tools_list_changed=True) as subscription:
+                    delay = 0.1
+                    iterator = subscription.__aiter__()
+                    while True:
+                        try:
+                            event = await anext(iterator)
+                        except StopAsyncIteration:
+                            break
+                        if isinstance(event, ToolsListChanged):
+                            self._catalogue_changed.set()
+                self._catalogue_changed.set()
+            except asyncio.CancelledError:
+                raise
+            except ListenNotSupportedError:
+                return
+            except MCPError as err:
+                if err.code in {-32601, -32602}:
+                    return
+                self._catalogue_changed.set()
+            except (SubscriptionLost, httpx2.HTTPError, TimeoutError, OSError):
+                self._catalogue_changed.set()
+            except Exception:
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 5.0)
+
+    async def _sdk_message_handler(self, message: Any) -> None:
+        if isinstance(message, ToolListChangedNotification):
+            self._catalogue_changed.set()
+        await asyncio.sleep(0)
+
+    async def _sdk_watch_catalogue_changes(self) -> None:
+        while True:
+            await self._catalogue_changed.wait()
+            self._catalogue_changed.clear()
+            with contextlib.suppress(McpServerUnreachable, McpProtocolError):
+                await self._refresh_catalogue()
+
+    async def _sdk_command(
+        self,
+        kind: Literal["list", "call"],
+        *,
+        name: str | None = None,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> Any:
+        if self._sdk_task is None or self._sdk_task.done():
+            raise McpServerUnreachable(self._server.name, "connection is closed")
+        future = asyncio.get_running_loop().create_future()
+        future.add_done_callback(_consume_future_exception)
+        await self._sdk_commands.put(
+            _SdkCommand(kind, future, name=name, arguments=dict(arguments or {}))
+        )
+        return await asyncio.shield(future)
 
     # -- catalogue --------------------------------------------------------
 
@@ -931,41 +1065,9 @@ class McpConnection:
 
     async def _refresh_catalogue(self) -> tuple[ToolDefinition, ...]:
         async with self._catalogue_lock:
-            raw = await self._request("tools/list", {})
-            raw_tools = raw.get("tools") if isinstance(raw, dict) else None
-            if not isinstance(raw_tools, list):
-                raise McpProtocolError(
-                    f"MCP server {self._server.name!r} returned a tools/list result "
-                    "with no 'tools' array"
-                )
-            tools = tuple(_tool_definition_from_mcp(entry) for entry in raw_tools)
-            etag = _catalogue_etag(tools)
-            now = time.monotonic()
-            ttl_override = _coerce_ttl_seconds(raw.get("ttlMs")) if isinstance(raw, dict) else None
-            cache_scope = (
-                _coerce_cache_scope(raw.get("cacheScope")) if isinstance(raw, dict) else None
-            )
-            if self._catalogue is not None and self._catalogue.etag == etag:
-                # Identical content: keep the existing tuple object rather
-                # than building an equal-but-new one, so anything holding a
-                # reference from before this refresh can tell nothing
-                # changed. The freshness timestamp and the server's current
-                # cache hints still move.
-                self._catalogue = replace(
-                    self._catalogue,
-                    fetched_at=now,
-                    ttl_override_seconds=ttl_override,
-                    cache_scope=cache_scope,
-                )
-            else:
-                self._catalogue = _Catalogue(
-                    tools=tools,
-                    etag=etag,
-                    fetched_at=now,
-                    ttl_override_seconds=ttl_override,
-                    cache_scope=cache_scope,
-                )
-            return self._catalogue.tools
+            result = await self._sdk_command("list")
+            assert isinstance(result, tuple)
+            return result
 
     async def _sweep_loop(self) -> None:
         """Background TTL refresh, so a catalogue nobody happens to poll
@@ -982,114 +1084,12 @@ class McpConnection:
             with contextlib.suppress(McpServerUnreachable, McpProtocolError):
                 await self._refresh_catalogue()
 
-    async def _listen_for_notifications(self) -> None:
-        if self._era == "modern":
-            await self._listen_for_notifications_modern()
-        else:
-            await self._listen_for_notifications_legacy()
-
-    async def _listen_for_notifications_legacy(self) -> None:
-        """Best-effort listener for ``notifications/tools/list_changed`` on a
-        legacy (pre-2026-07-28) server.
-
-        Opens the standalone GET SSE stream the Streamable HTTP transport
-        allowed for server-to-client push in those revisions. Not every
-        server implements it (DESIGN.md §10.3 says "where supported"), so a
-        4xx/5xx or a transport error here just means this connection falls
-        back to the TTL sweep and on-demand refresh, silently and
-        permanently for this connection's lifetime, which is the correct
-        degrade rather than a fatal one.
-        """
-        try:
-            async with self._transport.stream(
-                "GET",
-                self._server.url,
-                scope=self._scope,
-                headers=self._legacy_headers(accept="text/event-stream"),
-                timeout=_NOTIFY_STREAM_TIMEOUT,
-            ) as response:
-                if response.status_code >= 400:
-                    return
-                async for message in _iter_sse_stream(response):
-                    if message.get("method") == "notifications/tools/list_changed":
-                        with contextlib.suppress(McpServerUnreachable, McpProtocolError):
-                            await self._refresh_catalogue()
-        except asyncio.CancelledError:
-            raise
-        except httpx.HTTPError:
-            return
-
-    async def _listen_for_notifications_modern(self) -> None:
-        """Best-effort listener for ``notifications/tools/list_changed`` on a
-        2026-07-28 server, via ``subscriptions/listen``.
-
-        This replaces the standalone GET stream: a single long-lived POST
-        whose response stream stays open and carries only the notification
-        types requested (here, ``toolsListChanged``). Same degrade
-        philosophy as the legacy listener: a server that does not support
-        subscriptions, or a stream that drops, leaves this connection on the
-        TTL sweep and on-demand refresh for the rest of its life. There is no
-        resumability to attempt in either era. 2026-07-28 removed
-        ``Last-Event-ID`` from the *request* stream too, but this listener
-        never had one to resume in the first place, so a drop here is simply
-        a silent, permanent degrade, exactly as it always was.
-        """
-        subscription_id = self._next_id()
-        body = {
-            "jsonrpc": "2.0",
-            "id": subscription_id,
-            "method": "subscriptions/listen",
-            "params": {
-                "_meta": self._modern_meta(),
-                "notifications": {"toolsListChanged": True},
-            },
-        }
-        headers = self._modern_headers(
-            method="subscriptions/listen", name=None, accept="text/event-stream"
-        )
-        try:
-            async with self._transport.stream(
-                "POST",
-                self._server.url,
-                scope=self._scope,
-                headers=headers,
-                json=body,
-                timeout=_NOTIFY_STREAM_TIMEOUT,
-            ) as response:
-                if response.status_code >= 400:
-                    return
-                async for message in _iter_sse_stream(response):
-                    await self._handle_subscription_message(subscription_id, message)
-        except asyncio.CancelledError:
-            raise
-        except httpx.HTTPError:
-            return
-
-    async def _handle_subscription_message(
-        self, subscription_id: int, message: Mapping[str, Any]
-    ) -> None:
-        params = message.get("params")
-        meta = params.get("_meta") if isinstance(params, Mapping) else None
-        if not isinstance(meta, Mapping):
-            return
-        if meta.get("io.modelcontextprotocol/subscriptionId") != subscription_id:
-            return  # a different concurrent subscription's message, not ours
-        if message.get("method") == "notifications/tools/list_changed":
-            with contextlib.suppress(McpServerUnreachable, McpProtocolError):
-                await self._refresh_catalogue()
-
     # -- calling ------------------------------------------------------------
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolResult:
-        result = await self._request(
-            "tools/call", {"name": name, "arguments": dict(arguments)}, name=name
-        )
-        if not isinstance(result, dict):
-            raise McpProtocolError(
-                f"MCP server {self._server.name!r} returned a non-object tools/call result"
-            )
-        content = _flatten_content(result.get("content") or [])
-        return McpToolResult(content=content, is_error=bool(result.get("isError", False)))
+        result = await self._sdk_command("call", name=name, arguments=arguments)
+        assert isinstance(result, McpToolResult)
+        return result
 
     async def call_tool_text(self, name: str, arguments: Mapping[str, Any]) -> str:
         """``call_tool``, with a failure raised and a success flattened to text.
@@ -1105,359 +1105,46 @@ class McpConnection:
             raise McpToolError(self._server.name, name, result.content)
         return result.content
 
-    # -- wire ---------------------------------------------------------------
 
-    def _next_id(self) -> int:
-        return next(self._ids)
+def _sdk_exception(  # noqa: PLR0911 - ordered boundary translation
+    server: str, error: BaseException
+) -> PsychError:
+    """Translate SDK, validation, and transport failures into Psych's API."""
+    if isinstance(error, PsychError):
+        return error
+    if isinstance(error, BaseExceptionGroup):
+        for nested in error.exceptions:
+            if not isinstance(nested, asyncio.CancelledError):
+                return _sdk_exception(server, nested)
+        return McpServerUnreachable(server, "connection was cancelled")
+    if isinstance(error, MCPError):
+        if error.code == -32000 and any(
+            marker in error.message.lower()
+            for marker in ("stream ended", "connection closed", "transport")
+        ):
+            return McpServerUnreachable(server, error.message)
+        return _error_to_exception(
+            server,
+            {"code": error.code, "message": error.message, "data": error.data},
+        )
+    if isinstance(error, (OAuthFlowError, OAuthRegistrationError, OAuthTokenError)):
+        return McpServerUnreachable(server, f"OAuth authorization failed: {error}")
+    if isinstance(error, ValidationError):
+        return McpProtocolError(f"MCP server {server!r} returned an invalid response: {error}")
+    if isinstance(error, (httpx.HTTPError, httpx2.HTTPError, TimeoutError, OSError)):
+        return McpServerUnreachable(server, str(error))
+    return McpProtocolError(f"MCP server {server!r} failed protocol handling: {error}")
 
-    def _modern_meta(self) -> dict[str, Any]:
-        """The ``_meta`` block every 2026-07-28 request carries: protocol
-        version and capabilities are required, client identity is a SHOULD
-        Psych always includes. Capabilities are always empty: Psych declares
-        none of roots, sampling, or elicitation, on purpose (see
-        ``McpInputRequiredError``), so a server needing one of them fails the
-        call with ``McpMissingClientCapabilityError`` rather than Psych
-        silently pretending to support it.
-        """
-        return {
-            "io.modelcontextprotocol/protocolVersion": _MODERN_PROTOCOL_VERSION,
-            "io.modelcontextprotocol/clientCapabilities": {},
-            "io.modelcontextprotocol/clientInfo": {
-                "name": _CLIENT_NAME,
-                "version": _CLIENT_VERSION,
-            },
-        }
 
-    def _modern_headers(
-        self, *, method: str, name: str | None, accept: str = "application/json, text/event-stream"
-    ) -> dict[str, str]:
-        """Streamable HTTP's required request-metadata headers for 2026-07-28:
-        ``MCP-Protocol-Version`` mirrors ``_meta``'s protocol version,
-        ``Mcp-Method`` mirrors the JSON-RPC method, and ``Mcp-Name`` (only for
-        ``tools/call``, ``resources/read``, ``prompts/get``) mirrors the
-        target name. Values here are assumed header-safe ASCII; the spec's
-        Base64 sentinel encoding for names or params that are not is not
-        implemented (see the module docstring's list of what this revision
-        does not cover yet).
-        """
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": accept,
-            "MCP-Protocol-Version": _MODERN_PROTOCOL_VERSION,
-            "Mcp-Method": method,
-        }
-        if name is not None:
-            headers["Mcp-Name"] = name
-        if self._credential is not None:
-            # The one place the secret value is read: straight into an
-            # outbound header for this request, never assigned to an
-            # attribute, never logged, never part of a repr.
-            headers["Authorization"] = f"Bearer {self._credential.secret.get_secret_value()}"
-        return headers
-
-    def _legacy_headers(
-        self, *, accept: str = "application/json, text/event-stream"
-    ) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", "Accept": accept}
-        if self._session_id is not None:
-            headers["Mcp-Session-Id"] = self._session_id
-        if self._credential is not None:
-            headers["Authorization"] = f"Bearer {self._credential.secret.get_secret_value()}"
-        return headers
-
-    async def _legacy_initialize(self) -> None:
-        def build_body() -> dict[str, Any]:
-            return {
-                "jsonrpc": "2.0",
-                "id": self._next_id(),
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": _LEGACY_PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": _CLIENT_NAME, "version": _CLIENT_VERSION},
-                },
-            }
-
-        response = await self._send(build_body=build_body, build_headers=self._legacy_headers)
-        result = _read_json_rpc_result(self._server.name, response)
-        self._instructions = _instructions_of(result)
-        session_id = response.headers.get("mcp-session-id")
-        if session_id:
-            self._session_id = session_id
-        await self._notify("notifications/initialized")
-
-    async def _notify(self, method: str) -> None:
-        body = {"jsonrpc": "2.0", "method": method}
-        try:
-            response = await self._transport.request(
-                "POST",
-                self._server.url,
-                scope=self._scope,
-                headers=self._legacy_headers(),
-                json=body,
-                timeout=_REQUEST_TIMEOUT,
-            )
-        except httpx.HTTPError as err:
-            raise McpServerUnreachable(self._server.name, str(err)) from err
-        if response.status_code >= 400:
-            raise McpServerUnreachable(
-                self._server.name, f"{method} returned HTTP {response.status_code}"
-            )
-
-    async def _request(
-        self, method: str, params: dict[str, Any], *, name: str | None = None
-    ) -> Any:
-        """Send one JSON-RPC request and return its ``result``.
-
-        Every call gets a fresh id from ``_next_id()`` regardless of what
-        came before, including a previous call that failed: 2026-07-28
-        removed SSE resumability entirely, so a broken response stream is
-        never resumed, only re-issued as a brand new request with a brand
-        new id. There is nothing special to implement for that rule beyond
-        never reusing an id, which this already does not do.
-        """
-        if self._oauth is not None:
-            # Refresh before the token has a chance to expire, so a
-            # long-idle connection renews transparently rather than waiting
-            # for the server to answer with a 401 first. No session yet
-            # (nothing has ever authenticated against this resource) and a
-            # session whose refresh just failed are both left for the
-            # ordinary 401 path below to establish or re-establish: neither
-            # is a reason to fail this call before it was even attempted.
-            with contextlib.suppress(NoActiveSession, ReauthorizationRequired):
-                self._credential = await self._oauth.bearer_token(
-                    self._scope, resource=self._oauth_resource
-                )
-
-        def build_body() -> dict[str, Any]:
-            if self._era == "modern":
-                merged_params = dict(params)
-                merged_params["_meta"] = self._modern_meta()
-            else:
-                merged_params = params
-            return {
-                "jsonrpc": "2.0",
-                "id": self._next_id(),
-                "method": method,
-                "params": merged_params,
-            }
-
-        def build_headers() -> dict[str, str]:
-            if self._era == "modern":
-                return self._modern_headers(method=method, name=name)
-            return self._legacy_headers()
-
-        response = await self._send(build_body=build_body, build_headers=build_headers)
-        return _read_json_rpc_result(self._server.name, response)
-
-    # -- OAuth --------------------------------------------------------------
-
-    async def _post(self, body: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
-        try:
-            return await self._transport.request(
-                "POST",
-                self._server.url,
-                scope=self._scope,
-                headers=headers,
-                json=body,
-                timeout=_REQUEST_TIMEOUT,
-            )
-        except httpx.HTTPError as err:
-            raise McpServerUnreachable(self._server.name, str(err)) from err
-
-    async def _send(
-        self,
-        *,
-        build_body: Callable[[], dict[str, Any]],
-        build_headers: Callable[[], dict[str, str]],
-    ) -> httpx.Response:
-        """POST one JSON-RPC message, transparently handling exactly one
-        OAuth challenge.
-
-        ``build_body``/``build_headers`` are callables rather than
-        precomputed values because a retry has to rebuild both: a fresh
-        request id (this module never resumes or reuses one, a retry
-        included) and headers carrying whatever credential the OAuth
-        exchange the challenge triggered just installed on
-        ``self._credential``.
-
-        Used by every request this connection makes that a server could
-        plausibly protect with OAuth: era negotiation, the legacy handshake,
-        and ordinary requests alike. Never loops: a challenge on the retried
-        response is left for the ordinary error handling below to report,
-        not chased with a second retry.
-        """
-        response = await self._post(build_body(), build_headers())
-        challenge = _oauth_challenge_from(response)
-        if challenge is None:
-            return response
-        await self._authorize_challenge(challenge)
-        return await self._post(build_body(), build_headers())
-
-    async def _authorize_challenge(self, oauth_challenge: _OAuthChallenge) -> None:
-        if self._oauth is None:
-            raise McpServerUnreachable(
-                self._server.name,
-                f"HTTP {oauth_challenge.status_code}: the server requires OAuth "
-                "authorization (it sent a WWW-Authenticate: Bearer challenge) but this "
-                "MCP connection has no OAuthClient configured; pass oauth= to McpPool "
-                "to enable it",
-            )
-        if oauth_challenge.status_code == 403:
-            credential = await self._oauth.step_up(
-                self._scope,
-                resource=self._oauth_resource,
-                challenge=oauth_challenge.challenge,
-            )
-        else:
-            credential = await self._oauth.start(
-                self._scope,
-                resource=self._oauth_resource,
-                challenge=oauth_challenge.challenge,
-                identity=self._oauth_identity,
-                grant=self._oauth_grant,
-            )
-        self._credential = credential
+def _consume_future_exception(future: asyncio.Future[Any]) -> None:
+    """Observe a queued result when its original waiter was cancelled."""
+    if not future.cancelled():
+        future.exception()
 
 
 # ---------------------------------------------------------------------------
 # Wire helpers
 # ---------------------------------------------------------------------------
-
-
-def _decode_json_rpc_body(server: str, response: httpx.Response) -> dict[str, Any]:
-    """Decode a response body that is expected to be usable JSON-RPC.
-
-    Raises ``McpProtocolError`` for anything that is not: the server was
-    reached and had something to say, it just is not something MCP can use.
-    """
-    content_type = response.headers.get("content-type", "")
-    if "application/json" in content_type:
-        try:
-            payload = response.json()
-        except (json.JSONDecodeError, ValueError) as err:
-            raise McpProtocolError(
-                f"MCP server {server!r} sent a body that is not valid JSON"
-            ) from err
-    elif "text/event-stream" in content_type:
-        payload = _extract_single_sse_json(server, response.text)
-    else:
-        raise McpProtocolError(
-            f"MCP server {server!r} responded with unexpected content-type {content_type!r}"
-        )
-    if not isinstance(payload, dict):
-        raise McpProtocolError(f"MCP server {server!r} response was not a JSON object")
-    return payload
-
-
-def _try_decode_json_rpc_body(server: str, response: httpx.Response) -> dict[str, Any] | None:
-    """Best-effort decode for the ``server/discover`` era-negotiation probe.
-
-    Never raises: a body this cannot make sense of is itself the signal that
-    the server does not speak a recognisable modern error shape, which the
-    probe treats as "fall back to the legacy handshake" rather than a reason
-    to blow up before the caller can act on that.
-    """
-    with contextlib.suppress(McpProtocolError):
-        return _decode_json_rpc_body(server, response)
-    return None
-
-
-def _read_json_rpc_result(server: str, response: httpx.Response) -> Any:
-    if response.status_code >= 400:
-        payload = _try_decode_json_rpc_body(server, response)
-        error = payload.get("error") if isinstance(payload, dict) else None
-        if isinstance(error, dict):
-            raise _error_to_exception(server, error)
-        raise McpServerUnreachable(server, f"HTTP {response.status_code}")
-
-    payload = _decode_json_rpc_body(server, response)
-    if "error" in payload:
-        raise _error_to_exception(server, payload.get("error") or {})
-    result = payload.get("result")
-    result_type = result.get("resultType") if isinstance(result, dict) else None
-    if result_type == "input_required":
-        raise McpInputRequiredError(server, result if isinstance(result, dict) else {})
-    if result_type is not None and result_type != "complete":
-        # MCP basic index §ResultType: "A resultType of any value unrecognized
-        # by the client MUST be considered invalid." Extensions this client
-        # does not implement can mint new values; failing loudly beats
-        # silently treating an unknown shape as ordinary content.
-        raise McpProtocolError(
-            f"MCP server {server!r} returned an unrecognized resultType {result_type!r}"
-        )
-    return result
-
-
-def _extract_single_sse_json(server: str, text: str) -> Any:
-    """Pull the JSON payload out of a single-message SSE response body.
-
-    Used for the POST responses, which the Streamable HTTP transport allows a
-    server to answer with either ``application/json`` or a short-lived
-    ``text/event-stream`` carrying exactly one ``data:`` event. Unlike the
-    standalone notification streams, this body is already fully buffered
-    (``McpTransport.request`` reads it to completion), so this is a plain
-    string split rather than incremental parsing.
-    """
-    data_lines: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip("\r")
-        if line == "":
-            if data_lines:
-                break
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line.removeprefix("data:").removeprefix(" "))
-    if not data_lines:
-        raise McpProtocolError(f"MCP server {server!r} sent an empty SSE response")
-    try:
-        return json.loads("\n".join(data_lines))
-    except json.JSONDecodeError as err:
-        raise McpProtocolError(f"MCP server {server!r} sent a non-JSON SSE payload") from err
-
-
-async def _iter_sse_stream(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:
-    """Decode a long-lived notification stream, one JSON-RPC message at a
-    time, as it arrives. Malformed events are skipped rather than fatal: one
-    bad push must not take down the whole notification listener. Shared by
-    both the legacy GET stream and the modern ``subscriptions/listen``
-    stream: both are plain SSE framing over an open response body, which is
-    exactly what 2026-07-28 kept (only the old *separate* HTTP+SSE transport,
-    and resumability, are what it removed)."""
-    data_lines: list[str] = []
-    async for raw_line in response.aiter_lines():
-        line = raw_line.rstrip("\n").rstrip("\r")
-        if line == "":
-            if data_lines:
-                payload = "\n".join(data_lines)
-                data_lines = []
-                with contextlib.suppress(json.JSONDecodeError):
-                    parsed = json.loads(payload)
-                    if isinstance(parsed, dict):
-                        yield parsed
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line.removeprefix("data:").removeprefix(" "))
-
-
-def _instructions_of(result: Any) -> str | None:
-    """A handshake result's ``instructions``, if it carried usable text.
-
-    Anything that is not a non-empty string is treated as absent rather than
-    coerced: a server sending a number or an object here is malformed, and
-    rendering ``str()`` of it into a system prompt would put a Python repr in
-    front of the model.
-    """
-    if not isinstance(result, Mapping):
-        return None
-    text = result.get("instructions")
-    if isinstance(text, str) and text.strip():
-        return text
-    return None
 
 
 def _map_annotations(raw: Mapping[str, Any] | None) -> frozenset[str]:
@@ -1498,6 +1185,19 @@ def _flatten_content(items: Sequence[Mapping[str, Any]]) -> str:
         else:
             parts.append(f"[unsupported MCP content type: {item.get('type')!r}]")
     return "\n".join(parts)
+
+
+def _render_tool_result(result: Mapping[str, Any]) -> str:
+    content = _flatten_content(result.get("content") or [])
+    structured = result.get("structuredContent")
+    if structured is None:
+        return content
+    structured_text = json.dumps(structured, sort_keys=True, separators=(",", ":"))
+    if not content:
+        return structured_text
+    if content.strip() == structured_text:
+        return content
+    return f"{content}\n\nStructured content:\n{structured_text}"
 
 
 # ---------------------------------------------------------------------------
@@ -1993,7 +1693,7 @@ class McpTools:
     async def call(
         self, spec: AgentSpec, scope: Scope, name: str, arguments: dict[str, Any]
     ) -> Any:
-        """Run ``name`` on whichever granted server offers it.
+        """Run ``name`` on the one granted server identified by the resolved name.
 
         Raises:
             AccessDenied: no granted server offers a tool of that name that
@@ -2004,6 +1704,8 @@ class McpTools:
                 call for different next moves, and the second is a lie.
         """
         unreachable: Exception | None = None
+        raw_matches: list[tuple[str, McpConnection, str]] = []
+        qualified_matches: list[tuple[str, McpConnection, str]] = []
 
         for server in spec.mcp_servers:
             try:
@@ -2021,8 +1723,31 @@ class McpTools:
                 await self._tenant_allows(scope, server.name),
                 list(server.allow),
             )
-            if name in callable_here:
-                return await connection.call_tool_text(name, arguments)
+            for raw_name in callable_here:
+                if name == raw_name:
+                    raw_matches.append((server.name, connection, raw_name))
+                if name == mcp_tool_name(server.name, raw_name):
+                    qualified_matches.append((server.name, connection, raw_name))
+
+        if len(qualified_matches) == 1:
+            _, connection, raw_name = qualified_matches[0]
+            return await connection.call_tool_text(raw_name, arguments)
+        if len(qualified_matches) > 1:
+            raise AccessDenied(
+                f"tool {name!r}",
+                "its qualified name matches more than one MCP server; rename one server alias",
+            )
+        if len(raw_matches) == 1:
+            _, connection, raw_name = raw_matches[0]
+            return await connection.call_tool_text(raw_name, arguments)
+        if len(raw_matches) > 1:
+            choices = ", ".join(
+                mcp_tool_name(server_name, raw_name) for server_name, _, raw_name in raw_matches
+            )
+            raise AccessDenied(
+                f"tool {name!r}",
+                f"more than one MCP server offers it; call a server-qualified name ({choices})",
+            )
 
         if unreachable is not None:
             raise unreachable

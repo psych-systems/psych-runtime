@@ -45,10 +45,19 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+import httpx2
+from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.auth.extensions.client_credentials import ClientCredentialsOAuthProvider
+from mcp.shared.auth import (
+    AuthorizationCodeResult,
+    OAuthClientInformationFull,
+    OAuthClientMetadata,
+    OAuthToken,
+)
+from pydantic import AnyUrl, BaseModel, ConfigDict, SecretStr, TypeAdapter, ValidationError
 
 from psych_runtime.core.scope import Scope
 from psych_runtime.tools.oauth.challenge import BearerChallenge, find_bearer_challenge
@@ -174,6 +183,34 @@ class _Session:
     tokens: TokenSet
 
 
+@dataclass(frozen=True, slots=True)
+class _SdkStorageKey:
+    tenant: str
+    principal: str | None
+    resource: str
+    identity: str
+
+
+class _SdkTokenStorage(TokenStorage):
+    """One SDK token store, isolated by the manager's scope-aware key."""
+
+    def __init__(self) -> None:
+        self.tokens: OAuthToken | None = None
+        self.client_info: OAuthClientInformationFull | None = None
+
+    async def get_tokens(self) -> OAuthToken | None:
+        return self.tokens
+
+    async def set_tokens(self, tokens: OAuthToken) -> None:
+        self.tokens = tokens
+
+    async def get_client_info(self) -> OAuthClientInformationFull | None:
+        return self.client_info
+
+    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        self.client_info = client_info
+
+
 def _grant_identity(scope: Scope, *, issuer: str, resource: str, client_id: str) -> str:
     """A stable, non-secret identity for one (scope, issuer, resource,
     client) grant. Never derived from the access token's bytes -- see this
@@ -267,11 +304,13 @@ def _parse_token_error(response: httpx.Response) -> tuple[str, str | None]:
 
 
 class OAuthClient:
-    """A process-wide OAuth 2.1 client for MCP servers.
+    """Scope-aware OAuth state and SDK provider factory for MCP servers.
 
     Construct one per process, the same as ``psych_runtime.tools.mcp.McpPool``, and
     share it across every tenant and every server; every store this class
-    keeps is scope-isolated internally (see the module docstring).
+    keeps is scope-isolated internally. MCP connections ask this object for an
+    official SDK auth provider. The older public flow methods remain available
+    for configurations the SDK does not yet represent.
 
     ``redirect`` is required to call ``start`` or ``step_up`` with
     ``grant="authorization_code"``; a consumer using ``client_credentials``
@@ -294,6 +333,156 @@ class OAuthClient:
         self._sessions: dict[_SessionKey, _Session] = {}
         self._locks: dict[_SessionKey, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
+        self._sdk_storages: dict[_SdkStorageKey, _SdkTokenStorage] = {}
+
+    async def sdk_auth(
+        self,
+        scope: Scope,
+        *,
+        resource: str,
+        identity: ClientIdentityConfig,
+        grant: GrantKind,
+        issuer: str | None = None,
+    ) -> tuple[httpx2.Auth, str] | None:
+        """Build the official MCP SDK OAuth provider for this connection.
+
+        ``None`` selects the compatibility flow for a client-credentials
+        configuration the SDK does not represent, or for an incomplete
+        authorization-code host integration. The SDK still owns the MCP
+        protocol in both cases.
+        """
+        canonical_resource = canonicalize_resource_uri(resource)
+        stable_identity = self._sdk_identity(
+            scope,
+            resource=canonical_resource,
+            identity=identity,
+            grant=grant,
+            issuer=issuer,
+        )
+        key = _SdkStorageKey(
+            tenant=scope.tenant,
+            principal=scope.principal,
+            resource=canonical_resource,
+            identity=stable_identity,
+        )
+        storage = self._sdk_storages.setdefault(key, _SdkTokenStorage())
+
+        if grant == "client_credentials":
+            client_id = identity.preregistered_client_id
+            client_secret = identity.preregistered_client_secret
+            if client_id is None or client_secret is None or issuer is None:
+                return None
+            provider = ClientCredentialsOAuthProvider(
+                server_url=canonical_resource,
+                storage=storage,
+                client_id=client_id,
+                client_secret=client_secret.get_secret_value(),
+                issuer=issuer,
+            )
+            return provider, stable_identity
+
+        redirect = self._redirect
+        if redirect is None:
+            return None
+        if not identity.redirect_uris:
+            return None
+        if (
+            identity.preregistered_client_id is None
+            and identity.cimd_url is None
+            and not identity.allow_dynamic_registration
+        ):
+            return None
+
+        pending_callback: AuthorizationCodeResult | None = None
+
+        async def redirect_handler(authorization_url: str) -> None:
+            nonlocal pending_callback
+            state = parse_qs(urlsplit(authorization_url).query).get("state", [""])[0]
+            callback = await redirect.authorize(
+                scope,
+                authorization_url=authorization_url,
+                state=state,
+            )
+            if callback.error is not None:
+                detail = callback.error_description or callback.error
+                raise AuthorizationDenied(detail)
+            if callback.code is None:
+                raise AuthorizationDenied("authorization callback carried no code")
+            pending_callback = AuthorizationCodeResult(
+                code=callback.code,
+                state=callback.state,
+                iss=callback.iss,
+            )
+
+        async def callback_handler() -> AuthorizationCodeResult:
+            if pending_callback is None:
+                raise AuthorizationDenied("authorization callback was not received")
+            return pending_callback
+
+        redirect_uris = TypeAdapter(list[AnyUrl]).validate_python(identity.redirect_uris)
+        metadata = OAuthClientMetadata(
+            client_name=identity.client_name,
+            application_type=identity.application_type,
+            redirect_uris=redirect_uris,
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method=(
+                "client_secret_basic"
+                if identity.preregistered_client_secret is not None
+                else "none"
+            ),
+        )
+        if identity.preregistered_client_id is not None and storage.client_info is None:
+            storage.client_info = OAuthClientInformationFull(
+                client_id=identity.preregistered_client_id,
+                client_secret=(
+                    identity.preregistered_client_secret.get_secret_value()
+                    if identity.preregistered_client_secret is not None
+                    else None
+                ),
+                client_name=identity.client_name,
+                application_type=identity.application_type,
+                redirect_uris=redirect_uris,
+                grant_types=["authorization_code", "refresh_token"],
+                response_types=["code"],
+                token_endpoint_auth_method=metadata.token_endpoint_auth_method,
+                issuer=issuer,
+            )
+        oauth_provider = OAuthClientProvider(
+            server_url=canonical_resource,
+            client_metadata=metadata,
+            storage=storage,
+            redirect_handler=redirect_handler,
+            callback_handler=callback_handler,
+            client_metadata_url=identity.cimd_url,
+        )
+        return oauth_provider, stable_identity
+
+    @staticmethod
+    def _sdk_identity(
+        scope: Scope,
+        *,
+        resource: str,
+        identity: ClientIdentityConfig,
+        grant: GrantKind,
+        issuer: str | None,
+    ) -> str:
+        digest = hashlib.sha256()
+        secret = identity.preregistered_client_secret
+        parts = (
+            scope.tenant,
+            scope.principal or "",
+            resource,
+            grant,
+            issuer or "",
+            identity.preregistered_client_id or "",
+            identity.cimd_url or "",
+            secret.get_secret_value() if secret is not None else "",
+        )
+        for part in parts:
+            digest.update(part.encode())
+            digest.update(b"\0")
+        return digest.hexdigest()
 
     # -- the public flow --------------------------------------------------
 
@@ -531,6 +720,13 @@ class OAuthClient:
         was handled elsewhere, or a consumer-driven logout."""
         canonical_resource = canonicalize_resource_uri(resource)
         self._sessions.pop(_SessionKey.from_scope(scope=scope, resource=canonical_resource), None)
+        for key in tuple(self._sdk_storages):
+            if (
+                key.tenant == scope.tenant
+                and key.principal == scope.principal
+                and key.resource == canonical_resource
+            ):
+                self._sdk_storages.pop(key, None)
 
     # -- discovery + registration ------------------------------------------
 

@@ -131,6 +131,7 @@ class McpOAuthIn(_ApiModel):
     grant: Literal["authorization_code", "client_credentials"] = "client_credentials"
     preregistered_client_id: str | None = None
     client_secret_credential: str | None = None
+    issuer: str | None = None
     cimd_url: str | None = None
     allow_dynamic_registration: bool = True
     application_type: Literal["native", "web"] = "native"

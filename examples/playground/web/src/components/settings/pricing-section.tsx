@@ -15,7 +15,7 @@ import { FieldError } from "@/components/settings/validation";
 /**
  * What each model costs, so a Run can report a number instead of a shrug.
  *
- * Psych ships rates for nine models and records `cost=None` for anything else.
+ * Psych ships a broad, dated rate snapshot and records `cost=None` for anything else.
  * That is deliberate and stays: a silent zero makes metering look correct and
  * be wrong, and nobody finds out until they reconcile against a bill. What was
  * missing is the seam on the other side. `PriceResolver` is a port so a
@@ -81,7 +81,7 @@ export function PricingSection({
   return (
     <Section
       title="What models cost"
-      description="Psych knows the rates for a handful of models and says so honestly when it does not. Add yours here and conversations start reporting a cost instead of an unknown."
+      description="Psych includes a broad rate snapshot and says so honestly when a model is absent. Add your actual rates here to replace catalog estimates with the terms you pay."
       actions={
         <Button
           size="sm"

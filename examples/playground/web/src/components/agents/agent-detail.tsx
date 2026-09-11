@@ -145,7 +145,7 @@ export function AgentDetail({ agentId }: { agentId: string }) {
           <EmptyState
             icon={AlertTriangleIcon}
             title="This agent is not being offered"
-            description="It was either never published here or someone has since stopped offering it. Conversations it already had are still in Activity."
+            description="It was either never published here or someone has since stopped offering it. Existing conversations are still available."
             action={
               <Button asChild size="sm" variant="outline">
                 <Link href="/agents">Back to agents</Link>
@@ -516,7 +516,7 @@ function RunList({ runs, agentId }: { runs: RunSummary[] | null; agentId: string
   // Folded into conversations, not listed as Runs. A second message continues
   // the first Run rather than extending it, so a three-message
   // exchange is three Runs; listing them raw put the same conversation on the
-  // page three times, disagreeing with Activity and Chat, which both fold.
+  // page three times, disagreeing with Conversations and Chat, which both fold.
   const conversations = groupConversations(runs);
   return (
     <ul className="flex flex-col gap-1.5">

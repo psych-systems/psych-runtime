@@ -1170,6 +1170,9 @@ class ThreadTotalsOut(_ApiModel):
     """Counted inside ``output_tokens`` by every provider that reports them, so
     never add this to the total: it is a breakdown, not a fifth bucket."""
     total_tokens: int
+    usage_source: Literal["provider", "partial", "unknown"] = "provider"
+    unreported_usage_calls: int = 0
+    """Finished calls whose provider response omitted usage entirely."""
     cost_amount: str | None = None
     """A decimal string, never a float: this is money summed across calls.
     ``None`` when not one call in the conversation had a known price."""
@@ -1180,6 +1183,12 @@ class ThreadTotalsOut(_ApiModel):
     conversation used both. Named rather than blended, because reconciling
     against an invoice needs to know which rows came from where."""
     provider_reported_costs: int = 0
+    cost_input_amount: str | None = None
+    cost_output_amount: str | None = None
+    cost_cache_read_amount: str | None = None
+    cost_cache_write_amount: str | None = None
+    """Per-category money, present only when every priced call supplied a
+    breakdown. Provider totals commonly omit it; ``None`` is honest there."""
     unpriced_model_calls: int
     cost_is_incomplete: bool
     """True when at least one call had no known rate. Keeps "this cost $0.02"

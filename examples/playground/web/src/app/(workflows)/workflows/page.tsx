@@ -153,7 +153,7 @@ export default function WorkflowsPage() {
           <DialogHeader>
             <DialogTitle>Stop offering {pendingDelete?.name}?</DialogTitle>
             <DialogDescription>
-              It disappears from this list. Every run it already had stays in Activity and stays
+              It disappears from this list. Every run it already had stays in Conversations and stays
               readable.
             </DialogDescription>
           </DialogHeader>

@@ -12,7 +12,9 @@ be wrong, and nobody discovers it until they reconcile against a provider bill.
 
 from __future__ import annotations
 
+import json
 from decimal import ROUND_HALF_EVEN, Decimal
+from pathlib import Path
 from typing import Final, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +23,7 @@ from psych_runtime.core.usage import Cost, Usage
 
 __all__ = [
     "DEFAULT_PRICES",
+    "DEFAULT_PRICE_CATALOG_VERSION",
     "CostPolicy",
     "ModelPrice",
     "PriceResolver",
@@ -164,6 +167,8 @@ def resolve_cost(
     resolver: PriceResolver | None,
     reported: Cost | None,
     policy: CostPolicy = "prefer_provider",
+    *,
+    usage_reported: bool = True,
 ) -> Cost | None:
     """The cost to record for one model call, under ``policy``.
 
@@ -186,6 +191,8 @@ def resolve_cost(
         zero standing in for an unknown.
     """
     if policy == "computed":
+        if not usage_reported:
+            return None
         return compute_cost(model, usage, resolver) if resolver is not None else None
     if reported is not None:
         # Stamped rather than trusted to be stamped. A client is free to
@@ -195,6 +202,8 @@ def resolve_cost(
         # prevent.
         return reported.model_copy(update={"source": "provider"})
     if policy == "provider_only":
+        return None
+    if not usage_reported:
         return None
     return compute_cost(model, usage, resolver) if resolver is not None else None
 
@@ -232,57 +241,55 @@ def compute_cost(model: str, usage: Usage, resolver: PriceResolver) -> Cost | No
         price.cache_write_1h if price.cache_write_1h is not None else price.cache_write
     )
 
-    total = (
-        Decimal(usage.input) * price.input
-        + Decimal(usage.output) * price.output
-        + Decimal(usage.cache_read) * price.cache_read
-        + Decimal(standard_write) * price.cache_write
+    input_amount = Decimal(usage.input) * price.input / _PER_MILLION
+    output_amount = Decimal(usage.output) * price.output / _PER_MILLION
+    cache_read_amount = Decimal(usage.cache_read) * price.cache_read / _PER_MILLION
+    cache_write_amount = (
+        Decimal(standard_write) * price.cache_write
         + Decimal(usage.cache_write_1h) * long_write_rate
     ) / _PER_MILLION
+    total = input_amount + output_amount + cache_read_amount + cache_write_amount
 
     return Cost(
         amount=total.quantize(_CENT_PRECISION, rounding=ROUND_HALF_EVEN),
         currency=price.currency,
         model=model,
+        input_amount=input_amount.quantize(_CENT_PRECISION, rounding=ROUND_HALF_EVEN),
+        output_amount=output_amount.quantize(_CENT_PRECISION, rounding=ROUND_HALF_EVEN),
+        cache_read_amount=cache_read_amount.quantize(_CENT_PRECISION, rounding=ROUND_HALF_EVEN),
+        cache_write_amount=cache_write_amount.quantize(_CENT_PRECISION, rounding=ROUND_HALF_EVEN),
     )
 
 
-def _usd(inp: str, out: str, read: str, write: str, write_1h: str | None = None) -> ModelPrice:
-    return ModelPrice(
-        input=Decimal(inp),
-        output=Decimal(out),
-        cache_read=Decimal(read),
-        cache_write=Decimal(write),
-        cache_write_1h=Decimal(write_1h) if write_1h is not None else None,
-        currency="USD",
-    )
+DEFAULT_PRICE_CATALOG_VERSION: Final = "2026-09-10"
+"""Date of the bundled rate snapshot, exposed so reports can identify its age."""
 
 
-_CURATED: Final = {
-    # US dollars per million tokens. This table is a convenience and it goes
-    # stale: providers change rates and Psych does not track them. A
-    # consumer who cares about the number reconciling with their bill
-    # supplies their own PriceResolver, which is why it is a port.
-    #
-    # These short, unversioned ids work with `StaticPriceTable`'s longest-prefix
-    # matching when a provider appends a dated release suffix.
-    "claude-opus-4": _usd("15", "75", "1.50", "18.75", "30"),
-    "claude-sonnet-4": _usd("3", "15", "0.30", "3.75", "6"),
-    "claude-haiku-4": _usd("1", "5", "0.10", "1.25", "2"),
-    "claude-3-5-haiku": _usd("0.80", "4", "0.08", "1", "1.60"),
-    "gpt-4o-mini": _usd("0.15", "0.60", "0.075", "0"),
-    "gpt-4o": _usd("2.50", "10", "1.25", "0"),
-    "gpt-4.1-mini": _usd("0.40", "1.60", "0.10", "0"),
-    "gpt-4.1": _usd("2", "8", "0.50", "0"),
-    "o3-mini": _usd("1.10", "4.40", "0.55", "0"),
-}
+def _load_default_prices() -> dict[str, ModelPrice]:
+    """Load and validate the bundled per-million-token rate snapshot.
+
+    The data is package content rather than executable Python so it can be
+    audited and refreshed independently. Validation happens once at import;
+    a malformed bundled rate must fail loudly instead of producing a plausible
+    but incorrect bill.
+    """
+    path = Path(__file__).with_name("default_prices.json")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise TypeError("default_prices.json must contain an object keyed by model id")
+    return {str(model): ModelPrice.model_validate(price) for model, price in raw.items()}
+
+
+_CURATED: Final = _load_default_prices()
 
 DEFAULT_PRICES: Final = StaticPriceTable(_CURATED)
-"""The shipped table. Known to be incomplete and known to go stale.
+"""The shipped rate snapshot. Broad, versioned, and still able to go stale.
 
-Anything absent resolves to ``None``, which records ``cost=None`` rather than a
-zero. That is the intended behaviour and not a gap to paper over: a model Psych
-has never heard of should make metering say "I do not know", loudly.
+The bundled snapshot covers thousands of exact provider and model ids. Anything
+absent still resolves to ``None``, which records ``cost=None`` rather than a
+zero. ``DEFAULT_PRICE_CATALOG_VERSION`` tells a consumer when the snapshot was
+made; an application reconciling against an invoice should still override it
+with the rates it actually pays.
 
 None of this moves the design position in DESIGN.md §13.2: a consumer
 reconciling against a real provider bill supplies their own ``PriceResolver``,

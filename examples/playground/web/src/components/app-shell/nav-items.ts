@@ -1,6 +1,5 @@
 import type { LucideIcon } from "lucide-react";
 import {
-  ActivityIcon,
   BotIcon,
   FlaskConicalIcon,
   HistoryIcon,
@@ -24,13 +23,12 @@ import {
  * - **Chat** is the product. One conversation at a time, nothing technical.
  * - **Conversations** is everything you have asked, in plain terms. The same
  *   list the chat panel shows, reachable on its own so it survives the panel
- *   being collapsed and is still one icon away when the nav is.
+ *   being collapsed and is still one icon away when the nav is. Each row also
+ *   leads to its activity details and execution trace.
  * - **Agents** is what you can talk to, and how to make another.
  * - **Connections** is what those agents can reach: MCP servers, their live
  *   state, and the credentials they use. Previously buried in a settings tab,
  *   which is why a connected server did not look connected after a refresh.
- * - **Activity** is every conversation with its outcome, and the one door to
- *   the technical view of a single run: its trace and its usage.
  * - **Settings** is model access, secrets and appearance.
  *
  * `DEVELOPER_ITEMS` is a second, visually separated group. The capability
@@ -65,7 +63,6 @@ export const NAV_ITEMS: NavItem[] = [
     icon: PlugIcon,
     description: "Systems your agents can reach",
   },
-  { title: "Activity", href: "/activity", icon: ActivityIcon, description: "Every conversation" },
   { title: "Settings", href: "/settings", icon: Settings2Icon, description: "Models and secrets" },
 ];
 
@@ -80,9 +77,13 @@ export const DEVELOPER_ITEMS: NavItem[] = [
 
 const ALL_ITEMS = [...NAV_ITEMS, ...DEVELOPER_ITEMS];
 
-/** The nav item active for `pathname`: the longest `href` that prefixes it,
- * so `/activity/run_x` highlights Activity and `/chat/run_x` highlights Chat. */
+/** The nav item active for `pathname`: diagnostic views belong to the
+ * conversation that opened them, while ordinary routes use the longest
+ * matching prefix. */
 export function activeNavItem(pathname: string): NavItem | null {
+  if (pathname.startsWith("/activity/")) {
+    return NAV_ITEMS.find((item) => item.href === "/conversations") ?? null;
+  }
   let best: NavItem | null = null;
   for (const item of ALL_ITEMS) {
     const matches = pathname === item.href || pathname.startsWith(`${item.href}/`);

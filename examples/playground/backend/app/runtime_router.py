@@ -74,7 +74,7 @@ from psych_runtime.tools.registry import ToolRegistry
 def prices_for(state: PlaygroundState) -> StaticPriceTable:
     """The shipped table, amended with whatever this account has entered.
 
-    `DEFAULT_PRICES` is documented as incomplete and known to go stale, and a
+    `DEFAULT_PRICES` is a dated snapshot that can go stale, and a
     model it has never heard of records `cost=None` rather than a zero
     (DESIGN.md §13.2). That default is right and stays: an unknown rate must
     say so loudly rather than be guessed at.

@@ -26,7 +26,7 @@ import { Skeleton } from "@/components/ui/skeleton";
  * A memory is a durable fact written by the `remember` tool during a
  * conversation and read back into the system prompt of every later one
  * (DESIGN.md §15). It is not conversation history: that is the log, and it is
- * already on Activity.
+ * already visible from a conversation's diagnostic views.
  *
  * ## Why deletion is the part worth building
  *
@@ -157,7 +157,7 @@ export function MemorySection() {
             <DialogTitle>Forget everything?</DialogTitle>
             <DialogDescription>
               {memories?.length ?? 0} fact{memories?.length === 1 ? "" : "s"} will be deleted
-              outright, not hidden. Your conversations stay in Activity; only what the agents
+              outright, not hidden. Your conversations stay available; only what the agents
               learned from them goes. This cannot be undone.
             </DialogDescription>
           </DialogHeader>

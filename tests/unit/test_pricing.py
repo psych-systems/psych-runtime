@@ -14,10 +14,12 @@ from hypothesis import strategies as st
 
 from psych_runtime.core.usage import Cost, Usage
 from psych_runtime.model.pricing import (
+    DEFAULT_PRICE_CATALOG_VERSION,
     DEFAULT_PRICES,
     ModelPrice,
     StaticPriceTable,
     compute_cost,
+    resolve_cost,
 )
 
 pytestmark = pytest.mark.unit
@@ -52,6 +54,35 @@ class TestUnknownModel:
         assert result is not None
         assert result.amount == Decimal(0)
 
+    def test_missing_provider_usage_is_not_priced_as_zero(self) -> None:
+        """An omitted measurement must not turn into a confident free call."""
+        result = resolve_cost(
+            "gpt-4o",
+            Usage(),
+            DEFAULT_PRICES,
+            None,
+            usage_reported=False,
+        )
+        assert result is None
+
+    def test_provider_cost_remains_valid_when_usage_is_omitted(self) -> None:
+        reported = Cost(amount=Decimal("0.12"), model="metered", source="provider")
+        result = resolve_cost(
+            "metered",
+            Usage(),
+            DEFAULT_PRICES,
+            reported,
+            usage_reported=False,
+        )
+        assert result == reported
+
+
+class TestBundledCatalog:
+    def test_catalog_is_versioned_and_has_broad_coverage(self) -> None:
+        assert DEFAULT_PRICE_CATALOG_VERSION == "2026-09-10"
+        for model in ("gpt-4o", "gpt-5.6-luna", "azure/gpt-5.6-luna"):
+            assert DEFAULT_PRICES.price_for(model) is not None
+
 
 class TestArithmetic:
     def test_each_counter_bills_at_its_own_rate(self) -> None:
@@ -61,6 +92,11 @@ class TestArithmetic:
         assert result is not None
         # 10 + 30 + 1
         assert result.amount == Decimal("41.00000000")
+        assert result.input_amount == Decimal("10.00000000")
+        assert result.output_amount == Decimal("30.00000000")
+        assert result.cache_read_amount == Decimal("1.00000000")
+        assert result.cache_write_amount == Decimal("0E-8")
+        assert result.has_breakdown
 
     def test_cache_read_is_disjoint_from_input(self) -> None:
         """cache_read tokens are not also counted as input, or every cached
@@ -170,6 +206,20 @@ class TestCostAddition:
         total = Cost(amount=Decimal(1), model="a") + Cost(amount=Decimal(2), model="b")
         assert total.model == "<mixed>"
         assert total.amount == Decimal(3)
+
+    def test_a_total_only_provider_cost_drops_category_precision(self) -> None:
+        detailed = Cost(
+            amount=Decimal("1"),
+            model="m",
+            input_amount=Decimal("0.4"),
+            output_amount=Decimal("0.6"),
+            cache_read_amount=Decimal("0"),
+            cache_write_amount=Decimal("0"),
+        )
+        total_only = Cost(amount=Decimal("2"), model="m", source="provider")
+        total = detailed + total_only
+        assert total.amount == Decimal("3")
+        assert not total.has_breakdown
 
 
 class TestProperties:

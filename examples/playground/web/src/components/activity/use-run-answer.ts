@@ -10,7 +10,7 @@ import type { AnswerView } from "@/lib/types";
  * `GET /api/runs/{id}/answer`: the run split into what it concluded and the
  * work behind it.
  *
- * Activity used to reconstruct the answer itself, by walking the thread for
+ * The activity detail used to reconstruct the answer itself, by walking the thread for
  * the last assistant message with text in it. That is a guess, and it is the
  * wrong guess whenever the run ended on a tool result or was interrupted: the
  * split here is derived from the log by the same projection Chat renders, so

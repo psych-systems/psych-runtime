@@ -19,6 +19,7 @@ import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from decimal import Decimal
 
 import pytest
 
@@ -519,6 +520,36 @@ class TestFramingAcrossReads:
 
 
 class TestUsageMapping:
+    @pytest.mark.parametrize("field", ["cost", "response_cost"])
+    async def test_streaming_usage_cost_is_provider_reported(self, field: str) -> None:
+        async def handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter, path: str, body: bytes
+        ) -> None:
+            await write_status(writer, 200)
+            await write_chunk(
+                writer,
+                sse(
+                    {
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": {
+                            "prompt_tokens": 5,
+                            "completion_tokens": 2,
+                            field: 0.00017,
+                        },
+                    }
+                ),
+            )
+            await write_chunk(writer, b"data: [DONE]\n\n")
+            await end_chunks(writer)
+
+        async with running_client(handler) as client:
+            events = [event async for event in client.stream(_request())]
+
+        done = next(e for e in events if isinstance(e, StreamDone))
+        assert done.cost is not None
+        assert done.cost.amount == Decimal("0.00017")
+        assert done.cost.source == "provider"
+
     async def test_cached_tokens_are_subtracted_from_input_not_added(self) -> None:
         async def handler(
             reader: asyncio.StreamReader, writer: asyncio.StreamWriter, path: str, body: bytes
@@ -548,6 +579,7 @@ class TestUsageMapping:
 
         done = next(e for e in events if isinstance(e, StreamDone))
         usage = done.usage
+        assert done.usage_reported is True
         # 1000 prompt_tokens includes the 400 cached; input is the remainder.
         assert usage.input == 600
         assert usage.cache_read == 400
@@ -606,6 +638,7 @@ class TestUsageMapping:
 
         done = next(e for e in events if isinstance(e, StreamDone))
         assert done.finish_reason == "stop"
+        assert done.usage_reported is False
         assert done.usage.input == 0
         assert done.usage.output == 0
 

@@ -130,6 +130,7 @@ GROUPS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "InMemoryStore",
             "InMemoryBlobStore",
             "DEFAULT_PRICES",
+            "DEFAULT_PRICE_CATALOG_VERSION",
             "ModelPrice",
             "StaticPriceTable",
             "CostPolicy",

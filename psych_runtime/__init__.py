@@ -128,6 +128,7 @@ from psych_runtime.model.egress import EgressPolicy, HttpTransport
 from psych_runtime.model.openai_compat import OpenAICompatibleClient
 from psych_runtime.model.port import ModelClient, ModelRequest
 from psych_runtime.model.pricing import (
+    DEFAULT_PRICE_CATALOG_VERSION,
     DEFAULT_PRICES,
     CostPolicy,
     ModelPrice,
@@ -200,6 +201,7 @@ is in its log and reaches a consumer through ``psych_runtime.report()`` and the
 
 __all__ = [
     "DEFAULT_PRICES",
+    "DEFAULT_PRICE_CATALOG_VERSION",
     "A2APeer",
     "A2APool",
     "A2ATools",

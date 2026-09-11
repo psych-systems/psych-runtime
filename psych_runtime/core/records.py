@@ -365,6 +365,12 @@ class ModelCallFinished(_RecordBase):
     turn: int = Field(ge=1)
     model: str = Field(min_length=1)
     usage: Usage
+    usage_reported: bool = True
+    """False when the provider omitted usage from its response.
+
+    Defaulted to true so records written before this distinction existed keep
+    their original meaning. New adapters set it explicitly.
+    """
     cost: Cost | None
     timings: ModelTimings
     finish_reason: str = Field(min_length=1)
@@ -662,6 +668,8 @@ class SubagentFinished(_RecordBase):
     output: dict[str, Any] | None = None
     failure: ToolFailure | None = None
     usage: Usage = Field(default_factory=Usage)
+    unreported_usage_calls: int = Field(default=0, ge=0)
+    """How many finished child calls had no provider usage counters."""
     cost: Cost | None = None
     """``None`` when the child's models had no known price. Never zero: a silent
     zero makes a branch's metering look correct and be wrong (DESIGN.md §13.2)."""
@@ -754,6 +762,12 @@ class CompactionApplied(_RecordBase):
     field existed, which reads as "not recorded" rather than as "free"; a call
     that really did report nothing is the same shape, and neither can be
     invented after the fact."""
+    usage_reported: bool = False
+    """Whether the summarising provider returned the usage counters.
+
+    False by default because old compaction records used an empty ``Usage`` to
+    mean "not recorded".
+    """
     cost: Cost | None = None
     """``None`` when the summarising model had no known price, exactly as on
     ``ModelCallFinished``. Never zero: a silent zero makes metering look

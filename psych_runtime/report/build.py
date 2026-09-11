@@ -15,7 +15,7 @@ here that depends on anything but the Records themselves.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 from psych_runtime.core.errors import RunNotFound, VersionNotFound
 from psych_runtime.core.ids import AttemptId, RunId, StepId, ToolCallId
@@ -186,6 +186,7 @@ def _model_calls(records: Sequence[Record]) -> tuple[ModelCallReport, ...]:
                     "system_prompt": record.system_prompt,
                     "tool_names": record.tool_names,
                     "usage": None,
+                    "usage_reported": None,
                     "cost": None,
                     "timings": None,
                     "finish_reason": None,
@@ -203,6 +204,7 @@ def _model_calls(records: Sequence[Record]) -> tuple[ModelCallReport, ...]:
             row = rows[index_by_turn[record.turn]]
             row.update(
                 usage=record.usage,
+                usage_reported=record.usage_reported,
                 cost=record.cost,
                 timings=record.timings,
                 finish_reason=record.finish_reason,
@@ -245,6 +247,7 @@ def _compactions(records: Sequence[Record]) -> tuple[CompactionReport, ...]:
             summary=record.summary,
             model=record.model,
             usage=record.usage,
+            usage_reported=record.usage_reported,
             cost=record.cost,
             at=record.at,
         )
@@ -413,6 +416,11 @@ async def _subagents(
                 failure=child.failure,
                 messages_sent=child.messages_sent,
                 usage=child.usage,
+                unreported_usage_calls=(
+                    report.totals.unreported_usage_calls
+                    if report is not None
+                    else child.unreported_usage_calls
+                ),
                 cost=child.cost,
                 unpriced_model_calls=child.unpriced_model_calls,
                 report=report,
@@ -436,6 +444,7 @@ def _child_subtree(child: ChildRun, report: RunReport | None) -> SubtreeTotals:
         return report.subtree if report.subtree is not None else _own_subtree(report)
     return SubtreeTotals(
         usage=child.usage,
+        unreported_usage_calls=child.unreported_usage_calls,
         cost=child.cost,
         unpriced_model_calls=child.unpriced_model_calls,
         cost_is_incomplete=child.unpriced_model_calls > 0,
@@ -455,6 +464,7 @@ def _own_subtree(report: RunReport) -> SubtreeTotals:
     """
     return SubtreeTotals(
         usage=report.totals.usage,
+        unreported_usage_calls=report.totals.unreported_usage_calls,
         cost=report.totals.cost,
         unpriced_model_calls=report.totals.unpriced_model_calls,
         cost_is_incomplete=report.totals.cost_is_incomplete,
@@ -476,6 +486,7 @@ def _subtree(totals: TotalsReport, subagents: Sequence[SubagentReport]) -> Subtr
         return None
 
     usage = totals.usage
+    unreported_usage = totals.unreported_usage_calls
     cost = totals.cost
     unpriced = totals.unpriced_model_calls
     runs = 1
@@ -486,6 +497,7 @@ def _subtree(totals: TotalsReport, subagents: Sequence[SubagentReport]) -> Subtr
         if branch is None:  # pragma: no cover - every row is built with one
             continue
         usage = usage + branch.usage
+        unreported_usage += branch.unreported_usage_calls
         cost = branch.cost if cost is None else cost if branch.cost is None else cost + branch.cost
         unpriced += branch.unpriced_model_calls
         runs += branch.runs
@@ -493,6 +505,7 @@ def _subtree(totals: TotalsReport, subagents: Sequence[SubagentReport]) -> Subtr
 
     return SubtreeTotals(
         usage=usage,
+        unreported_usage_calls=unreported_usage,
         cost=cost,
         unpriced_model_calls=unpriced,
         cost_is_incomplete=unpriced > 0,
@@ -641,8 +654,20 @@ def _totals(state: RunStateView, records: Sequence[Record]) -> TotalsReport:
         unaccounted_seconds=wall_clock - model_seconds - tool_seconds - compaction_seconds,
     )
 
+    priceable_calls = state.model_calls + state.compaction_calls
+    unreported_usage_calls = state.unreported_usage_calls
+    usage_source: Literal["provider", "partial", "unknown"] = (
+        "unknown"
+        if priceable_calls in (0, unreported_usage_calls)
+        else "partial"
+        if unreported_usage_calls > 0
+        else "provider"
+    )
+
     return TotalsReport(
         usage=state.usage,
+        usage_source=usage_source,
+        unreported_usage_calls=unreported_usage_calls,
         cost=state.cost,
         unpriced_model_calls=state.unpriced_model_calls,
         cost_is_incomplete=state.unpriced_model_calls > 0,

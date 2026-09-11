@@ -79,6 +79,9 @@ class ModelCallReport(BaseModel):
     tool_names: tuple[str, ...]
     """What this turn was offered, resolved per turn (DESIGN.md §10.2)."""
     usage: Usage | None
+    usage_reported: bool | None
+    """True when the finished provider response carried usage, false when it
+    omitted it, and ``None`` for a failed or dangling call."""
     cost: Cost | None
     timings: ModelTimings | None
     finish_reason: str | None
@@ -238,6 +241,7 @@ class CompactionReport(BaseModel):
     summary: str
     model: str
     usage: Usage
+    usage_reported: bool
     cost: Cost | None
     at: datetime
 
@@ -306,6 +310,18 @@ class TotalsReport(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     usage: Usage
+    usage_source: Literal["provider", "partial", "unknown"] = "provider"
+    """Whether the aggregate token counters all came from provider responses.
+
+    ``partial`` means at least one finished call omitted usage; ``unknown``
+    means every finished call omitted it (or there were no finished calls).
+    """
+    unreported_usage_calls: int = 0
+    """Finished model and compaction calls whose provider returned no usage.
+
+    Their zero-valued counters are excluded from any claim of completeness;
+    this count lets readers distinguish measured zero from missing metering.
+    """
     cost: Cost | None
     unpriced_model_calls: int
     cost_is_incomplete: bool
@@ -350,6 +366,7 @@ class SubtreeTotals(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     usage: Usage
+    unreported_usage_calls: int = 0
     cost: Cost | None
     unpriced_model_calls: int
     cost_is_incomplete: bool
@@ -403,6 +420,7 @@ class SubagentReport(BaseModel):
     messages_sent: int
     """How many times the parent steered this child while it ran."""
     usage: Usage
+    unreported_usage_calls: int = 0
     cost: Cost | None
     unpriced_model_calls: int
     report: RunReport | None = None

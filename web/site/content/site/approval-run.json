@@ -110,11 +110,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00007560",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00006180",
+            "output_amount": "0.00001380",
+            "cache_read_amount": "0E-8",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "tool_calls",
           "text": "Checking the order.",
@@ -220,11 +225,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00004980",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00000915",
+            "output_amount": "0.00000840",
+            "cache_read_amount": "0.00003225",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "tool_calls",
           "text": "",
@@ -331,11 +341,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00006982",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00001440",
+            "output_amount": "0.00001860",
+            "cache_read_amount": "0.00003682",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "tool_calls",
           "text": "That is within policy.",
@@ -483,11 +498,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00006435",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00000660",
+            "output_amount": "0.00001140",
+            "cache_read_amount": "0.00004635",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "tool_calls",
           "text": "",
@@ -592,11 +612,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00007298",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00000570",
+            "output_amount": "0.00001620",
+            "cache_read_amount": "0.00005108",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "stop",
           "text": "Refunded $42.00 on order A1. I will email you from now on.",
@@ -742,11 +767,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00007560",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00006180",
+            "output_amount": "0.00001380",
+            "cache_read_amount": "0E-8",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "tool_calls",
           "text": "Checking the order.",
@@ -852,11 +882,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00004980",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00000915",
+            "output_amount": "0.00000840",
+            "cache_read_amount": "0.00003225",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "tool_calls",
           "text": "",
@@ -963,11 +998,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00006982",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00001440",
+            "output_amount": "0.00001860",
+            "cache_read_amount": "0.00003682",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "tool_calls",
           "text": "That is within policy.",
@@ -1121,11 +1161,16 @@
             "cache_write_1h": 0,
             "reasoning": 0
           },
+          "usage_reported": true,
           "cost": {
             "amount": "0.00007455",
             "currency": "USD",
             "model": "gpt-4o-mini",
-            "source": "computed"
+            "source": "computed",
+            "input_amount": "0.00000780",
+            "output_amount": "0.00002040",
+            "cache_read_amount": "0.00004635",
+            "cache_write_amount": "0E-8"
           },
           "finish_reason": "stop",
           "text": "I was not able to issue that refund. A colleague needs to look at it. Shall I open a ticket?",

@@ -152,6 +152,7 @@ class ChildRun:
     output: dict[str, Any] | None = None
     failure: ToolFailure | None = None
     usage: Usage = field(default_factory=Usage)
+    unreported_usage_calls: int = 0
     cost: Cost | None = None
     unpriced_model_calls: int = 0
     messages_sent: int = 0
@@ -332,6 +333,7 @@ class RunStateView:
     order they arrived in is part of the answer."""
 
     usage: Usage = field(default_factory=Usage)
+    unreported_usage_calls: int = 0
     cost: Cost | None = None
     unpriced_model_calls: int = 0
     """Model calls whose model had no known price. Surfaced rather than folded
@@ -625,6 +627,8 @@ def reduce(  # noqa: PLR0912, PLR0915
                 _require_open_model_call(state, record.seq, resolved_run_id, "finished")
                 state.model_calls += 1
                 state.usage = state.usage + record.usage
+                if not record.usage_reported:
+                    state.unreported_usage_calls += 1
                 # The prompt this call was actually charged for, kept so the
                 # compaction trigger can read a measured size rather than
                 # estimate one. Cached input counts: it is billed differently,
@@ -933,6 +937,7 @@ def reduce(  # noqa: PLR0912, PLR0915
                     output=record.output,
                     failure=record.failure,
                     usage=record.usage,
+                    unreported_usage_calls=record.unreported_usage_calls,
                     cost=record.cost,
                     unpriced_model_calls=record.unpriced_model_calls,
                     finished_seq=record.seq,
@@ -1032,6 +1037,8 @@ def reduce(  # noqa: PLR0912, PLR0915
                 # spent it (DESIGN.md §13.2).
                 state.compaction_calls += 1
                 state.usage = state.usage + record.usage
+                if not record.usage_reported:
+                    state.unreported_usage_calls += 1
                 _fold_cost(state, record.cost, record.seq, resolved_run_id)
 
             case RunSettled():

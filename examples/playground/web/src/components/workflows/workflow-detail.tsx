@@ -118,7 +118,7 @@ export function WorkflowDetail({ workflowId }: { workflowId: string }) {
           <EmptyState
             icon={AlertTriangleIcon}
             title="This workflow is not being offered"
-            description="It was never published here or someone has since removed it. Runs it already had are still in Activity."
+            description="It was never published here or someone has since removed it. Runs it already had are still in Conversations."
             action={
               <Button asChild size="sm" variant="outline">
                 <Link href="/workflows">Back to workflows</Link>

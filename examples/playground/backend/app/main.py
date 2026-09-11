@@ -2170,7 +2170,7 @@ async def get_thread_report(run_id: str, request: Request) -> ThreadReportRespon
 
     usage = Usage()
     cost: Cost | None = None
-    unpriced = model_calls = failed_calls = tool_calls = provider_priced = 0
+    unpriced = unreported_usage = model_calls = failed_calls = tool_calls = provider_priced = 0
     compaction_calls = 0
     model_seconds = tool_seconds = 0.0
     for report in reports:
@@ -2183,6 +2183,7 @@ async def get_thread_report(run_id: str, request: Request) -> ThreadReportRespon
         if totals.cost is not None:
             cost = totals.cost if cost is None else cost + totals.cost
         unpriced += totals.unpriced_model_calls
+        unreported_usage += totals.unreported_usage_calls
         provider_priced += totals.provider_reported_costs
         model_calls += totals.model_calls
         failed_calls += totals.failed_model_calls
@@ -2222,10 +2223,39 @@ async def get_thread_report(run_id: str, request: Request) -> ThreadReportRespon
             cache_write_tokens=usage.cache_write,
             reasoning_tokens=usage.reasoning,
             total_tokens=usage.input + usage.output + usage.cache_read + usage.cache_write,
+            usage_source=(
+                "unknown"
+                if model_calls + compaction_calls == 0
+                or unreported_usage == model_calls + compaction_calls
+                else "partial"
+                if unreported_usage > 0
+                else "provider"
+            ),
+            unreported_usage_calls=unreported_usage,
             cost_amount=str(cost.amount) if cost is not None else None,
             cost_currency=cost.currency if cost is not None else None,
             cost_source=cost.source if cost is not None else None,
             provider_reported_costs=provider_priced,
+            cost_input_amount=(
+                str(cost.input_amount)
+                if cost is not None and cost.input_amount is not None
+                else None
+            ),
+            cost_output_amount=(
+                str(cost.output_amount)
+                if cost is not None and cost.output_amount is not None
+                else None
+            ),
+            cost_cache_read_amount=(
+                str(cost.cache_read_amount)
+                if cost is not None and cost.cache_read_amount is not None
+                else None
+            ),
+            cost_cache_write_amount=(
+                str(cost.cache_write_amount)
+                if cost is not None and cost.cache_write_amount is not None
+                else None
+            ),
             unpriced_model_calls=unpriced,
             cost_is_incomplete=unpriced > 0,
             wall_clock_seconds=wall_clock,
@@ -3227,7 +3257,7 @@ async def disconnect_mcp_server(name: str, request: Request) -> OkResponse:
 async def update_model_prices(body: UpdateModelPricesRequest, request: Request) -> SettingsResponse:
     """Replaces this account's model rates.
 
-    Psych ships a table of nine models and records ``cost=None`` for anything
+    Psych ships a broad, dated rate snapshot and records ``cost=None`` for anything
     else, which is deliberate: a silent zero makes metering look correct and be
     wrong (DESIGN.md §13.2). What was missing is the seam on the other side.
     ``PriceResolver`` is a port so a consumer can supply the rates they pay,

@@ -79,6 +79,15 @@ export function TraceSummary({ report }: { report: RunReport }) {
           value={formatTokens(
             report.totals.usage.input + report.totals.usage.output,
           )}
+          hint={
+            report.totals.usage_source === "unknown"
+              ? "provider did not report usage"
+              : report.totals.unreported_usage_calls > 0
+                ? `provider usage missing for ${report.totals.unreported_usage_calls} call${
+                  report.totals.unreported_usage_calls === 1 ? "" : "s"
+                }; total is partial`
+                : "reported by the provider"
+          }
         />
       </div>
 

@@ -51,6 +51,10 @@ export interface Cost {
    *  the party doing the billing; a computed one is as good as whatever table
    *  was in force. */
   source: "computed" | "provider" | "mixed";
+  input_amount?: string | null;
+  output_amount?: string | null;
+  cache_read_amount?: string | null;
+  cache_write_amount?: string | null;
 }
 
 export type ToolOutcome = "ok" | "error" | "aborted" | "unknown";
@@ -1146,6 +1150,8 @@ export interface ModelCallReport {
   system_prompt: string;
   tool_names: string[];
   usage: Usage | null;
+  /** Whether the provider response supplied these counters. */
+  usage_reported: boolean | null;
   cost: Cost | null;
   timings: ModelTimings | null;
   finish_reason: string | null;
@@ -1224,6 +1230,9 @@ export interface LatencyReport {
  */
 export interface TotalsReport {
   usage: Usage;
+  usage_source: "provider" | "partial" | "unknown";
+  /** Finished calls omitted by the provider from the usage measurement. */
+  unreported_usage_calls: number;
   cost: Cost | null;
   /** Priced calls whose figure the provider reported rather than Psych
    *  computing it. `cost.source` says what the total as a whole is made of. */
@@ -1331,6 +1340,9 @@ export interface ThreadTotals {
   /** Counted inside `output_tokens`, so never add it to the total. */
   reasoning_tokens: number;
   total_tokens: number;
+  usage_source: "provider" | "partial" | "unknown";
+  /** Calls whose provider response carried no usage counters. */
+  unreported_usage_calls: number;
   /** A decimal string, never a number: this is money. `null` when not one
    *  call in the conversation had a known rate. */
   cost_amount: string | null;
@@ -1339,6 +1351,10 @@ export interface ThreadTotals {
    *  derived it from a price table, `mixed` when the conversation used both. */
   cost_source: string | null;
   provider_reported_costs: number;
+  cost_input_amount: string | null;
+  cost_output_amount: string | null;
+  cost_cache_read_amount: string | null;
+  cost_cache_write_amount: string | null;
   unpriced_model_calls: number;
   /** True when at least one call had no rate, so the total is honest but
    *  partial. Keeps "$0.02" and "$0.02 plus three I could not price" apart. */

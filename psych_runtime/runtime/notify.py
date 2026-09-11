@@ -165,6 +165,7 @@ async def _append_finished(
                 output=state.output,
                 failure=state.failure,
                 usage=state.usage,
+                unreported_usage_calls=state.unreported_usage_calls,
                 cost=state.cost,
                 unpriced_model_calls=state.unpriced_model_calls,
             )

@@ -131,6 +131,13 @@ class StreamDone(BaseModel):
     type: Literal["done"] = "done"
     finish_reason: str = Field(min_length=1)
     usage: Usage = Field(default_factory=Usage)
+    usage_reported: bool = True
+    """Whether ``usage`` came from the provider response.
+
+    ``False`` means the provider omitted usage entirely. The counters remain
+    zero for backwards compatibility, but callers must not price those zeros
+    or present them as a measured value.
+    """
     cost: Cost | None = None
     """What the provider says this call cost, when it says anything.
 

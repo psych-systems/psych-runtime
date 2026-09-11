@@ -30,6 +30,20 @@ RULES = (
     ),
     Rule(("psych_runtime/tools/oauth/",), ".agents/skills/psych-mcp-oauth/SKILL.md"),
     Rule(("psych_runtime/model/egress.py",), ".agents/skills/psych-multitenancy/SKILL.md"),
+    Rule(
+        (
+            "psych_runtime/model/pricing.py",
+            "psych_runtime/model/default_prices.json",
+            "psych_runtime/model/openai_compat.py",
+            "psych_runtime/model/port.py",
+            "psych_runtime/core/usage.py",
+        ),
+        ".agents/skills/psych-pricing/SKILL.md",
+    ),
+    Rule(
+        ("psych_runtime/report/build.py", "psych_runtime/report/model.py"),
+        ".agents/skills/psych-report/SKILL.md",
+    ),
     Rule(("psych_runtime/testing/mcp_stub.py",), ".agents/skills/psych-testing/SKILL.md"),
     Rule(("psych_runtime/tools/large_results.py",), ".agents/skills/psych-blobs/SKILL.md"),
 )

@@ -102,6 +102,28 @@ class TestUsageTotalsDoNotDoubleCount:
         assert report.totals.unpriced_model_calls == 0
         assert not report.totals.cost_is_incomplete
 
+    async def test_usage_provenance_marks_a_partial_total(self) -> None:
+        store, version = await _store_with(_spec())
+        log = (
+            LogBuilder(version_hash=version.hash)
+            .admitted()
+            .attempt()
+            .turn()
+            .model_started()
+            .model_finished(usage=Usage(input=20, output=5), usage_reported=True)
+            .turn()
+            .model_started()
+            .model_finished(usage=Usage(), usage_reported=False)
+            .settled()
+        )
+
+        report = await _report(log, store)
+
+        assert report.model_calls[0].usage_reported is True
+        assert report.model_calls[1].usage_reported is False
+        assert report.totals.usage_source == "partial"
+        assert report.totals.unreported_usage_calls == 1
+
 
 class TestUnpricedCallsKeepTheCostHonest:
     async def test_an_unpriced_call_is_not_summed_as_zero(self) -> None:

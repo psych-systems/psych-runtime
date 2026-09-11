@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { StatusPill, toLifecycle } from "@/components/ui/status";
 import { SubagentPanel } from "@/components/chat/subagent-panel";
 import { TraceWorkspace } from "@/components/trace/trace-workspace";
-import { costText, ThreadSummary } from "@/components/trace/thread-summary";
+import { ThreadSummary } from "@/components/trace/thread-summary";
 import { TraceTimeline } from "@/components/trace/trace-timeline";
 import type { TimeRange } from "@/components/trace/trace-timeline";
 import {
@@ -25,7 +25,7 @@ import { useRunStatus } from "@/hooks/use-run-status";
 import { useSubagents } from "@/hooks/use-subagents";
 import { useThreadReport } from "@/hooks/use-thread-report";
 import { Copyable } from "@/components/activity/copyable";
-import { formatDuration } from "@/lib/format";
+import { RunViewSwitcher } from "@/components/activity/run-view-switcher";
 import type { RunReport, ThreadReport, ThreadTotals } from "@/lib/types";
 
 /**
@@ -159,10 +159,8 @@ export function TraceView({ runId }: { runId: string }) {
         >
           <ArrowLeftIcon className="size-4" />
         </Button>
-        <span className="text-body font-medium">Trace</span>
-        {lifecycle && <StatusPill state={lifecycle} size="sm" />}
         {specName !== "" && (
-          <span className="hidden min-w-0 truncate text-caption text-muted-foreground sm:inline">
+          <span className="min-w-0 truncate text-caption font-medium sm:inline">
             {specName}
           </span>
         )}
@@ -193,28 +191,19 @@ export function TraceView({ runId }: { runId: string }) {
           </div>
         )}
 
-        {totals && (
-          <span className="ml-auto hidden whitespace-nowrap text-micro text-muted-foreground xl:inline">
-            {totals.messages.toLocaleString()} {totals.messages === 1 ? "message" : "messages"}
-            {" / "}{totals.model_calls.toLocaleString()} model calls
-            {" / "}{totals.tool_calls.toLocaleString()} tool calls
-            {" / "}{totals.cost_amount === null ? "cost unknown" : costText(totals)}
-            {" / "}{formatDuration(totals.wall_clock_seconds)}
-          </span>
-        )}
-
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className={totals ? undefined : "ml-auto"}
-          aria-label="Refresh"
-          onClick={refresh}
-          disabled={loading}
-        >
-          <RefreshCwIcon
-            className={loading ? "size-3.5 animate-spin" : "size-3.5"}
-          />
-        </Button>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {lifecycle && <StatusPill state={lifecycle} size="sm" />}
+          <RunViewSwitcher runId={scope ?? latestRunId} active="trace" />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Refresh"
+            onClick={refresh}
+            disabled={loading}
+          >
+            <RefreshCwIcon className={loading ? "size-3.5 animate-spin" : "size-3.5"} />
+          </Button>
+        </div>
       </div>
 
       {loading && !thread && (
@@ -308,10 +297,16 @@ function scopedTotals(
     reasoning_tokens: usage.reasoning,
     total_tokens:
       usage.input + usage.output + usage.cache_read + usage.cache_write,
+    usage_source: totals.usage_source,
+    unreported_usage_calls: totals.unreported_usage_calls,
     cost_amount: totals.cost === null ? null : totals.cost.amount,
     cost_currency: totals.cost === null ? null : totals.cost.currency,
     cost_source: totals.cost === null ? null : totals.cost.source,
     provider_reported_costs: totals.provider_reported_costs,
+    cost_input_amount: totals.cost?.input_amount ?? null,
+    cost_output_amount: totals.cost?.output_amount ?? null,
+    cost_cache_read_amount: totals.cost?.cache_read_amount ?? null,
+    cost_cache_write_amount: totals.cost?.cache_write_amount ?? null,
     unpriced_model_calls: totals.unpriced_model_calls,
     cost_is_incomplete: totals.cost_is_incomplete,
     wall_clock_seconds: latency.wall_clock_seconds,

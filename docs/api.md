@@ -56,7 +56,7 @@ which is what keeps one leaked run id from being a readable conversation
 Plus what you construct rather than call, all exported from `psych_runtime` itself:
 `Worker`, which claims and executes Runs; `Runtime`, which tells the Worker how;
 `ToolRegistry`, `HttpTransport`, `OpenAICompatibleClient`, `McpPool`, `McpTools`
-and `DEFAULT_PRICES`.
+`DEFAULT_PRICES` and its snapshot date, `DEFAULT_PRICE_CATALOG_VERSION`.
 
 Everything you can *hold* is nameable from `psych_runtime` too, which is what makes
 "the public API is this module" true rather than aspirational: the Spec models

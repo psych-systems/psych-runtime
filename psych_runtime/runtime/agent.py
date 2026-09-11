@@ -744,9 +744,15 @@ class AgentLoop:
                 },
             ) as call_span:
                 try:
-                    text, calls, usage, reported_cost, finish_reason, timings = await self._stream(
-                        request
-                    )
+                    (
+                        text,
+                        calls,
+                        usage,
+                        usage_reported,
+                        reported_cost,
+                        finish_reason,
+                        timings,
+                    ) = await self._stream(request)
                 except Exception as err:
                     call_span.record_exception(err)
                     return await self._record_model_failure(turn_number, request.model, err)
@@ -771,6 +777,7 @@ class AgentLoop:
                 text=text,
                 calls=calls,
                 usage=usage,
+                usage_reported=usage_reported,
                 reported_cost=reported_cost,
                 finish_reason=finish_reason,
                 timings=timings,
@@ -786,6 +793,7 @@ class AgentLoop:
         text: str,
         calls: list[_AssembledCall],
         usage: Usage,
+        usage_reported: bool,
         reported_cost: Cost | None,
         finish_reason: str,
         timings: ModelTimings,
@@ -802,7 +810,14 @@ class AgentLoop:
         # on read: a report is a projection over an immutable log, so changing
         # the policy or the price table later cannot retroactively change what
         # a past Run cost.
-        cost = resolve_cost(request.model, usage, self._prices, reported_cost, self._cost_policy)
+        cost = resolve_cost(
+            request.model,
+            usage,
+            self._prices,
+            reported_cost,
+            self._cost_policy,
+            usage_reported=usage_reported,
+        )
         call_ids = tuple(call.id for call in calls if call.id is not None)
 
         await self._journal.append(
@@ -810,6 +825,7 @@ class AgentLoop:
             turn=turn_number,
             model=request.model,
             usage=usage,
+            usage_reported=usage_reported,
             cost=cost,
             timings=timings,
             finish_reason=finish_reason,
@@ -849,7 +865,7 @@ class AgentLoop:
 
     async def _stream(
         self, request: ModelRequest
-    ) -> tuple[str, list[_AssembledCall], Usage, Cost | None, str, ModelTimings]:
+    ) -> tuple[str, list[_AssembledCall], Usage, bool, Cost | None, str, ModelTimings]:
         """Consume the model stream, reassembling text and tool calls.
 
         Time to first token is measured here rather than estimated, because §13.3
@@ -861,6 +877,7 @@ class AgentLoop:
         text_parts: list[str] = []
         calls: dict[int, _AssembledCall] = {}
         usage = Usage()
+        usage_reported = False
         reported_cost: Cost | None = None
         finish_reason = ""
         done = False
@@ -885,6 +902,7 @@ class AgentLoop:
                     call.arguments_json += event.arguments_fragment
                 case StreamDone():
                     usage = event.usage
+                    usage_reported = event.usage_reported
                     reported_cost = event.cost
                     finish_reason = event.finish_reason
                     done = True
@@ -908,6 +926,7 @@ class AgentLoop:
             "".join(text_parts),
             ordered,
             usage,
+            usage_reported,
             reported_cost,
             finish_reason or "stop",
             timings,
@@ -1065,7 +1084,15 @@ class AgentLoop:
             },
         ) as span:
             try:
-                text, _calls, usage, reported_cost, _finish, timings = await self._stream(request)
+                (
+                    text,
+                    _calls,
+                    usage,
+                    usage_reported,
+                    reported_cost,
+                    _finish,
+                    timings,
+                ) = await self._stream(request)
             except Exception as err:
                 span.record_exception(err)
                 return _Compaction(
@@ -1111,12 +1138,20 @@ class AgentLoop:
             summary=summary,
             model=request.model,
             usage=usage,
+            usage_reported=usage_reported,
             timings=timings,
             # Priced here, at the call, and written into the Record, for the
             # reason every other model call is: a report is a projection over an
             # immutable log, so a later price table must not change what a past
             # Run cost.
-            cost=resolve_cost(request.model, usage, self._prices, reported_cost, self._cost_policy),
+            cost=resolve_cost(
+                request.model,
+                usage,
+                self._prices,
+                reported_cost,
+                self._cost_policy,
+                usage_reported=usage_reported,
+            ),
         )
         return _Compaction(applied=True)
 

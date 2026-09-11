@@ -1,7 +1,7 @@
 # Metering, pricing, latency and telemetry
 
 Covers DESIGN.md §13 in full: usage accounting, pricing, latency, the report and
-telemetry. Read it before touching `psych_runtime/model/usage.py`,
+telemetry. Read it before touching `psych_runtime/core/usage.py`,
 `psych_runtime/model/pricing.py`, `psych_runtime/report/` or `psych_runtime/telemetry/`.
 
 ## The usage shape
@@ -17,7 +17,6 @@ single `input_tokens` field makes correct cost impossible, so the shape is fixed
 | `cache_write` | tokens written to the prompt cache |
 | `cache_write_1h` | the subset of `cache_write` written at one-hour retention |
 | `reasoning` | reasoning tokens, when the provider reports them |
-| `total` | the provider's own total |
 
 Two of those are **subsets, not additions**, and treating them as additive
 double-counts:
@@ -25,34 +24,30 @@ double-counts:
 `cache_write_1h` is part of `cache_write`, not on top of it. It says how many of
 those writes used the longer retention. Only some providers report the split.
 
-`reasoning` is part of `output`, not on top of it. Its optionality carries meaning:
-absent means the provider reported no breakdown, and zero means it reported one and
-there were none. Do not collapse absent and zero when deciding whether to show a
-reasoning breakdown.
+`reasoning` is part of `output`, not on top of it. The counter is for visibility
+and is never billed a second time.
+
+The OpenAI-compatible adapter requests streaming usage and copies the response
+counters. It does not run a tokenizer or estimate missing counts. Every finished
+call records `usage_reported`; totals expose `usage_source` as `provider`,
+`partial`, or `unknown`, plus `unreported_usage_calls`. This keeps an omitted
+measurement distinct from a measured zero.
 
 ## The cost formula
 
-Three details are easy to get wrong and each produces a wrong number that no test
-catches unless the test pins the exact relationship.
+Each counter is multiplied by its matching per-million rate: uncached input,
+output, cache read and cache write. A separate one-hour cache-write rate applies
+to that subset when the table supplies one; otherwise the ordinary write rate
+applies. Reasoning is already included in output and is not charged again.
 
-**Tiering is by total input-side tokens.** A tier threshold like "above 200K input
-tokens" is checked against `input + cache_read + cache_write`, the whole request's
-input-side count, not against `input` alone. Tiers are best-match: pick the highest
-threshold that is still exceeded, not the first that matches.
+The default resolver loads a validated, dated package snapshot. A consumer's
+override remains authoritative because negotiated and local infrastructure costs
+cannot be inferred from a model id.
 
-**One tier prices the whole request.** Input, output, cache reads and cache writes
-are all priced at the matched tier's rates. A request that crosses the input tier
-threshold pays the higher output rate too.
-
-**Long-retention cache writes are priced at twice the input rate**, not at twice the
-cache-write rate and not from a separate rate field. Cache writes bill like input
-tokens, and the longer retention costs double that. Short writes are priced at the
-ordinary cache-write rate. Getting the base wrong shifts every long-cache-write
-model's cost by a provider-specific margin that looks plausible.
-
-Compute cost once and construct the Usage model with it. Do not mutate a
-pre-zeroed cost object in place; frozen models make the whole aliasing question go
-away.
+Cost provenance is recorded with the number. `source="provider"` means the
+response carried a monetary amount. `source="computed"` means Psych estimated
+it from provider-reported tokens and the active rates. If usage was omitted,
+Psych refuses to estimate a cost from zero placeholders.
 
 ## No known price means `cost=None`, never zero
 
@@ -65,7 +60,7 @@ inside it assumes rates exist, and a nullable rate threaded through means every 
 edit has to remember the null case.
 
 ```
-rates = price_resolver.get(model_id)
+rates = price_resolver.price_for(model_id)
 if rates is None: cost = None
 else:             cost = <the formula above>
 ```

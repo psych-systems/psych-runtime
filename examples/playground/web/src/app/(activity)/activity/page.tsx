@@ -1,5 +1,5 @@
-import { ActivityList } from "@/components/activity/activity-list";
+import { redirect } from "next/navigation";
 
 export default function ActivityPage() {
-  return <ActivityList />;
+  redirect("/conversations");
 }

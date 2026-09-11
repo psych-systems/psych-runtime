@@ -118,11 +118,30 @@ report.suspensions  # SuspensionReport: reason, who, when, decision
 report.compactions
 report.failure_streak_trips
 report.terminal_state, report.orphaned_attempt_id
-report.totals  # this Run: usage, cost, unpriced_model_calls
+report.totals  # this Run: usage, cost, provenance and completeness
+report.totals.usage  # input / output / cache_read / cache_write
+report.totals.cost  # total plus optional category amounts
 report.subtree  # plus every descendant
 report.totals.latency  # wall_clock / model / tool / compaction / unaccounted
 report.continues_run_id
 ```
+
+`report.totals.cost.has_breakdown` is true when the recorded cost includes
+input, output, cache-read and cache-write amounts. Psych-computed costs include
+them. A provider-reported total may not; keep those categories unknown rather
+than deriving a plausible-looking split from the total.
+
+Token and cost provenance are independent. `call.usage_reported` says whether
+the provider response carried the counters. `report.totals.usage_source` is
+`provider`, `partial`, or `unknown`, and `unreported_usage_calls` names how much
+is missing. For money, `cost.source` is `provider` when the response carried an
+amount and `computed` when Psych estimated it from provider tokens and the
+active rate table. `cost=None` remains an honest unknown.
+
+For streaming OpenAI-compatible endpoints, the provider amount may arrive as
+either `usage.cost` or `usage.response_cost` on the final usage chunk. If
+neither is present, the configured cost policy computes from the catalogue or
+leaves the amount unknown.
 
 `child_depth` is **bounded rather than unlimited** so a deep delegation tree
 cannot read the whole database by accident. `0` reports this Run only.

@@ -12,7 +12,7 @@ const CONCURRENCY = 6;
  *
  * `GET /api/runs` carries no counts and no failure text, so a list built only
  * from it can say a conversation failed but never why, which is the one thing
- * an operator opened Activity to find out. The status endpoint is the fold the
+ * an operator opened Conversations to find out. The status endpoint is the fold the
  * runtime itself uses, so the counts here and the counts on the run detail
  * cannot disagree.
  *

@@ -58,7 +58,19 @@ export function ThreadSummary({
       <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-caption">
         <span className="text-caption font-medium">{scope}</span>
         <span className="h-4 w-px bg-border" />
-        <Stat label="Tokens" value={formatTokens(totals.total_tokens)} />
+        <Stat
+          label="Tokens"
+          value={formatTokens(totals.total_tokens)}
+          hint={
+            totals.usage_source === "unknown"
+              ? "provider did not report usage"
+              : totals.unreported_usage_calls > 0
+                ? `provider usage missing for ${totals.unreported_usage_calls} call${
+                  totals.unreported_usage_calls === 1 ? "" : "s"
+                }; total is partial`
+                : "reported by the provider"
+          }
+        />
         <Stat label="Cost" value={costText(totals)} tone={costTone(totals)} hint={costHint(totals)} />
         <Stat label="Elapsed" value={formatDuration(totals.wall_clock_seconds)} />
         <Stat label="Model calls" value={totals.model_calls.toLocaleString()} />
@@ -145,8 +157,8 @@ function costHint(totals: ThreadTotals): string | undefined {
     totals.cost_source === "provider"
       ? "from your provider"
       : totals.cost_source === "mixed"
-        ? `${totals.provider_reported_costs} from your provider, the rest estimated`
-        : "estimated from rates";
+        ? `${totals.provider_reported_costs} from your provider, the rest estimated from rates`
+        : "estimated from provider tokens and rates";
   return totals.cost_is_incomplete
     ? `${provenance}, ${totals.unpriced_model_calls} without a rate`
     : provenance;

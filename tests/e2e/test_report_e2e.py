@@ -184,15 +184,37 @@ class TestReportOverARealRun:
         #   call 1: 1000*1 + 200*2 + 500*0.1 + (300-100)*1.25 + 100*2 = 1900 -> /1e6
         #   call 2: 1200*1 + 150*2 + 800*0.1                          = 1580 -> /1e6
         expected = Decimal("0.00190000") + Decimal("0.00158000")
-        assert report.totals.cost == Cost(amount=expected, currency="USD", model="fake-standard")
+        assert report.totals.cost == Cost(
+            amount=expected,
+            currency="USD",
+            model="fake-standard",
+            input_amount=Decimal("0.00220000"),
+            output_amount=Decimal("0.00070000"),
+            cache_read_amount=Decimal("0.00013000"),
+            cache_write_amount=Decimal("0.00045000"),
+        )
         assert report.totals.unpriced_model_calls == 0
         assert not report.totals.cost_is_incomplete
 
         first_call, second_call = report.model_calls
         assert first_call.model == "fake-standard"
         assert first_call.usage == first_usage
-        assert first_call.cost == Cost(amount=Decimal("0.00190000"), model="fake-standard")
-        assert second_call.cost == Cost(amount=Decimal("0.00158000"), model="fake-standard")
+        assert first_call.cost == Cost(
+            amount=Decimal("0.00190000"),
+            model="fake-standard",
+            input_amount=Decimal("0.00100000"),
+            output_amount=Decimal("0.00040000"),
+            cache_read_amount=Decimal("0.00005000"),
+            cache_write_amount=Decimal("0.00045000"),
+        )
+        assert second_call.cost == Cost(
+            amount=Decimal("0.00158000"),
+            model="fake-standard",
+            input_amount=Decimal("0.00120000"),
+            output_amount=Decimal("0.00030000"),
+            cache_read_amount=Decimal("0.00008000"),
+            cache_write_amount=Decimal("0E-8"),
+        )
 
     async def test_an_unpriced_model_leaves_the_report_honest_about_it(self) -> None:
         store = InMemoryStore()

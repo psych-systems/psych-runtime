@@ -119,6 +119,12 @@ class Cost(BaseModel):
 
             Defaulted to ``"computed"`` so every Record written before this
             field existed still loads, and still means what it said.
+        input_amount: the uncached-input part of ``amount``, when reported.
+        output_amount: the generated-output part of ``amount``, when reported.
+        cache_read_amount: the prompt-cache read part of ``amount``, when reported.
+        cache_write_amount: all prompt-cache write charges, including one-hour
+            retention, when reported. All four category amounts are optional
+            because a provider may return only one final total.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -127,6 +133,23 @@ class Cost(BaseModel):
     currency: str = Field(default="USD", min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     model: str = Field(min_length=1)
     source: Literal["computed", "provider", "mixed"] = "computed"
+    input_amount: Decimal | None = Field(default=None, ge=Decimal(0))
+    output_amount: Decimal | None = Field(default=None, ge=Decimal(0))
+    cache_read_amount: Decimal | None = Field(default=None, ge=Decimal(0))
+    cache_write_amount: Decimal | None = Field(default=None, ge=Decimal(0))
+
+    @property
+    def has_breakdown(self) -> bool:
+        """Whether all four billable token categories have monetary values."""
+        return all(
+            value is not None
+            for value in (
+                self.input_amount,
+                self.output_amount,
+                self.cache_read_amount,
+                self.cache_write_amount,
+            )
+        )
 
     def __add__(self, other: Cost) -> Cost:
         if self.currency != other.currency:
@@ -147,4 +170,17 @@ class Cost(BaseModel):
             currency=self.currency,
             model=model,
             source=source,
+            input_amount=_add_optional_amount(self.input_amount, other.input_amount),
+            output_amount=_add_optional_amount(self.output_amount, other.output_amount),
+            cache_read_amount=_add_optional_amount(self.cache_read_amount, other.cache_read_amount),
+            cache_write_amount=_add_optional_amount(
+                self.cache_write_amount, other.cache_write_amount
+            ),
         )
+
+
+def _add_optional_amount(left: Decimal | None, right: Decimal | None) -> Decimal | None:
+    """Add a cost category only when both operands actually reported it."""
+    if left is None or right is None:
+        return None
+    return left + right

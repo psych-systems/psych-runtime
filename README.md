@@ -102,7 +102,7 @@ writes a `main.py` you own; the command line never runs an agent for you.
 | **Require approval for selected tool calls.** By name or by annotation. A matching call suspends the Run with its exact arguments and waits for a decision from any process. | [Approvals](https://psychruntime.com/docs/next/guides/approvals) |
 | **Connect Python functions, HTTP endpoints, MCP servers and A2A agents** as tools, resolved fresh every turn. | [Code tools](https://psychruntime.com/docs/next/guides/code-tools), [MCP](https://psychruntime.com/docs/next/guides/mcp) |
 | **Inspect a run:** status for a screen, the answer with its work, a report with tool calls, usage and cost, or the raw log. Every read takes a `scope=`. | [Reading a Run](https://psychruntime.com/docs/next/guides/report) |
-| **Track token usage and cost** per model call, split by cache state, priced from a table you pass. | [Pricing](https://psychruntime.com/docs/next/guides/pricing) |
+| **Track token usage and cost** per model call, split by cache state, with provider-versus-estimated provenance. | [Pricing](https://psychruntime.com/docs/next/guides/pricing) |
 | **Serve multiple tenants** from one process: a `Scope` on every record and every outbound call. | [Multi-tenancy](https://psychruntime.com/docs/next/guides/multitenancy) |
 
 ## Where it runs
@@ -125,8 +125,11 @@ Limitations worth knowing before you build on it:
 - **The subprocess sandbox limits, it does not isolate.** It sets rlimits and
   drops privileges, but shares the host filesystem, and its network denial is
   a self-report. The container sandbox is the one with kernel isolation.
-- **Cost is only as good as the price table.** A model with no known price
-  records `cost=None`, and the report counts unpriced calls.
+- **Cost is only as good as its source.** `Cost.source` distinguishes an amount
+  returned by the provider from one estimated using the bundled, dated price
+  snapshot or your override. A model with no known price records `cost=None`.
+  Token totals carry their own `usage_source`; missing provider usage is never
+  presented as a measured zero.
 - **Provider support is the OpenAI-compatible chat API.** One client reaches
   OpenAI and any gateway that speaks the same protocol; anything else is a
   `ModelClient` you implement.

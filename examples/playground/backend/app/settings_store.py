@@ -218,9 +218,9 @@ class ProviderConfig(BaseModel):
 class ModelPriceEntry(BaseModel):
     """What one model costs, in this account's own words.
 
-    ``psych_runtime.model.pricing.DEFAULT_PRICES`` ships nine models and is documented
-    as incomplete and known to go stale, because Psych does not track provider
-    rates. A model it has never heard of records ``cost=None`` rather than a
+    ``psych_runtime.model.pricing.DEFAULT_PRICES`` ships a broad, dated snapshot
+    and is documented as incomplete and able to go stale, because provider
+    rates change. A model it has never heard of records ``cost=None`` rather than a
     zero, which is deliberate: DESIGN.md §13.2 calls a silent zero the failure
     that makes metering look correct and be wrong.
 

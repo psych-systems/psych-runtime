@@ -173,6 +173,7 @@ class OpenAICompatibleClient:
             yield StreamDone(
                 finish_reason=state.finish_reason,
                 usage=state.usage or Usage(),
+                usage_reported=state.usage_seen,
                 # Reported, not resolved: which of this and a locally computed
                 # figure gets written into the Record is the consumer's choice
                 # (`psych_runtime.model.pricing.CostPolicy`), made where the Runtime is
@@ -345,6 +346,7 @@ class _StreamState:
     finish_reason: str | None = None
     done_emitted: bool = False
     usage: Usage | None = None
+    usage_seen: bool = False
     reported_cost: Decimal | None = None
     """What the provider said this call cost, if it said anything.
 
@@ -386,6 +388,7 @@ def _events_from_chunk(chunk: dict[str, Any], state: _StreamState) -> list[Strea
 
     usage_json = chunk.get("usage")
     if usage_json is not None:
+        state.usage_seen = True
         usage = _usage_from_wire(usage_json)
         if _reports_anything(usage):
             state.usage = usage
@@ -400,10 +403,11 @@ def _events_from_chunk(chunk: dict[str, Any], state: _StreamState) -> list[Strea
 def _reported_cost(chunk: dict[str, Any]) -> Decimal | None:
     """A provider-reported cost off one chunk, or ``None``.
 
-    Three shapes, because "OpenAI-compatible" says nothing about billing and
+    Four shapes, because "OpenAI-compatible" says nothing about billing and
     each gateway invented its own place to put this:
 
     - ``_hidden_params.response_cost`` -- computed against configured rates.
+    - ``usage.response_cost`` -- the final streaming usage chunk's total.
     - ``usage.cost`` -- a gateway-reported cost.
     - ``cost`` at the top level -- several smaller proxies.
 
@@ -420,6 +424,7 @@ def _reported_cost(chunk: dict[str, Any]) -> Decimal | None:
     usage_json = chunk.get("usage")
     candidates = [
         hidden.get("response_cost") if isinstance(hidden, dict) else None,
+        usage_json.get("response_cost") if isinstance(usage_json, dict) else None,
         usage_json.get("cost") if isinstance(usage_json, dict) else None,
         chunk.get("cost"),
     ]

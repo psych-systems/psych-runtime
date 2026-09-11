@@ -36,6 +36,12 @@ REFERENCE = REPO / "web" / "site" / "content" / "docs" / "next" / "reference"
 
 GENERATED_BY = "scripts/generate_docs.py"
 
+VALUE_DOCS = {
+    "DEFAULT_PRICE_CATALOG_VERSION": (
+        "The snapshot date of the bundled default price catalog, in YYYY-MM-DD format."
+    ),
+}
+
 # Which page each exported name lands on, and in what order the pages read. A
 # name absent from every group below fails the run rather than being dropped:
 # a new export with no home is a decision somebody has to make, not something
@@ -305,7 +311,9 @@ def render_symbol(name: str, obj: Any) -> str:
     if signature:
         lines += ["```python", signature, "```", ""]
 
-    doc = inspect.getdoc(obj) or ""
+    # Primitive values inherit their type's docstring. Rendering that would make
+    # a constant's documentation both misleading and Python-version-dependent.
+    doc = VALUE_DOCS.get(name, inspect.getdoc(obj) or "")
     if doc:
         lines += [escape(doc).rstrip(), ""]
     else:

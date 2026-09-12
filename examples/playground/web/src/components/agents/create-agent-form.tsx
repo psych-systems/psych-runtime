@@ -57,6 +57,14 @@ import { CheckList } from "@/components/agents/check-list";
 import { ConnectionsField, type ConnectionChoice } from "@/components/agents/connections-field";
 import { LimitsFields } from "@/components/agents/limits-fields";
 import { CompactionFields } from "@/components/agents/compaction-fields";
+import { CodeExecutionFields } from "@/components/agents/code-execution-fields";
+import {
+  DEFAULT_CODE_EXECUTION,
+  codeExecutionFromSummary,
+  codeExecutionToRequest,
+  validateCodeExecution,
+  type CodeExecutionFormState,
+} from "@/components/agents/code-execution";
 import {
   DEFAULT_COMPACTION,
   validateCompaction,
@@ -235,6 +243,10 @@ export function CreateAgentForm() {
   const [subagentsEnabled, setSubagentsEnabled] = useState(false);
   const [compactionEnabled, setCompactionEnabled] = useState(false);
   const [compaction, setCompaction] = useState<CompactionFormState>(DEFAULT_COMPACTION);
+  const [codeEnabled, setCodeEnabled] = useState(false);
+  const [codeExecution, setCodeExecution] = useState<CodeExecutionFormState>(
+    DEFAULT_CODE_EXECUTION
+  );
   const [connections, setConnections] = useState<ConnectionChoice[]>([]);
   const [peers, setPeers] = useState<string[]>([]);
   const [limits, setLimits] = useState<LimitsFormState>(DEFAULT_LIMITS);
@@ -307,6 +319,13 @@ export function CreateAgentForm() {
               summary_instructions: source.compaction.summary_instructions ?? "",
             });
           }
+          // Restored whole for the same reason compaction is: an edit that
+          // turned code execution back on with this form's defaults would
+          // publish an agent running programs on different terms.
+          setCodeEnabled(source.code_execution !== null && source.code_execution.enabled);
+          if (source.code_execution !== null) {
+            setCodeExecution(codeExecutionFromSummary(source.code_execution));
+          }
           setConnections(source.mcp_servers.map((server) => ({ name: server, allow: [] })));
           setPeers([...source.a2a_peers]);
         })
@@ -336,7 +355,15 @@ export function CreateAgentForm() {
     [compactionEnabled, compaction]
   );
 
-  const fieldErrors: Record<string, string> = { ...limitErrors, ...compactionErrors };
+  const codeErrors = useMemo(
+    () => (codeEnabled ? validateCodeExecution(codeExecution) : {}),
+    [codeEnabled, codeExecution]
+  );
+  const fieldErrors: Record<string, string> = {
+    ...limitErrors,
+    ...compactionErrors,
+    ...codeErrors,
+  };
   const consumedPaths = new Set<string>();
   for (const issue of issues) {
     const key = fieldKeyForPath(issue.path, trimmedName);
@@ -353,7 +380,8 @@ export function CreateAgentForm() {
     instructions.trim() !== "" &&
     model !== "" &&
     Object.keys(limitErrors).length === 0 &&
-    Object.keys(compactionErrors).length === 0;
+    Object.keys(compactionErrors).length === 0 &&
+    Object.keys(codeErrors).length === 0;
 
   async function handleSubmit() {
     setSubmitting(true);
@@ -410,6 +438,9 @@ export function CreateAgentForm() {
         tasks_enabled: tasksEnabled,
         components_enabled: componentsEnabled,
         subagents_enabled: subagentsEnabled,
+        // Null when off, the same as compaction: absent is "this agent does
+        // not run programs", and the two are different version hashes.
+        code_execution: codeEnabled ? codeExecutionToRequest(codeExecution) : null,
         // Null rather than an object of zeroes when it is off: absent is what
         // the runtime reads as "this agent does not compact", and the two are
         // different agents with different version hashes.
@@ -843,6 +874,45 @@ export function CreateAgentForm() {
               onChange={setCompaction}
               fieldErrors={fieldErrors}
               models={models}
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Code execution</CardTitle>
+          <CardDescription>
+            Whether this agent may write short programs and run them in a sandbox. A program can
+            loop, filter and join over the tools it calls in one step instead of a round trip per
+            step. What runs it, and how far it is contained, is decided by the sandbox profile it
+            names in Settings; the terms below are what the agent asks for, and a profile only ever
+            narrows them.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
+            <div className="flex flex-col gap-0.5">
+              <p className="text-body font-medium">Let it run programs</p>
+              <p className="text-caption text-muted-foreground">
+                Adds the <code className="font-technical">run_code</code> tool. Off, the agent is
+                never shown it, whatever this installation has wired.
+              </p>
+            </div>
+            <Switch
+              checked={codeEnabled}
+              onCheckedChange={setCodeEnabled}
+              aria-label="Let it run programs"
+            />
+          </div>
+          {codeEnabled && (
+            <CodeExecutionFields
+              value={codeExecution}
+              onChange={setCodeExecution}
+              fieldErrors={fieldErrors}
+              tools={selectedTools}
+              profiles={settings?.runtime.sandbox_profile_names ?? ["default"]}
+              runtime={settings?.runtime ?? null}
             />
           )}
         </CardContent>

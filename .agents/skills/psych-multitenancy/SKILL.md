@@ -96,6 +96,24 @@ Returning `None` is not an error. Whether a missing credential is fatal stays a
 decision the caller makes deliberately, so Psych never treats "not configured"
 as "connect anonymously".
 
+## Code execution narrows per tenant
+
+```python
+class OurCodePolicy:
+    async def narrow(self, scope: Scope, grant: CodeExecutionGrant) -> CodeExecutionGrant: ...
+```
+
+Wired as `code_execution_policy=` on the Runtime, it sees what the deployment
+profile and the AgentSpec already agreed on and may return something **no
+wider**: fewer bindings, smaller limits, network taken away, isolation raised.
+It cannot hand back a permission neither side offered, because the result is
+intersected with what it was given rather than trusted.
+
+A remote sandbox provider credential resolves through the same `SecretResolver`
+per Scope, fresh per request. It never enters an AgentSpec, a Record, a report,
+a trace, a URL or an exception message. A tenant that cannot resolve one gets a
+refusal recorded as data, not another tenant sandbox.
+
 ## Pool by `(scope, server, credential)`
 
 The rule the design calls the bug that ends the project. `McpPool` and `A2APool`

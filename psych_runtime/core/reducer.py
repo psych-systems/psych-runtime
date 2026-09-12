@@ -56,6 +56,7 @@ from psych_runtime.core.records import (
     QueueEnqueued,
     QueueKind,
     Record,
+    ResultAttachment,
     Resumed,
     RunAdmitted,
     RunSettled,
@@ -206,6 +207,9 @@ class ToolResult:
     """How to decode the bytes at ``blob_key``. Set exactly when ``blob_key``
     is, enforced by ``ToolCallFinished``'s own validator, so this dataclass
     does not repeat that check."""
+    attachments: tuple[ResultAttachment, ...] = ()
+    """Named streams and files recorded beside the result, each with its own
+    handle in ``RunStateView.result_handles``. See ``ResultAttachment``."""
 
 
 @dataclass
@@ -688,6 +692,14 @@ def reduce(  # noqa: PLR0912, PLR0915
                 settled_call_ids.add(record.call_id)
                 if record.result_handle is not None:
                     state.result_handles[record.result_handle] = record.call_id
+                for attachment in record.attachments:
+                    # An attachment's handle resolves to its call exactly like
+                    # the result's own, so read_tool_output has one lookup for
+                    # both and a forged handle fails the same structural check.
+                    # One the model may not read is not registered, so its
+                    # presence alone never puts read_tool_output in the prompt.
+                    if attachment.readable:
+                        state.result_handles[attachment.handle] = record.call_id
                 state.tool_results.append(
                     ToolResult(
                         call_id=record.call_id,
@@ -701,6 +713,7 @@ def reduce(  # noqa: PLR0912, PLR0915
                         turn=open_call.turn,
                         blob_key=record.result_blob_key,
                         content_type=record.result_content_type,
+                        attachments=record.attachments,
                     )
                 )
                 _update_failure_streak(state, open_call.tool, record.outcome)

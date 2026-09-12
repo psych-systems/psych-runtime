@@ -122,7 +122,10 @@ class Session:
         return await _publish(
             self.store,
             built,
-            context=ValidationContext(registered_tools=self.registry.names),
+            context=ValidationContext(
+                registered_tools=self.registry.names,
+                sandbox_profiles=self.runtime.sandbox_profiles,
+            ),
         )
 
     async def start(

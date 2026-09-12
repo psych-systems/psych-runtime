@@ -114,6 +114,14 @@ report.totals.latency  # wall_clock / model / tool / compaction / unaccounted
 report.continues_run_id
 ```
 
+A `ToolCallReport` also carries `attachments`: the named outputs kept beside a
+result, which is how a code execution stdout, stderr, returned value and files
+reach a projection. Each names its content type, its size, whether it was
+truncated, and whether it is still readable (`inline`, `blob`, or
+`preview_only`). A console renders the preview and reads the rest through
+`read_tool_output` by window or pattern rather than inlining it. See
+`psych-blobs` and `psych-sandbox`.
+
 `report.totals.cost.has_breakdown` is true when the recorded cost includes
 input, output, cache-read and cache-write amounts. Psych-computed costs include
 them. A provider-reported total may not; keep those categories unknown rather

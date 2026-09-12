@@ -36,6 +36,14 @@ from pydantic import (
     model_validator,
 )
 
+from psych_runtime.core.code_execution import (
+    ArtifactCollection,
+    IsolationLevel,
+    NetworkAccess,
+    OutputPreservation,
+    WorkspacePolicy,
+)
+
 __all__ = [
     "MIN_SPAWN_DELIVERABLE",
     "MIN_SPAWN_PURPOSE",
@@ -44,6 +52,9 @@ __all__ = [
     "A2APeer",
     "AgentSpec",
     "AgentStep",
+    "ArtifactPolicy",
+    "CodeExecution",
+    "CodeExecutionLimits",
     "CodeTool",
     "CompactionPolicy",
     "HttpTool",
@@ -51,6 +62,7 @@ __all__ = [
     "McpOAuth",
     "McpServer",
     "ModelRef",
+    "OutputPolicy",
     "Skill",
     "SpawnEnvelope",
     "Spec",
@@ -837,6 +849,157 @@ class SubagentRef(_SpecModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Code execution (DESIGN.md §18)
+# ---------------------------------------------------------------------------
+
+
+class CodeExecutionLimits(_SpecModel):
+    """The resource caps an agent *asks* for, each optional.
+
+    Requests, not grants. The deployment's sandbox profile carries hard
+    limits, and the effective cap for an execution is the smaller of the two on
+    every dimension (``psych_runtime.sandbox.profiles.narrow_limits``): an agent
+    can ask for less than its deployment allows and never for more. ``None``
+    means "whatever the profile's default is", which is what almost every
+    agent wants.
+
+    Attributes:
+        cpu_seconds: CPU time actually consumed, not wall clock.
+        wall_seconds: real time from spawn to teardown.
+        memory_bytes: the memory the program may use. Enforced as address
+            space by a process backend, as a cgroup by a container, and as a
+            job-object commit limit on Windows; the name is the same because
+            the intent is.
+        file_size_bytes: the largest single file the program may write.
+        process_count: how many processes (threads count on Linux) it may hold.
+    """
+
+    cpu_seconds: float | None = Field(default=None, gt=0, le=3_600)
+    wall_seconds: float | None = Field(default=None, gt=0, le=3_600)
+    memory_bytes: int | None = Field(default=None, gt=0)
+    file_size_bytes: int | None = Field(default=None, gt=0)
+    process_count: int | None = Field(default=None, gt=0, le=4_096)
+
+
+class OutputPolicy(_SpecModel):
+    """How much of a program's output reaches the model, and what happens to
+    the rest.
+
+    Two budgets and one decision, because they answer different questions:
+    ``preview_bytes`` is what the *model* sees per stream and belongs to the
+    agent's context economy; ``max_bytes`` is how much a backend will
+    *capture* per stream before it stops reading and reports the stream
+    truncated, which bounds this process's memory; ``preserve`` is whether the
+    captured bytes beyond the preview are kept durably in the Runtime's
+    ``BlobStore`` so ``read_tool_output`` can page through them later.
+
+    Attributes:
+        preview_bytes: per stream (stdout, stderr, returned value), the most
+            that is placed in the model's context. Deterministic head and tail.
+        max_bytes: per stream, the most a backend captures. Beyond it the
+            stream is truncated and the result says so.
+        preserve: what must happen to captured output beyond the preview.
+    """
+
+    preview_bytes: int = Field(default=4_000, ge=256, le=65_536)
+    max_bytes: int = Field(default=8 * 1024 * 1024, ge=4_096, le=256 * 1024 * 1024)
+    preserve: OutputPreservation = OutputPreservation.WHEN_AVAILABLE
+
+    @model_validator(mode="after")
+    def _preview_fits_in_capture(self) -> Self:
+        if self.preview_bytes > self.max_bytes:
+            raise ValueError(
+                "OutputPolicy.preview_bytes cannot exceed max_bytes: the model cannot be "
+                "shown more of a stream than the backend captured"
+            )
+        return self
+
+
+class ArtifactPolicy(_SpecModel):
+    """Whether, and how much, of what a program writes to its workspace is
+    kept.
+
+    Files are returned by their path *relative to the workspace* and never by
+    a host path (DESIGN.md §18: the program's view of the filesystem is not the
+    host's, and a report must not leak where an execution happened to run).
+    Symbolic links, junctions and other reparse points are never followed and
+    never collected.
+
+    Attributes:
+        collection: collect regular files under the workspace, or ignore them.
+        max_count: the most files collected per execution. More are ignored
+            and the result says how many.
+        max_total_bytes: the most bytes collected across every file. A file
+            that would cross the cap is truncated and marked so.
+    """
+
+    collection: ArtifactCollection = ArtifactCollection.COLLECT
+    max_count: int = Field(default=16, ge=0, le=256)
+    max_total_bytes: int = Field(default=16 * 1024 * 1024, ge=0, le=256 * 1024 * 1024)
+
+
+class CodeExecution(_SpecModel):
+    """Whether this agent may run programs, and under what terms.
+
+    Absent from an ``AgentSpec`` means off: the agent is never shown
+    ``run_code``, whatever the deployment has wired. Present, it is part of the
+    Version hash like every other field here, because an agent that can write
+    and run a program is a different agent from one that cannot, and its every
+    turn is offered a different tool.
+
+    Everything in here is a *request* expressed in serialisable names. The
+    Spec never holds the sandbox, its credentials, a client or a process: a
+    deployment maps ``profile`` to an implementation through
+    ``psych_runtime.Runtime`` (DESIGN.md §4, a Spec holds names and never a
+    callable), and the effective terms of an execution are the intersection of
+    what that implementation can do, what the tenant's Policy allows, and what
+    is asked for here (``psych_runtime.sandbox.profiles``).
+
+    Attributes:
+        enabled: whether ``run_code`` is offered at all. Kept as a field rather
+            than modelled by the presence of this object so a configuration
+            can be switched off and back on without being retyped.
+        profile: the logical sandbox this agent runs programs in. A name the
+            deployment resolves; ``"default"`` is what ``Runtime(sandbox=...)``
+            registers.
+        isolation: the *minimum* isolation this agent accepts. ``ISOLATED`` by
+            default. A profile that cannot provide it refuses the execution
+            rather than running it weaker; ``PROCESS`` is a deliberate choice
+            for trusted code and is never picked on the agent's behalf.
+        network: whether the program may open its own sockets. Denied by
+            default, and grantable only where the profile permits it.
+        limits: requested caps. Narrowed against the profile's hard limits.
+        bindings: which of this Spec's own tools the program may call as host
+            functions. ``None`` means every tool the Spec grants. A tuple
+            narrows to a subset and is validated against ``tools`` at publish.
+        workspace: what happens to the working directory between executions.
+        output: how much output the model sees and what happens to the rest.
+        artifacts: whether files the program writes are collected.
+        language: what the program is written in. Python only today.
+    """
+
+    enabled: bool = True
+    profile: str = Field(default="default", pattern=_NAME_PATTERN)
+    isolation: IsolationLevel = IsolationLevel.ISOLATED
+    network: NetworkAccess = NetworkAccess.DENIED
+    limits: CodeExecutionLimits = Field(default_factory=CodeExecutionLimits)
+    bindings: tuple[str, ...] | None = None
+    workspace: WorkspacePolicy = WorkspacePolicy.EPHEMERAL
+    output: OutputPolicy = Field(default_factory=OutputPolicy)
+    artifacts: ArtifactPolicy = Field(default_factory=ArtifactPolicy)
+    language: Literal["python"] = "python"
+
+    @field_validator("bindings")
+    @classmethod
+    def _bindings_are_a_sorted_set(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        if len(set(value)) != len(value):
+            raise ValueError("CodeExecution.bindings names a tool more than once")
+        return tuple(sorted(value))
+
+
 class AgentSpec(_SpecModel):
     """A Step that loops Turns until a stop condition (DESIGN.md §5)."""
 
@@ -875,6 +1038,16 @@ class AgentSpec(_SpecModel):
     rather than in Runtime wiring -- and off by default because summarising is
     lossy and an agent whose Runs are short should never pay for it. See
     ``CompactionPolicy``, and ``psych_runtime.runtime.compaction`` for the write side.
+    """
+    code_execution: CodeExecution | None = None
+    """Whether this agent may write and run programs, and on what terms.
+
+    ``None``, the default, means it may not: ``run_code`` is never offered,
+    whatever sandbox the deployment has wired. Opt-in for the same reason
+    ``spawn`` and ``compaction`` are, and part of the Version hash for the
+    same reason ``tasks_enabled`` is: it changes the tool set the model is
+    offered on every turn. See ``CodeExecution`` for what can be requested and
+    ``psych_runtime.sandbox`` for how a deployment answers it.
     """
     limits: Limits = Field(default_factory=Limits)
     suspension: SuspensionPolicy = Field(default_factory=SuspensionPolicy)
@@ -967,6 +1140,25 @@ class AgentSpec(_SpecModel):
             raise ValueError(
                 f"tool name(s) {clashes} are reserved for Psych built-ins; the model "
                 "would see two tools with one name and could not address either"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _bindings_are_granted_tools(self) -> Self:
+        """A program may only call tools this Spec already grants.
+
+        Access narrows and never widens (DESIGN.md §10.5): the binding list is
+        a subset of ``tools``, checked at construction so a Spec naming a
+        binding it does not hold never reaches publication.
+        """
+        if self.code_execution is None or self.code_execution.bindings is None:
+            return self
+        granted = {tool.name for tool in self.tools}
+        unknown = sorted(set(self.code_execution.bindings) - granted)
+        if unknown:
+            raise ValueError(
+                f"code_execution.bindings names {unknown}, which this agent does not "
+                "grant in `tools`. A program may only call tools the agent itself holds."
             )
         return self
 

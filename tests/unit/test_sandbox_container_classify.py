@@ -31,6 +31,7 @@ def _classified(
         done=None,
         protocol_error=None,
         timed_out=False,
+        cancelled=False,
         wall_seconds=15.0,
         elapsed=elapsed,
         cpu_seconds=cpu_seconds,

@@ -189,6 +189,29 @@ export interface ToolCallFinishedRecord extends RecordBase {
   result_bytes: number;
   result_blob_key: string | null;
   result_content_type: string | null;
+  /** Named streams and files a `run_code` call produced beside its result,
+   *  each readable by handle. Empty for every ordinary tool. */
+  attachments?: ResultAttachment[];
+}
+
+/** One output a tool call kept beside its result: a program's stdout, its
+ *  returned value, a file it wrote. Never a host path. */
+export interface ResultAttachment {
+  /** `stdout`, `stderr`, `value`, `execution`, or `file:<relative path>`. */
+  name: string;
+  handle: string;
+  content_type: string;
+  size_bytes: number;
+  /** How much the program actually produced; larger than `size_bytes` when
+   *  the backend's capture cap cut it short. */
+  observed_bytes: number;
+  truncated: boolean;
+  /** Base64 when the bytes sit in the record; null when they live in the
+   *  blob store or were not kept. */
+  data: string | null;
+  stored: "inline" | "blob" | "preview_only";
+  sha256: string | null;
+  readable: boolean;
 }
 
 export interface StepStartedRecord extends RecordBase {
@@ -717,6 +740,9 @@ export interface CreateAgentRequest {
    *  publishes is a permission: which of the agent's own tools a child it
    *  writes may be given, and on which model. Never a list of children. */
   subagents_enabled?: boolean;
+  /** Whether the agent may write and run programs, and on what terms. Null
+   *  means it may not, whatever sandbox the installation has wired. */
+  code_execution?: CodeExecutionIn | null;
   /** Whether the agent summarises its older conversation once a prompt gets
    *  large, instead of letting it reach the context window. Null, the default,
    *  means it does not. Joins the version hash: an agent shown a summary in
@@ -780,6 +806,8 @@ export interface AgentSummary {
    *  rather than as a bare flag, for the reason skills carry their bodies: an
    *  edit form told only that it was on would invent the numbers again. */
   compaction: CompactionIn | null;
+  /** The agent's code-execution terms, or null when it may not run programs. */
+  code_execution: CodeExecutionIn | null;
   /** When the current version was first published. Not "last edited": a
    *  version republished after a round trip through an earlier configuration
    *  keeps its original timestamp. */
@@ -1002,20 +1030,132 @@ export interface SandboxLimitsIn {
 
 /** The `Runtime` knobs Psych leaves to the consumer, per account. None of
  *  them is part of a spec, so changing one moves no version hash. */
+export type IsolationLevel = "isolated" | "process";
+export type EnforcementState = "enforced" | "unverified" | "unavailable";
+
+/** One extra sandbox profile this account offers its agents by name: a
+ *  container image, or a remote service. A remote profile names the secret
+ *  holding its token, never the token. */
+export interface SandboxProfileIn {
+  name: string;
+  backend: "container" | "remote";
+  enabled: boolean;
+  hard_limits: SandboxLimitsIn;
+  allow_network: boolean;
+  image?: string | null;
+  runtime?: "docker" | "podman" | null;
+  base_url?: string | null;
+  credential?: string | null;
+}
+
+/** A local backend this host could run, from detection alone. */
+export interface SandboxBackend {
+  name: string;
+  isolation: IsolationLevel;
+  available: boolean;
+  reason: string;
+}
+
+export interface SandboxGuarantees {
+  filesystem: EnforcementState;
+  network: EnforcementState;
+  process_tree: EnforcementState;
+  identity: EnforcementState;
+  cpu: EnforcementState;
+  memory: EnforcementState;
+  file_size: EnforcementState;
+  process_count: EnforcementState;
+  wall_clock: EnforcementState;
+  environment: EnforcementState;
+}
+
+/** `POST /api/settings/sandbox/{name}/check`: what a profile's backend
+ *  reports about itself, from its own probe. */
+export interface SandboxProfileHealth {
+  name: string;
+  configured: boolean;
+  backend: string;
+  platform: string;
+  isolation: IsolationLevel | null;
+  guarantees: SandboxGuarantees;
+  mechanisms: string[];
+  network_grant_supported: boolean;
+  artifacts_supported: boolean;
+  ready: boolean;
+  problems: string[];
+  notes: string[];
+  checked_in_ms: number;
+}
+
 export interface RuntimeSettingsIn {
   cost_policy: CostPolicy;
   blob_offload_bytes: number;
   catalogue_budget_chars: number;
+  /** Whether the `default` profile (this host's own local backend) is offered. */
   sandbox_enabled: boolean;
+  /** The `default` profile's ceiling; an agent's request can only lower it. */
   sandbox_limits: SandboxLimitsIn;
+  sandbox_allow_network: boolean;
+  sandbox_profiles: SandboxProfileIn[];
   egress_allow: string[];
   denied_tools: string[];
 }
 
 export interface RuntimeSettings extends RuntimeSettingsIn {
-  /** Whether this host can offer `run_code` at all. */
+  /** Whether this host can offer the `default` (local) profile at all. */
   sandbox_available: boolean;
   sandbox_unavailable_reason: string | null;
+  sandbox_platform: string;
+  sandbox_backends: SandboxBackend[];
+  /** Every profile an agent of this account may name. */
+  sandbox_profile_names: string[];
+}
+
+export interface CodeExecutionLimitsIn {
+  cpu_seconds?: number | null;
+  wall_seconds?: number | null;
+  memory_bytes?: number | null;
+  file_size_bytes?: number | null;
+  process_count?: number | null;
+}
+
+/** An agent's code-execution terms. Part of the published spec and so of its
+ *  version hash: an agent that can run programs is a different agent. */
+export interface CodeExecutionIn {
+  enabled: boolean;
+  profile: string;
+  isolation: IsolationLevel;
+  network: "denied" | "unrestricted";
+  limits: CodeExecutionLimitsIn;
+  /** Which of the agent's own tools a program may call. Null means all. */
+  bindings: string[] | null;
+  preview_bytes: number;
+  max_output_bytes: number;
+  preserve_output: "when_available" | "required" | "never";
+  collect_artifacts: boolean;
+  max_artifacts: number;
+  max_artifact_bytes: number;
+}
+
+/** A window of one recorded output, through the reader the model uses. */
+export interface ReadToolOutputResult {
+  handle: string;
+  binary: boolean;
+  total_size_bytes: number;
+  total_lines: number;
+  offset: number;
+  limit: number;
+  pattern: string | null;
+  total_matches: number | null;
+  returned_lines: number;
+  truncated: boolean;
+  content: string;
+  matches: { line_number: number; text: string }[];
+}
+
+export interface DemoSeedResponse {
+  agent_id: string;
+  run_ids: string[];
 }
 
 export interface A2ATokenRequest {
@@ -1177,6 +1317,7 @@ export interface ToolCallReport {
   result_handle: string | null;
   preview: string | null;
   result_bytes: number;
+  attachments: ResultAttachment[];
   started_at: string;
   finished_at: string | null;
   interruptible: boolean;

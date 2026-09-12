@@ -65,6 +65,7 @@ __all__ = [
     "QueueEnqueued",
     "QueueKind",
     "Record",
+    "ResultAttachment",
     "Resumed",
     "RunAdmitted",
     "RunSettled",
@@ -191,6 +192,80 @@ class ToolFailure(BaseModel):
     So the default is False and the log still keeps the traceback. Only the
     code-execution path sets this True, which is exactly the case the design
     asks for."""
+
+
+class ResultAttachment(BaseModel):
+    """One named stream or file a tool call produced beside its result.
+
+    A ``run_code`` call produces several things at once: what the program
+    printed, what it printed to stderr, what it returned, and the files it
+    wrote. The model is shown a compact preview of each; the full bytes are
+    kept here, inline when small enough and in the Runtime's ``BlobStore`` when
+    not (DESIGN.md §10.8, the same offload rule a plain large result follows).
+    Each attachment is addressable through ``read_tool_output`` by its own
+    handle, which the reducer registers exactly like ``result_handle``, so a
+    model can page through a megabyte of stdout without any of it re-entering
+    the prompt whole.
+
+    Attributes:
+        name: what this is: ``stdout``, ``stderr``, ``value``, or
+            ``file:<relative path>`` for a workspace artifact. Never a host path.
+        handle: the string the model passes to ``read_tool_output``.
+        content_type: how to read ``data`` or the blob back.
+        size_bytes: the size of what was captured.
+        observed_bytes: how much the program actually produced, which is more
+            than ``size_bytes`` when the backend stopped capturing at its cap.
+        truncated: ``observed_bytes > size_bytes``, stated rather than derived
+            so a reader does not have to compare two numbers to learn it.
+        data: the captured bytes, when they were small enough to keep in the
+            record. ``None`` when they live in the ``BlobStore`` or were not
+            kept at all; ``stored`` says which.
+        stored: ``inline`` (in ``data``), ``blob`` (in the ``BlobStore`` under
+            a key derived from this Run and call, never from this record), or
+            ``preview_only`` (the bytes beyond the preview were not kept, by
+            policy or because no ``BlobStore`` was wired; the preview itself
+            is in the call's result).
+        sha256: a hex digest of the captured bytes, so a reader fetching a blob
+            can check it got what was written.
+        readable: whether the model may read this attachment through
+            ``read_tool_output``. ``False`` for bookkeeping a person reads in a
+            report but the model has no use for (the execution's enforcement
+            report), so its presence does not cost the prompt a tool
+            definition on every later turn.
+    """
+
+    # base64 on the wire, not utf-8: an attachment is arbitrary bytes (a
+    # program's binary stdout, an image it wrote), and pydantic's default
+    # bytes encoding refuses anything that is not valid UTF-8 at the moment a
+    # store serialises the record, which would fail the write of a legitimate
+    # result.
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", ser_json_bytes="base64", val_json_bytes="base64"
+    )
+
+    name: str = Field(min_length=1, max_length=512)
+    handle: str = Field(min_length=1, max_length=256)
+    content_type: str = Field(min_length=1, max_length=128)
+    size_bytes: int = Field(ge=0)
+    observed_bytes: int = Field(ge=0)
+    truncated: bool = False
+    data: bytes | None = None
+    stored: Literal["inline", "blob", "preview_only"] = "inline"
+    sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    readable: bool = True
+
+    @model_validator(mode="after")
+    def _storage_is_consistent(self) -> Self:
+        if self.stored == "inline" and self.data is None:
+            raise ValueError("an inline ResultAttachment must carry its data")
+        if self.stored != "inline" and self.data is not None:
+            raise ValueError(
+                "a ResultAttachment stored in a blob or as a preview only must not also "
+                "carry inline data"
+            )
+        if self.observed_bytes < self.size_bytes:
+            raise ValueError("observed_bytes cannot be smaller than what was captured")
+        return self
 
 
 class ModelTimings(BaseModel):
@@ -459,6 +534,10 @@ class ToolCallFinished(_RecordBase):
     """How to decode the bytes named by ``result_blob_key``. Always set together
     with it, never independently: one says where the bytes are, the other says
     how to read them back, and one without the other is unusable."""
+    attachments: tuple[ResultAttachment, ...] = ()
+    """Named streams and files this call produced beside ``result``, each
+    readable through ``read_tool_output`` by its own handle. Empty for every
+    ordinary tool; ``run_code`` fills it. See ``ResultAttachment``."""
 
     @model_validator(mode="after")
     def _offload_fields_are_consistent(self) -> Self:
@@ -475,6 +554,11 @@ class ToolCallFinished(_RecordBase):
                 "BlobStore, not in the log, so 'result' must be None whenever "
                 "'result_blob_key' is set"
             )
+        handles = [attachment.handle for attachment in self.attachments]
+        if len(set(handles)) != len(handles):
+            raise ValueError("a ToolCallFinished's attachments must have distinct handles")
+        if self.result_handle is not None and self.result_handle in handles:
+            raise ValueError("an attachment handle cannot repeat the call's own result_handle")
         return self
 
 

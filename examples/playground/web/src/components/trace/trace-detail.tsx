@@ -9,6 +9,7 @@ import { formatBytes, formatCost, formatDuration } from "@/lib/format";
 import { formatOffset } from "@/components/trace/trace-format";
 import { STATUS_META } from "@/components/trace/trace-meta";
 import { TurnContextPanels } from "@/components/trace/turn-context";
+import { CodeExecutionDetail } from "@/components/chat/code-execution-card";
 import type { TraceEntry } from "@/components/trace/trace-model";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -25,6 +26,10 @@ function Overview({ entry }: { entry: TraceEntry }) {
       <Field label="Cost"><span className="tabular text-caption">{formatCost(entry.data.cost)}</span></Field>
       <Field label="Tool calls issued"><span className="text-caption">{entry.data.tool_call_ids.length}</span></Field>
     </div>
+  </>;
+  if (entry.kind === "tool" && entry.data.tool === "run_code") return <>
+    {entry.data.failure && <Field label={entry.data.failure.kind}><p className="text-caption text-status-failed">{entry.data.failure.message}</p></Field>}
+    <CodeExecutionDetail report={entry.data} runId={entry.runId} />
   </>;
   if (entry.kind === "tool") return <>
     {entry.data.failure && <Field label={entry.data.failure.kind}><p className="text-caption text-status-failed">{entry.data.failure.message}</p></Field>}

@@ -31,6 +31,11 @@ examples/playground/backend/.playground-state.json
 # The same backend's .env, which holds the provider API key it boots with.
 examples/playground/backend/.env
 
+# Tool results too large to sit in a record are written here instead
+# (FilesystemBlobStore). Local output from local runs, sometimes megabytes
+# of it, and the handles that point at it live in the index beside it.
+examples/playground/backend/blobs/
+
 # The agents-published and runs-dispatched lists the same backend keeps
 # (app/store_index.py). No credentials in it, but still local bookkeeping.
 examples/playground/backend/.playground-index.json

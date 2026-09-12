@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { CheckIcon, ChevronRightIcon, CircleHelpIcon, OctagonXIcon, XIcon } from "lucide-react";
 
+import { CodeExecutionCard } from "@/components/chat/code-execution-card";
 import { JsonBlock } from "@/components/chat/json-block";
 import { ToolArguments } from "@/components/chat/tool-arguments";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -30,6 +31,10 @@ export function ToolCallCard({ call }: { call: ToolCallView }) {
   const [open, setOpen] = useState(false);
   const running = call.outcome === null;
   const meta = running ? null : OUTCOME[call.outcome ?? "unknown"];
+
+  if (call.tool === "run_code") {
+    return <CodeExecutionCard call={call} />;
+  }
 
   return (
     <div className="w-full max-w-xl overflow-hidden rounded-lg border border-border bg-surface/60">

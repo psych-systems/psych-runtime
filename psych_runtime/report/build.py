@@ -285,6 +285,7 @@ def _tool_calls(records: Sequence[Record]) -> tuple[ToolCallReport, ...]:
                     "result_handle": None,
                     "preview": None,
                     "result_bytes": 0,
+                    "attachments": (),
                     "started_at": record.at,
                     "finished_at": None,
                     "interruptible": record.interruptible,
@@ -302,6 +303,7 @@ def _tool_calls(records: Sequence[Record]) -> tuple[ToolCallReport, ...]:
                 result_handle=record.result_handle,
                 preview=record.preview,
                 result_bytes=record.result_bytes,
+                attachments=record.attachments,
                 finished_at=record.at,
             )
 

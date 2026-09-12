@@ -6,6 +6,9 @@
  */
 
 import type {
+  DemoSeedResponse,
+  ReadToolOutputResult,
+  SandboxProfileHealth,
   A2ATokenRequest,
   A2ATokenResponse,
   AccountResponse,
@@ -818,6 +821,40 @@ export function updateA2APeers(
     method: "PUT",
     body: JSON.stringify({ a2a_peers: peers }),
   });
+}
+
+export function checkSandboxProfile(name: string): Promise<SandboxProfileHealth> {
+  return request<SandboxProfileHealth>(
+    `/api/settings/sandbox/${encodeURIComponent(name)}/check`,
+    { method: "POST" }
+  );
+}
+
+export function readRunAttachment(
+  runId: string,
+  handle: string,
+  options: { offset?: number; limit?: number; pattern?: string } = {},
+  signal?: AbortSignal
+): Promise<ReadToolOutputResult> {
+  const params = new URLSearchParams();
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.pattern) params.set("pattern", options.pattern);
+  const query = params.toString();
+  return request<ReadToolOutputResult>(
+    `/api/runs/${encodeURIComponent(runId)}/attachments/${encodeURIComponent(handle)}${query ? `?${query}` : ""}`,
+    { signal }
+  );
+}
+
+export function attachmentDownloadUrl(runId: string, handle: string): string {
+  return externalUrl(
+    `/api/runs/${encodeURIComponent(runId)}/attachments/${encodeURIComponent(handle)}/download`
+  );
+}
+
+export function seedCodeExecutionDemo(): Promise<DemoSeedResponse> {
+  return request<DemoSeedResponse>("/api/demo/code-execution", { method: "POST" });
 }
 
 export function updateRuntimeSettings(body: RuntimeSettingsIn): Promise<PlaygroundSettings> {

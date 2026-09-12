@@ -19,6 +19,7 @@
  */
 
 import type {
+  ResultAttachment,
   PsychComponent,
   PsychRecord,
   SuspendReason,
@@ -35,6 +36,8 @@ export interface ThreadRun {
 
 export interface ToolCallView {
   callId: string;
+  /** The Run this call belongs to, for fetching an output it only names. */
+  runId: string;
   tool: string;
   arguments: Record<string, unknown>;
   startedAt: string;
@@ -45,6 +48,8 @@ export interface ToolCallView {
   durationSeconds: number | null;
   preview: string | null;
   resultBytes: number;
+  /** Outputs kept beside the result (a program's streams and files). */
+  attachments: ResultAttachment[];
 }
 
 export interface UserMessageItem {
@@ -244,6 +249,7 @@ export function buildConversation(runs: readonly ThreadRun[]): Conversation {
         case "tool_call_started": {
           const call: ToolCallView = {
             callId: record.call_id,
+            runId: run.runId,
             tool: record.tool,
             arguments: record.arguments,
             startedAt: record.at,
@@ -254,6 +260,7 @@ export function buildConversation(runs: readonly ThreadRun[]): Conversation {
             durationSeconds: null,
             preview: null,
             resultBytes: 0,
+            attachments: [],
           };
           calls.set(record.call_id, call);
           const turn = turns.get(record.turn);
@@ -270,6 +277,7 @@ export function buildConversation(runs: readonly ThreadRun[]): Conversation {
             call.durationSeconds = record.duration_seconds;
             call.preview = record.preview;
             call.resultBytes = record.result_bytes;
+            call.attachments = record.attachments ?? [];
             call.finishedAt = record.at;
           }
           break;

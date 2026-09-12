@@ -1,17 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { CircleAlertIcon, Loader2Icon, SaveIcon } from "lucide-react";
+import { Loader2Icon, SaveIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { describeApiError } from "@/lib/errors";
 import type { CostPolicy, RuntimeSettings, RuntimeSettingsIn } from "@/lib/types";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Section } from "@/components/ui/page";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 
 const COST_POLICIES: { value: CostPolicy; label: string; help: string }[] = [
@@ -39,6 +37,8 @@ function toIn(runtime: RuntimeSettings): RuntimeSettingsIn {
     catalogue_budget_chars: runtime.catalogue_budget_chars,
     sandbox_enabled: runtime.sandbox_enabled,
     sandbox_limits: runtime.sandbox_limits,
+    sandbox_allow_network: runtime.sandbox_allow_network,
+    sandbox_profiles: runtime.sandbox_profiles,
     egress_allow: runtime.egress_allow,
     denied_tools: runtime.denied_tools,
   };
@@ -126,74 +126,6 @@ export function RuntimeSection({
             {COST_POLICIES.find((p) => p.value === draft.cost_policy)?.help}
           </p>
         </div>
-
-        <div className="flex items-center justify-between gap-3 rounded-lg bg-surface/60 px-3 py-2">
-          <div className="flex min-w-0 flex-col">
-            <span className="text-body font-medium">Let agents run code</span>
-            <span className="text-caption text-muted-foreground">
-              Offers <code className="font-technical">run_code</code>: a model-written program in a
-              real subprocess, no network by default, calling back into your own tools through the
-              ordinary registry path.
-            </span>
-          </div>
-          <Switch
-            checked={draft.sandbox_enabled}
-            onCheckedChange={(sandbox_enabled) => setDraft({ ...draft, sandbox_enabled })}
-          />
-        </div>
-        {!runtime.sandbox_available && (
-          <Alert>
-            <CircleAlertIcon />
-            <AlertDescription>
-              This installation cannot offer <code className="font-technical">run_code</code> right
-              now{runtime.sandbox_unavailable_reason ? `: ${runtime.sandbox_unavailable_reason}` : "."}
-              {" "}The switch above is saved but has nothing to turn on.
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {draft.sandbox_enabled && (
-          <div className="grid gap-3 rounded-lg border border-dashed border-border p-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="rt-cpu">CPU seconds</Label>
-              <Input
-                id="rt-cpu"
-                type="number"
-                className="tabular"
-                min={1}
-                value={draft.sandbox_limits.cpu_seconds}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    sandbox_limits: {
-                      ...draft.sandbox_limits,
-                      cpu_seconds: Number(e.target.value) || 1,
-                    },
-                  })
-                }
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="rt-wall">Wall clock seconds</Label>
-              <Input
-                id="rt-wall"
-                type="number"
-                className="tabular"
-                min={1}
-                value={draft.sandbox_limits.wall_seconds}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    sandbox_limits: {
-                      ...draft.sandbox_limits,
-                      wall_seconds: Number(e.target.value) || 1,
-                    },
-                  })
-                }
-              />
-            </div>
-          </div>
-        )}
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">

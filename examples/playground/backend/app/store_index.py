@@ -282,6 +282,10 @@ class AgentEntry(BaseModel):
     `None` there is right rather than merely convenient: those agents were
     published without one.
     """
+    code_execution: dict[str, Any] | None = None
+    """``psych_runtime.CodeExecution`` as published, or ``None``. A dict for
+    the reason ``spawn`` is: only ever read back into the form that wrote
+    it. Defaulted so an index written before it existed still loads."""
     published_at: datetime
     approval_selectors: tuple[str, ...]
 

@@ -450,7 +450,7 @@ Attributes:
 *model*
 
 ```python
-class ToolCallReport(*, call_id: psych_runtime.core.ids.ToolCallId, tool: str, turn: int, step_id: Optional[psych_runtime.core.ids.StepId], arguments: dict[str, typing.Any], outcome: psych_runtime.core.records.ToolOutcome | None, result: Any, failure: psych_runtime.core.records.ToolFailure | None, duration_seconds: float | None, result_handle: str | None, preview: str | None, result_bytes: int, started_at: datetime.datetime, finished_at: datetime.datetime | None, interruptible: bool, safe_to_retry: bool)
+class ToolCallReport(*, call_id: psych_runtime.core.ids.ToolCallId, tool: str, turn: int, step_id: Optional[psych_runtime.core.ids.StepId], arguments: dict[str, typing.Any], outcome: psych_runtime.core.records.ToolOutcome | None, result: Any, failure: psych_runtime.core.records.ToolFailure | None, duration_seconds: float | None, result_handle: str | None, preview: str | None, result_bytes: int, attachments: tuple[psych_runtime.core.records.ResultAttachment, ...] = (), started_at: datetime.datetime, finished_at: datetime.datetime | None, interruptible: bool, safe_to_retry: bool)
 ```
 
 One tool call: what it was asked to do, and how it ended.
@@ -478,10 +478,70 @@ Attributes:
 | `result_handle` | `str | None` |  |
 | `preview` | `str | None` |  |
 | `result_bytes` | `int` |  |
+| `attachments` | `tuple` |  |
 | `started_at` | `datetime` |  |
 | `finished_at` | `datetime.datetime | None` |  |
 | `interruptible` | `bool` |  |
 | `safe_to_retry` | `bool` |  |
+
+### `ResultAttachment`
+
+*model*
+
+```python
+class ResultAttachment(*, name: Annotated[str, MinLen(min_length=1), MaxLen(max_length=512)], handle: Annotated[str, MinLen(min_length=1), MaxLen(max_length=256)], content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=128)], size_bytes: Annotated[int, Ge(ge=0)], observed_bytes: Annotated[int, Ge(ge=0)], truncated: bool = False, data: bytes | None = None, stored: Literal['inline', 'blob', 'preview_only'] = 'inline', sha256: Annotated[str | None, MinLen(min_length=64), MaxLen(max_length=64)] = None, readable: bool = True)
+```
+
+One named stream or file a tool call produced beside its result.
+
+A ``run_code`` call produces several things at once: what the program
+printed, what it printed to stderr, what it returned, and the files it
+wrote. The model is shown a compact preview of each; the full bytes are
+kept here, inline when small enough and in the Runtime's ``BlobStore`` when
+not (DESIGN.md §10.8, the same offload rule a plain large result follows).
+Each attachment is addressable through ``read_tool_output`` by its own
+handle, which the reducer registers exactly like ``result_handle``, so a
+model can page through a megabyte of stdout without any of it re-entering
+the prompt whole.
+
+Attributes:
+    name: what this is: ``stdout``, ``stderr``, ``value``, or
+        ``file:&lt;relative path>`` for a workspace artifact. Never a host path.
+    handle: the string the model passes to ``read_tool_output``.
+    content_type: how to read ``data`` or the blob back.
+    size_bytes: the size of what was captured.
+    observed_bytes: how much the program actually produced, which is more
+        than ``size_bytes`` when the backend stopped capturing at its cap.
+    truncated: ``observed_bytes > size_bytes``, stated rather than derived
+        so a reader does not have to compare two numbers to learn it.
+    data: the captured bytes, when they were small enough to keep in the
+        record. ``None`` when they live in the ``BlobStore`` or were not
+        kept at all; ``stored`` says which.
+    stored: ``inline`` (in ``data``), ``blob`` (in the ``BlobStore`` under
+        a key derived from this Run and call, never from this record), or
+        ``preview_only`` (the bytes beyond the preview were not kept, by
+        policy or because no ``BlobStore`` was wired; the preview itself
+        is in the call's result).
+    sha256: a hex digest of the captured bytes, so a reader fetching a blob
+        can check it got what was written.
+    readable: whether the model may read this attachment through
+        ``read_tool_output``. ``False`` for bookkeeping a person reads in a
+        report but the model has no use for (the execution's enforcement
+        report), so its presence does not cost the prompt a tool
+        definition on every later turn.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `handle` | `str` |  |
+| `content_type` | `str` |  |
+| `size_bytes` | `int` |  |
+| `observed_bytes` | `int` |  |
+| `truncated` | `bool` |  |
+| `data` | `bytes | None` |  |
+| `stored` | `Literal` |  |
+| `sha256` | `str | None` |  |
+| `readable` | `bool` |  |
 
 ### `ModelCallReport`
 

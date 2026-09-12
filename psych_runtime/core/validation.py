@@ -56,19 +56,26 @@ class ValidationContext:
             "do not check", because reachability is a network fact and a
             consumer validating a Spec offline should still get every other
             error.
+        sandbox_profiles: the logical sandbox names the deployment resolves
+            (``psych_runtime.Runtime``'s profile registry). Empty means "do not
+            check". Given, an agent whose ``code_execution.profile`` names
+            nothing here is refused at publish rather than at its first
+            ``run_code`` call.
     """
 
-    __slots__ = ("known_models", "reachable_mcp_servers", "registered_tools")
+    __slots__ = ("known_models", "reachable_mcp_servers", "registered_tools", "sandbox_profiles")
 
     def __init__(
         self,
         registered_tools: Iterable[str] = (),
         known_models: Iterable[str] = (),
         reachable_mcp_servers: Iterable[str] = (),
+        sandbox_profiles: Iterable[str] = (),
     ) -> None:
         self.registered_tools = frozenset(registered_tools)
         self.known_models = frozenset(known_models)
         self.reachable_mcp_servers = frozenset(reachable_mcp_servers)
+        self.sandbox_profiles = frozenset(sandbox_profiles)
 
 
 def validate_spec(spec: Spec, context: ValidationContext | None = None) -> None:
@@ -144,6 +151,7 @@ def _visit_agent(
     _check_mcp(spec, ctx, path, issues)
     _check_skill_graph(spec.skills, spec.instructions, path, issues)
     _check_delegation_depth(spec, path, issues)
+    _check_code_execution(spec, ctx, path, issues)
 
     for subagent in spec.subagents:
         _visit(
@@ -189,6 +197,30 @@ def _visit_workflow(
                 depth=depth + 1,
                 seen_specs=seen_specs,
             )
+
+
+def _check_code_execution(
+    spec: AgentSpec, ctx: ValidationContext, path: str, out: list[ValidationIssue]
+) -> None:
+    """An enabled ``code_execution`` must name a profile the deployment has.
+
+    The subset check on ``bindings`` already ran when the Spec was built; this
+    is the one check that needs the world outside the Spec, and it is skipped
+    when the context does not describe that world.
+    """
+    config = spec.code_execution
+    if config is None or not config.enabled or not ctx.sandbox_profiles:
+        return
+    if config.profile not in ctx.sandbox_profiles:
+        known = ", ".join(sorted(ctx.sandbox_profiles))
+        out.append(
+            ValidationIssue(
+                f"{path}.code_execution.profile",
+                f"sandbox profile {config.profile!r} is not one this deployment resolves "
+                f"(known: {known}). Name a configured profile, or register one on the "
+                "Runtime.",
+            )
+        )
 
 
 def _check_model(

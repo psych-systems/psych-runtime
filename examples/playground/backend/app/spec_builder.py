@@ -11,7 +11,13 @@ from collections.abc import Mapping
 from typing import Any
 
 import psych_runtime
-from app.schemas import CompactionIn, CreateAgentRequest, HttpToolIn, McpServerIn
+from app.schemas import (
+    CodeExecutionIn,
+    CompactionIn,
+    CreateAgentRequest,
+    HttpToolIn,
+    McpServerIn,
+)
 
 
 def build_agent_spec(
@@ -111,6 +117,60 @@ def build_agent_spec(
         # `psych_runtime.CompactionPolicy`'s own and a bad number is rejected at
         # publish rather than at the turn that would have compacted.
         compaction=_build_compaction(body.compaction),
+        code_execution=build_code_execution(body.code_execution),
+    )
+
+
+def build_code_execution(entry: CodeExecutionIn | None) -> psych_runtime.CodeExecution | None:
+    """The request's code-execution terms as the Spec model, or ``None``.
+
+    Built here rather than passed through so every bound is
+    ``psych_runtime.CodeExecution``'s own and a bad number is rejected at
+    publish rather than at the turn that would have run a program.
+    """
+    if entry is None:
+        return None
+    return psych_runtime.CodeExecution(
+        enabled=entry.enabled,
+        profile=entry.profile,
+        isolation=psych_runtime.IsolationLevel(entry.isolation),
+        network=psych_runtime.NetworkAccess(entry.network),
+        limits=psych_runtime.CodeExecutionLimits(**entry.limits.model_dump()),
+        bindings=tuple(entry.bindings) if entry.bindings is not None else None,
+        output=psych_runtime.OutputPolicy(
+            preview_bytes=entry.preview_bytes,
+            max_bytes=entry.max_output_bytes,
+            preserve=psych_runtime.OutputPreservation(entry.preserve_output),
+        ),
+        artifacts=psych_runtime.ArtifactPolicy(
+            collection=(
+                psych_runtime.ArtifactCollection.COLLECT
+                if entry.collect_artifacts
+                else psych_runtime.ArtifactCollection.IGNORE
+            ),
+            max_count=entry.max_artifacts,
+            max_total_bytes=entry.max_artifact_bytes,
+        ),
+    )
+
+
+def code_execution_in(config: psych_runtime.CodeExecution | None) -> CodeExecutionIn | None:
+    """The inverse of ``build_code_execution``, for reporting an agent back."""
+    if config is None:
+        return None
+    return CodeExecutionIn(
+        enabled=config.enabled,
+        profile=config.profile,
+        isolation=config.isolation.value,
+        network=config.network.value,
+        limits=config.limits.model_dump(),  # type: ignore[arg-type]
+        bindings=list(config.bindings) if config.bindings is not None else None,
+        preview_bytes=config.output.preview_bytes,
+        max_output_bytes=config.output.max_bytes,
+        preserve_output=config.output.preserve.value,
+        collect_artifacts=config.artifacts.collection == "collect",
+        max_artifacts=config.artifacts.max_count,
+        max_artifact_bytes=config.artifacts.max_total_bytes,
     )
 
 

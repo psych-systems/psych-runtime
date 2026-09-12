@@ -50,6 +50,7 @@ from typing import Any, Final, Literal
 
 from pydantic import ValidationError
 
+from psych_runtime.core.code_execution import OutputPreservation
 from psych_runtime.core.conversation import build_conversation
 from psych_runtime.core.errors import AccessDenied, TransientError
 from psych_runtime.core.ids import ToolCallId, new_tool_call_id
@@ -59,6 +60,7 @@ from psych_runtime.core.records import (
     ModelTimings,
     QueueKind,
     Record,
+    ResultAttachment,
     SuspendReason,
     TerminalState,
     ToolFailure,
@@ -110,7 +112,9 @@ from psych_runtime.telemetry.port import (
 )
 from psych_runtime.tools import repetition
 from psych_runtime.tools.builtins import ASK_QUESTION, parse_questions
+from psych_runtime.tools.code import SLOT_PLACEHOLDER, CodeExecutionOutcome, attachment_handle
 from psych_runtime.tools.code import TOOL_NAME as RUN_CODE
+from psych_runtime.tools.code import digest as attachment_digest
 from psych_runtime.tools.deferred import DEFERRED_TOOL_NAMES, DeferredDiscovery
 from psych_runtime.tools.guidance import (
     describe_argument_errors,
@@ -121,6 +125,7 @@ from psych_runtime.tools.large_results import (
     TOOL_NAME as READ_TOOL_OUTPUT,
 )
 from psych_runtime.tools.large_results import (
+    attachment_blob_key,
     decide_elision,
     decide_offload,
     force_elision,
@@ -134,6 +139,12 @@ from psych_runtime.tools.resolver import ResolvedTools, ToolResolver
 __all__ = ["DEFAULT_OFFLOAD_BYTES", "AgentLoop", "LoopOutcome", "ToolExecutor"]
 
 DEFAULT_OFFLOAD_BYTES: Final = 300_000
+INLINE_ATTACHMENT_BYTES: Final = 16 * 1024
+"""The largest single ``run_code`` attachment kept inline in the record. Above
+it the bytes go to the ``BlobStore``. Small on purpose: a record carrying
+several attachments must still fit the tightest store's item cap, and the
+whole point of an attachment is that the model reads it in windows rather
+than the record carrying it whole."""
 """The offload threshold (``psych_runtime.tools.large_results.decide_offload``) when a
 Runtime does not choose its own. Sized against DynamoDB's 400KB item limit
 (DESIGN.md §7) with headroom for a ``ToolCallFinished`` record's other fields
@@ -1691,6 +1702,11 @@ class AgentLoop:
         """Record a successful call, eliding the model's view when it is large
         and offloading the payload itself when it is too large to log inline.
 
+        A ``run_code`` call arrives as a ``CodeExecutionOutcome``: a compact
+        payload plus the bytes behind it, which ``_record_code_execution``
+        stores as attachments before the payload itself goes through the same
+        elision and offload every other result does.
+
         Every byte a tool returned stays durably retrievable either way
         (DESIGN.md §10.8 and §7; see ``psych_runtime.tools.large_results``'s module
         docstring for why both are true even above DynamoDB's item limit).
@@ -1704,6 +1720,13 @@ class AgentLoop:
         method calls into it and writes back exactly what it returns instead
         of restating any of those numbers.
         """
+        attachments: tuple[ResultAttachment, ...] = ()
+        if isinstance(result, CodeExecutionOutcome):
+            stored = await self._store_attachments(call_id, result)
+            if stored is None:
+                return  # the attachments could not be kept and the call was recorded failed
+            result, attachments = stored
+
         elision = decide_elision(result, call_id, threshold=self._spec.limits.large_result_bytes)
         offload = decide_offload(result, threshold=self._blob_offload_bytes)
 
@@ -1717,6 +1740,7 @@ class AgentLoop:
                 result_bytes=elision.result_bytes,
                 result_handle=elision.handle,
                 preview=elision.preview,
+                attachments=attachments,
             )
             return
 
@@ -1770,7 +1794,122 @@ class AgentLoop:
             preview=elision.preview,
             result_blob_key=str(key),
             result_content_type=offload.content_type,
+            attachments=attachments,
         )
+
+    async def _store_attachments(
+        self, call_id: ToolCallId, outcome: CodeExecutionOutcome
+    ) -> tuple[dict[str, Any], tuple[ResultAttachment, ...]] | None:
+        """Keep a ``run_code`` call's streams and files, and finish its payload.
+
+        Three homes for the bytes, decided per attachment: inline in the
+        record when small (``INLINE_ATTACHMENT_BYTES``, within a per-record
+        budget), in the ``BlobStore`` when larger and one is wired, or not
+        kept at all -- in which case the payload stops naming a handle for
+        them and says how many bytes were omitted, so the model is never
+        offered a handle that would fail. ``OutputPreservation.REQUIRED`` with
+        nowhere to keep the bytes records the call as failed instead
+        (``blob_store_required``, the same kind a plain oversized result
+        gets), and returns ``None``.
+
+        The payload's placeholders are substituted with real handles here,
+        because the call id is minted in this loop and never known to
+        ``psych_runtime.tools.code``.
+        """
+        keep_beyond_preview = outcome.preserve is not OutputPreservation.NEVER
+        inline_budget = self._blob_offload_bytes // 4
+        inline_used = 0
+        handles: dict[str, str | None] = {}
+        omitted: dict[str, int] = {}
+        stored: list[ResultAttachment] = []
+
+        for pending in outcome.attachments:
+            handle = attachment_handle(call_id, pending.slot)
+            readable = pending.slot != "execution"
+            size = len(pending.data)
+            fits_inline = size <= INLINE_ATTACHMENT_BYTES and inline_used + size <= inline_budget
+            keep = keep_beyond_preview or not readable
+            if keep and fits_inline:
+                inline_used += size
+                stored.append(
+                    ResultAttachment(
+                        name=pending.name,
+                        handle=handle,
+                        content_type=pending.content_type,
+                        size_bytes=size,
+                        observed_bytes=pending.observed_bytes,
+                        truncated=pending.observed_bytes > size,
+                        data=pending.data,
+                        stored="inline",
+                        sha256=attachment_digest(pending.data),
+                        readable=readable,
+                    )
+                )
+                handles[pending.slot] = handle
+                continue
+            if keep and self._blob is not None:
+                key = attachment_blob_key(
+                    self._journal.scope, self._journal.run_id, call_id, pending.slot
+                )
+                metadata = {"sha256": attachment_digest(pending.data)}
+                if pending.content_type.startswith("text/"):
+                    metadata["line_count"] = str(pending.data.count(b"\n") + 1)
+                await self._blob.put(
+                    key, pending.data, content_type=pending.content_type, metadata=metadata
+                )
+                stored.append(
+                    ResultAttachment(
+                        name=pending.name,
+                        handle=handle,
+                        content_type=pending.content_type,
+                        size_bytes=size,
+                        observed_bytes=pending.observed_bytes,
+                        truncated=pending.observed_bytes > size,
+                        data=None,
+                        stored="blob",
+                        sha256=metadata["sha256"],
+                        readable=readable,
+                    )
+                )
+                handles[pending.slot] = handle
+                continue
+            if pending.must_keep:
+                await self._journal.append(
+                    type="tool_call_finished",
+                    call_id=call_id,
+                    outcome=ToolOutcome.ERROR,
+                    failure=ToolFailure(
+                        kind="blob_store_required",
+                        message=failure_guidance(
+                            "blob_store_required",
+                            f"This program produced {pending.observed_bytes} bytes of "
+                            f"{pending.name}, and the agent's output policy requires that "
+                            "output be kept in full, but no BlobStore is configured for "
+                            "this Runtime. Configure Runtime(blob=...) or relax "
+                            "code_execution.output.preserve.",
+                        ),
+                    ),
+                )
+                return None
+            stored.append(
+                ResultAttachment(
+                    name=pending.name,
+                    handle=handle,
+                    content_type=pending.content_type,
+                    size_bytes=0,
+                    observed_bytes=pending.observed_bytes,
+                    truncated=pending.observed_bytes > 0,
+                    data=None,
+                    stored="preview_only",
+                    sha256=attachment_digest(pending.data),
+                    readable=False,
+                )
+            )
+            handles[pending.slot] = None
+            omitted[pending.slot] = pending.observed_bytes
+
+        payload = _finish_payload(outcome.payload, handles, omitted)
+        return payload, tuple(stored)
 
     # -- queues -------------------------------------------------------------
 
@@ -1858,3 +1997,46 @@ def _interruptible(spec: AgentSpec, name: str) -> bool:
     # right default: it is what a read is, and a destructive MCP tool should be
     # gated by an approval rather than by being uninterruptible.
     return True
+
+
+def _finish_payload(
+    payload: dict[str, Any], handles: dict[str, str | None], omitted: dict[str, int]
+) -> dict[str, Any]:
+    """Substitute a ``run_code`` payload's handle placeholders.
+
+    A slot that was kept gets its real handle. One that was not loses its
+    ``*_handle`` field and gains ``*_omitted_bytes`` (or, for an artifact,
+    loses ``handle`` and gains ``omitted: true``), so the model can tell
+    "read the rest with this handle" from "the rest is gone" without a
+    failed call in between.
+    """
+    finished: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, str) and value.startswith(SLOT_PLACEHOLDER):
+            slot = value[len(SLOT_PLACEHOLDER) :]
+            handle = handles.get(slot)
+            if handle is None:
+                stream = key.removesuffix("_handle")
+                finished[f"{stream}_omitted_bytes"] = omitted.get(slot, 0)
+                continue
+            finished[key] = handle
+        elif key == "artifacts" and isinstance(value, list):
+            finished[key] = [_finish_artifact(entry, handles) for entry in value]
+        else:
+            finished[key] = value
+    return finished
+
+
+def _finish_artifact(entry: Any, handles: dict[str, str | None]) -> Any:
+    if not isinstance(entry, dict):
+        return entry
+    placeholder = entry.get("handle")
+    if not isinstance(placeholder, str) or not placeholder.startswith(SLOT_PLACEHOLDER):
+        return entry
+    handle = handles.get(placeholder[len(SLOT_PLACEHOLDER) :])
+    rest = {k: v for k, v in entry.items() if k != "handle"}
+    if handle is None:
+        rest["omitted"] = True
+        return rest
+    rest["handle"] = handle
+    return rest

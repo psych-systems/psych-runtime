@@ -32,7 +32,7 @@
           },
           "attempt_id": null,
           "type": "run_admitted",
-          "version_hash": "sha256:950e5c92ee0a7274ff1c4aa009236236c707d1dfaa179c78b96303a7d3c36a43",
+          "version_hash": "sha256:0f6d8a7532d2b4f0d71d8eae5d91c0deea8dee384790bdc3bc1bf08fc6ac66eb",
           "input": {
             "message": "refund order A1, it arrived broken"
           },
@@ -169,7 +169,8 @@
           "preview": null,
           "result_bytes": 59,
           "result_blob_key": null,
-          "result_content_type": null
+          "result_content_type": null,
+          "attachments": []
         },
         {
           "run_id": "run_9b7c",
@@ -285,7 +286,8 @@
           "preview": null,
           "result_bytes": 251,
           "result_blob_key": null,
-          "result_content_type": null
+          "result_content_type": null,
+          "attachments": []
         },
         {
           "run_id": "run_9b7c",
@@ -442,7 +444,8 @@
           "preview": null,
           "result_bytes": 19,
           "result_blob_key": null,
-          "result_content_type": null
+          "result_content_type": null,
+          "attachments": []
         },
         {
           "run_id": "run_9b7c",
@@ -556,7 +559,8 @@
           "preview": null,
           "result_bytes": 54,
           "result_blob_key": null,
-          "result_content_type": null
+          "result_content_type": null,
+          "attachments": []
         },
         {
           "run_id": "run_9b7c",
@@ -689,7 +693,7 @@
           },
           "attempt_id": null,
           "type": "run_admitted",
-          "version_hash": "sha256:950e5c92ee0a7274ff1c4aa009236236c707d1dfaa179c78b96303a7d3c36a43",
+          "version_hash": "sha256:0f6d8a7532d2b4f0d71d8eae5d91c0deea8dee384790bdc3bc1bf08fc6ac66eb",
           "input": {
             "message": "refund order A1, it arrived broken"
           },
@@ -826,7 +830,8 @@
           "preview": null,
           "result_bytes": 59,
           "result_blob_key": null,
-          "result_content_type": null
+          "result_content_type": null,
+          "attachments": []
         },
         {
           "run_id": "run_9b7c",
@@ -942,7 +947,8 @@
           "preview": null,
           "result_bytes": 251,
           "result_blob_key": null,
-          "result_content_type": null
+          "result_content_type": null,
+          "attachments": []
         },
         {
           "run_id": "run_9b7c",
@@ -1105,7 +1111,8 @@
           "preview": null,
           "result_bytes": 0,
           "result_blob_key": null,
-          "result_content_type": null
+          "result_content_type": null,
+          "attachments": []
         },
         {
           "run_id": "run_9b7c",

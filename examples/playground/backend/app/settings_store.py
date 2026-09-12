@@ -286,8 +286,9 @@ class SkillPreset(BaseModel):
 
 
 class SandboxLimitsEntry(BaseModel):
-    """``psych_runtime.SandboxLimits`` as this account has set them. The defaults
-    are the subprocess adapter's own, which its module documents one by one."""
+    """``psych_runtime.SandboxLimits`` as this account has set them: the ceiling
+    a profile applies, which an agent's own request can only lower. The
+    defaults are the library's ``DEFAULT_HARD_LIMITS``."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -296,6 +297,36 @@ class SandboxLimitsEntry(BaseModel):
     file_size_bytes: int = 10 * 1024 * 1024
     process_count: int = 64
     wall_seconds: float = 30.0
+
+
+class SandboxProfileEntry(BaseModel):
+    """One extra sandbox profile this account offers its agents by name.
+
+    The ``default`` profile is the host's own local backend and is configured
+    by ``RuntimeSettings.sandbox_enabled`` and friends; these are the others,
+    each wrapping a backend the account chose. Configuration only: a
+    container profile names an image, a remote one a base URL and the *name*
+    of the secret holding its bearer token. The token itself lives with the
+    account's other secrets and is resolved at call time, never stored here
+    and never shown back.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    backend: Literal["container", "remote"]
+    enabled: bool = True
+    hard_limits: SandboxLimitsEntry = Field(default_factory=SandboxLimitsEntry)
+    allow_network: bool = False
+    image: str | None = None
+    """Container profiles: the image, pulled or built ahead of time. Never
+    pulled implicitly."""
+    runtime: str | None = None
+    """Container profiles: ``docker`` or ``podman``, or ``None`` to detect."""
+    base_url: str | None = None
+    """Remote profiles: where the sandbox service lives."""
+    credential: str | None = None
+    """Remote profiles: the name of the secret holding the bearer token."""
 
 
 class RuntimeSettings(BaseModel):
@@ -320,9 +351,16 @@ class RuntimeSettings(BaseModel):
     """How much of the prompt one MCP server's catalogue may take before its
     tools are disclosed on demand instead of listed."""
     sandbox_enabled: bool = True
-    """Whether agents are offered ``run_code``. Off means no sandbox is wired,
-    which is the library's own default."""
+    """Whether the ``default`` sandbox profile (this host's own local backend)
+    is offered. An agent is only ever shown ``run_code`` when its own Spec
+    enables code execution *and* the profile it names is offered here."""
     sandbox_limits: SandboxLimitsEntry = Field(default_factory=SandboxLimitsEntry)
+    """The ``default`` profile's ceiling. An agent's request can only lower it."""
+    sandbox_allow_network: bool = False
+    """Whether an agent on the ``default`` profile may ask for raw network
+    access. Off, because that bypasses the egress seam for the program."""
+    sandbox_profiles: tuple[SandboxProfileEntry, ...] = ()
+    """Further profiles by name: a container image, or a remote service."""
     egress_allow: tuple[str, ...] = ()
     """Hostnames, or ``*.example.com`` patterns, this account's Runs may reach.
     Empty allows everything. Applies to every outbound call Psych makes for

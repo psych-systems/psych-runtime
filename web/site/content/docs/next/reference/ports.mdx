@@ -122,8 +122,33 @@ Runs one model-written program in isolation and reports the result.
 
 DESIGN.md §18 rejects in-process execution outright: no implementation
 of this port may run the program in the calling process. Process
-isolation (``psych_runtime.sandbox.subprocess``) is the floor; a container
-(``psych_runtime.sandbox.container``) is available for consumers who need more.
+isolation (``psych_runtime.sandbox.subprocess``, ``psych_runtime.sandbox.windows``) is
+the floor; a kernel boundary (``psych_runtime.sandbox.container``,
+``psych_runtime.sandbox.namespaces``, or a remote service through
+``psych_runtime.sandbox.remote``) is what ``IsolationLevel.ISOLATED`` means.
+
+An implementation written against an earlier version of this port, with
+``run()`` taking only ``bindings``, ``limits`` and ``network`` and no
+``describe()``, still works: ``describe_sandbox`` reports it as a
+``custom`` backend at ``PROCESS`` level with every guarantee unverified,
+and the runtime passes it only the arguments it accepts. Such a backend
+can serve an agent that asked for ``PROCESS`` isolation and no other.
+
+### `CodeExecutionPolicy`
+
+*protocol*
+
+```python
+class CodeExecutionPolicy(*args, **kwargs)
+```
+
+A tenant-level narrowing of code execution, asked per Scope.
+
+Optional. A consumer whose tenants get different budgets, or who forbids
+network access for one plan and allows it for another, implements this
+and hands it to ``Runtime``. Whatever it returns is intersected with the
+grant it was given, so it cannot widen anything; a policy that raises is
+treated as refusing the execution, the same rule ``Policy`` follows.
 
 ### `PriceResolver`
 

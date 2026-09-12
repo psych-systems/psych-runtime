@@ -37,6 +37,7 @@ spec = psych_runtime.AgentSpec(
 | `subagents` | `()` | Nested agents to delegate to. See `psych-subagents`. |
 | `spawn` | `None` | A `SpawnEnvelope` permitting children composed at run time. |
 | `compaction` | `None` | Off by default. See `psych-compaction`. |
+| `code_execution` | `None` | Off by default. Lets the agent write and run a program. See `psych-sandbox`. |
 | `limits` | `Limits()` | Below. |
 | `suspension` | `SuspensionPolicy()` | Below. |
 | `tasks_enabled` | `False` | Gives the model `update_tasks` to keep a visible plan. |
@@ -46,6 +47,32 @@ spec = psych_runtime.AgentSpec(
 Every one of these is inside the Version hash, including the flags. An agent
 that keeps a plan is a different agent from one that does not, so it is a
 different Version.
+
+## Code execution
+
+`code_execution=None`, the default, means the agent is never shown `run_code`,
+whatever sandbox the deployment wired. Present, it is a request expressed in
+serialisable names — never a backend, a client or a credential:
+
+```python
+psych_runtime.CodeExecution(
+    enabled=True,
+    profile="default",  # a name the Runtime maps
+    isolation=psych_runtime.IsolationLevel.ISOLATED,  # the minimum acceptable
+    network=psych_runtime.NetworkAccess.DENIED,
+    limits=psych_runtime.CodeExecutionLimits(wall_seconds=20),
+    bindings=("lookup_order",),  # None means every granted tool
+    output=psych_runtime.OutputPolicy(preview_bytes=4_000),
+    artifacts=psych_runtime.ArtifactPolicy(),
+)
+```
+
+Everything here narrows and never widens: the deployment's profile caps the
+limits, the tenant's Policy caps that, and the Spec asks for something no wider
+still. `bindings` must name tools the Spec already grants, and publishing fails
+if it does not. `profile` must be a profile the Runtime knows, and publishing
+fails if it is not. The whole object joins the Version hash. See
+`psych-sandbox`.
 
 ## ModelRef
 

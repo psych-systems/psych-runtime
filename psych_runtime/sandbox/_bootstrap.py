@@ -1,22 +1,42 @@
-"""The child-side bootstrap: one static script, run with ``python -c``.
+"""The child-side bootstrap: one static script, run with ``python -c`` or from a file.
 
 DESIGN.md §18. This is stdlib-only Python source, generated once and handed to
 every adapter that spawns a child (``psych_runtime.sandbox.subprocess``,
-``psych_runtime.sandbox.container``): the same script
-runs whether the channel back to the host is an inherited socket fd or a Unix
-socket path, because it does not know or care which. It receives that as its
-first argument, either ``fd:<n>`` or ``unix:<path>``.
+``psych_runtime.sandbox.windows``, ``psych_runtime.sandbox.namespaces``,
+``psych_runtime.sandbox.container``): the same script runs whether the channel
+back to the host is an inherited socket fd, a Unix socket path or a loopback
+TCP port, because it does not know or care which. It receives that as its
+first argument: ``fd:<n>``, ``unix:<path>`` or ``tcp:<host>:<port>:<token>``.
 
 ## Why this cannot import ``psych``
 
 The child runs with ``-I`` (isolated mode): no ``PYTHONPATH``, no site
 directories, and deliberately no way to reach anything installed on the
 host's own Python environment. That is what makes the environment scrubbing
-in ``psych_runtime.sandbox.subprocess`` mean something. So this script cannot import
+in the adapters mean something. So this script cannot import
 ``psych_runtime.sandbox.protocol`` and share code with the host side; the framing and
 the hostile-input rebuilding this performs on frames *from the host* (which
 this script trusts, since the host is not the untrusted party here) are
 deliberately re-expressed in plain stdlib terms rather than shared.
+
+## What the child checks about itself before the program runs
+
+The ``ready`` frame carries observations made from inside the process that
+is about to run the model's program, not promises made before spawning:
+
+- ``network_denied``: a UDP "connect" to an unrouted address, which never
+  sends a packet and raises immediately when the process has no route out.
+- ``canary_readable``: whether a file the host placed *outside* the
+  workspace can be read. The host sets ``PSYCH_SANDBOX_CANARY`` to its path;
+  readable means the program will see the host's filesystem. ``None`` when
+  the host set no canary.
+- ``uid``: the effective uid where there is one, so the host can confirm a
+  privilege drop actually happened.
+- ``platform``: ``sys.platform``, for a remote or containerised child whose
+  platform the host did not choose.
+
+The canary variable is removed from the environment once checked, so the
+program is not handed a host path for free.
 
 ## What runs before the model's program
 
@@ -30,7 +50,11 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["BOOTSTRAP_SOURCE"]
+__all__ = ["BOOTSTRAP_SOURCE", "CANARY_ENV"]
+
+CANARY_ENV: Final = "PSYCH_SANDBOX_CANARY"
+"""The environment variable naming the filesystem canary. Set by an adapter,
+read and removed by the bootstrap before the program runs."""
 
 
 BOOTSTRAP_SOURCE: Final[str] = """
@@ -38,6 +62,7 @@ import ast
 import asyncio
 import errno
 import json
+import os
 import socket
 import sys
 import traceback
@@ -50,6 +75,13 @@ def _connect(spec):
     if kind == "unix":
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(rest)
+        return sock
+    if kind == "tcp":
+        host, _, port_and_token = rest.partition(":")
+        port, _, token = port_and_token.partition(":")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, int(port)))
+        sock.sendall((token + "\\n").encode())
         return sock
     raise RuntimeError("psych sandbox bootstrap: unknown connection spec " + repr(spec))
 
@@ -71,6 +103,18 @@ def _network_denied():
         return False
     finally:
         probe.close()
+
+
+def _canary_readable():
+    path = os.environ.pop("PSYCH_SANDBOX_CANARY", None)
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            handle.read(1)
+    except OSError:
+        return False
+    return True
 
 
 def _describe_failure(exc):
@@ -120,10 +164,19 @@ async def _amain():
         await loop.sock_sendall(sock, (json.dumps(frame) + "\\n").encode())
 
     # Reported before the model's program runs at all, so the host learns the
-    # true network state even if the program never finishes (a timeout, an
-    # infinite loop): this is ground truth from inside the process that will
-    # run it, not a promise made before spawning.
-    await _write_frame({"type": "ready", "network_denied": _network_denied()})
+    # true state even if the program never finishes (a timeout, an infinite
+    # loop): this is ground truth from inside the process that will run it,
+    # not a promise made before spawning.
+    uid = os.geteuid() if hasattr(os, "geteuid") else None
+    await _write_frame(
+        {
+            "type": "ready",
+            "network_denied": _network_denied(),
+            "canary_readable": _canary_readable(),
+            "uid": uid,
+            "platform": sys.platform,
+        }
+    )
 
     first_line = await _read_line()
     first_frame = json.loads(first_line)
@@ -207,6 +260,12 @@ async def _amain():
     except BaseException as exc:
         error = _describe_failure(exc)
     # --- model program above this line ---
+
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
 
     reader_task.cancel()
     try:

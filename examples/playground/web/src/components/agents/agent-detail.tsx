@@ -37,6 +37,7 @@ import { DEFAULT_LIMITS, LIMIT_FIELDS } from "@/components/agents/limits";
 import { selectorLabel, toolClassTitle as classTitle } from "@/components/agents/policy";
 import { classifyTool, toolClassTitle } from "@/components/agents/policy";
 import { HashExplainer, VersionHash } from "@/components/agents/version-hash";
+import { CodeExecutionSummary } from "@/components/agents/code-execution-fields";
 
 export function AgentDetail({ agentId }: { agentId: string }) {
   const [agent, setAgent] = useState<AgentSummary | null>(null);
@@ -254,6 +255,13 @@ export function AgentDetail({ agentId }: { agentId: string }) {
               description="The spending limits and the rule for which actions pause for a person, as this version was published."
             >
               <LimitsSummary agent={agent} />
+            </Section>
+
+            <Section
+              title="Code execution"
+              description="Whether this version may write and run programs, and the terms it asks for. The profile decides what actually contains them."
+            >
+              <CodeExecutionSummary terms={agent.code_execution} runtime={settings?.runtime ?? null} />
             </Section>
 
             <Section

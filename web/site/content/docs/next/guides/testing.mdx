@@ -150,6 +150,39 @@ Subclass and override the one fixture. The suite is the deliverable as much as
 the adapter: divergent implementations with no shared test are divergent
 behaviours waiting to be found in production.
 
+`SandboxContractSuite` is the largest of them, because a sandbox has the most
+to prove and the least room to differ. Every backend — local subprocess,
+namespaces, Windows job objects, container, remote — subclasses it with one
+`sandbox` fixture and is held to the same observable behaviour: stream
+separation and ordering, binary and invalid-Unicode output, capture caps,
+artifact collection and escape attempts, CPU, memory, wall-clock and process
+limits, cancellation before, during and inside a binding, process-tree cleanup,
+environment isolation, honest network reporting, and the refusal to return
+output produced under weaker isolation than was asked for. Cases that need a
+guarantee the backend reports as `UNAVAILABLE` skip themselves from
+`describe()`, so a skip names a real platform limit rather than hiding one.
+
+## Testing code execution without a sandbox
+
+```python
+from psych_runtime.testing.sandbox_service import ScriptedSandbox, scripted_result
+```
+
+`ScriptedSandbox` satisfies the `Sandbox` protocol and runs nothing: it returns
+the `SandboxResult` you scripted for a program, records what it was asked, and
+replays binding calls you name. Use it to test what *your* agent does with a
+result — a failure, a limit, a spilled output — without paying for a process.
+
+```python
+from psych_runtime.testing.sandbox_service import SandboxService, ServiceFault
+```
+
+`SandboxService` is a real local HTTP server speaking the remote-sandbox
+protocol, backed by whatever `Sandbox` you hand it. It is how `RemoteSandbox`
+is tested: no external provider is ever called, and `faults` injects rejected
+auth, a 500, a disconnect after `ready`, a malformed frame, a hang, or a
+service that claims weaker isolation than it promised.
+
 ## Three layers
 
 | Layer | Covers |

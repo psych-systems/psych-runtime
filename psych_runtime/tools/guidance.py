@@ -620,11 +620,38 @@ class SandboxFailureKind(StrEnum):
 
     SETUP = "setup"
     """The execution could not be confined the way it was configured to be, so
-    it was not run (or its result was withheld). Today this is
-    ``SubprocessSandbox(require_network_denial=True)`` on a worker without
-    ``CAP_NET_ADMIN``: the program would have run with network access it was
-    told it would not have, and a result produced under weaker isolation than
-    the consumer asked for is not one they can trust."""
+    it was not run (or its result was withheld). ``SubprocessSandbox(
+    require_network_denial=True)`` on a worker without ``CAP_NET_ADMIN`` is
+    one case: the program would have run with network access it was told it
+    would not have, and a result produced under weaker isolation than the
+    consumer asked for is not one they can trust."""
+
+    ISOLATION_UNAVAILABLE = "isolation_unavailable"
+    """The backend cannot reach the isolation level the agent requires
+    (``psych_runtime.sandbox.profiles.resolve_execution``, and every adapter's
+    own check after the child reported what it achieved). The program's
+    output is withheld: nothing produced under weaker terms than requested is
+    ever returned as if it were not."""
+
+    NETWORK_NOT_ALLOWED = "network_not_allowed"
+    """The agent asked for raw network access and the profile does not allow
+    it, or the backend cannot grant it."""
+
+    BACKEND_NOT_READY = "backend_not_ready"
+    """The profile's backend reported it cannot run anything right now: no
+    interpreter, no container runtime, an unreachable remote service."""
+
+    POLICY_REFUSED = "policy_refused"
+    """The tenant's ``CodeExecutionPolicy`` raised, which is a refusal."""
+
+    CANCELLED = "cancelled"
+    """The caller ended the execution before the program finished. The whole
+    process tree was killed; nothing it did after that point took effect."""
+
+    PROVIDER_ERROR = "provider_error"
+    """A remote sandbox service failed, answered with something the adapter
+    could not read, or disconnected mid-execution. Whether the program ran to
+    completion is unknown."""
 
 
 def sandbox_failure_guidance(  # noqa: PLR0911 - one return per SandboxFailureKind
@@ -708,13 +735,36 @@ def sandbox_failure_guidance(  # noqa: PLR0911 - one return per SandboxFailureKi
                 "no specific limit was reported.",
                 traceback,
             )
-        case SandboxFailureKind.SETUP:
+        case (
+            SandboxFailureKind.SETUP
+            | SandboxFailureKind.ISOLATION_UNAVAILABLE
+            | SandboxFailureKind.NETWORK_NOT_ALLOWED
+            | SandboxFailureKind.BACKEND_NOT_READY
+            | SandboxFailureKind.POLICY_REFUSED
+        ):
             return _with_traceback(
                 f"{message}\n\n"
                 "Nothing about the program ran to completion, so nothing it would "
                 "have done took effect. Retrying it unchanged will be refused the "
                 "same way: tell the user code execution is not correctly configured "
                 "on this host rather than trying again.",
+                traceback,
+            )
+        case SandboxFailureKind.CANCELLED:
+            return _with_traceback(
+                f"{message}\n\n"
+                "The execution was stopped from outside before the program finished, "
+                "and everything it started was ended with it. Do not retry on your "
+                "own: whoever stopped it decides whether to run it again.",
+                traceback,
+            )
+        case SandboxFailureKind.PROVIDER_ERROR:
+            return _with_traceback(
+                f"{message}\n\n"
+                "The sandbox service failed rather than the program. Whether the "
+                "program ran to completion is unknown, so retry only if it has no side "
+                "effects; if this keeps happening, tell the user code execution is "
+                "currently unreliable.",
                 traceback,
             )
         case _ as unreachable:

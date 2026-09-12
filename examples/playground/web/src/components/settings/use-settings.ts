@@ -1,12 +1,19 @@
 "use client";
 
-import type { LocalPeerRequest, ModelPrice, RuntimeSettingsIn, SkillIn } from "@/lib/types";
+import type {
+  LocalPeerRequest,
+  ModelPrice,
+  RuntimeSettingsIn,
+  SandboxProfileHealth,
+  SkillIn,
+} from "@/lib/types";
 import type { A2APeerPreset } from "@/components/settings/types";
 import { useCallback, useEffect, useState } from "react";
 
 import {
   activateProvider,
   addLocalPeer,
+  checkSandboxProfile,
   deleteSecret,
   updateRuntimeSettings,
   getSettings,
@@ -180,6 +187,11 @@ export function useSettings() {
     [refresh]
   );
 
+  const checkSandbox = useCallback(
+    (name: string): Promise<SandboxProfileHealth> => checkSandboxProfile(name),
+    []
+  );
+
   const addOwnAgentAsPeer = useCallback(
     async (body: LocalPeerRequest) => {
       await addLocalPeer(body);
@@ -213,6 +225,7 @@ export function useSettings() {
     saveSkills,
     savePeers,
     saveRuntime,
+    checkSandbox,
     addOwnAgentAsPeer,
   };
 }

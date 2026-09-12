@@ -83,6 +83,22 @@ directory holding it: ``0711`` and randomly named, so the path can be
 traversed by someone who already knows it and enumerated by nobody, and the
 server accepts one connection and stops.
 
+## What this backend reports about itself
+
+``IsolationLevel.ISOLATED``, and every result grades it from inside: the
+child's own ``ready`` frame says whether it could reach the network and
+whether it could read a canary file the host placed outside the mounted
+directory, so ``filesystem`` and ``network`` are observations. ``describe()``
+checks for a usable runtime *and* for the image being present locally (this
+adapter never pulls), and is ``ready=False`` naming which is missing.
+Artifacts are collected only when a caller asks (``OutputCapture``), by
+bind-mounting a host directory at the container's working directory in
+place of the tmpfs; the tmpfs stays the default because it carries a size
+cap a bind mount does not. On a Windows host this backend is not ready:
+the channel is a bind-mounted Unix socket, which Docker Desktop cannot
+mount from a Windows path. Run the worker on Linux or macOS, or reach a
+container through ``psych_runtime.sandbox.remote``.
+
 ## Teardown
 
 Every container is created with an explicit, generated name and torn down
@@ -102,22 +118,40 @@ import asyncio
 import contextlib
 import secrets
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
-from psych_runtime.sandbox._bootstrap import BOOTSTRAP_SOURCE
+from psych_runtime.core.code_execution import Enforcement, IsolationLevel
+from psych_runtime.sandbox._bootstrap import BOOTSTRAP_SOURCE, CANARY_ENV
+from psych_runtime.sandbox._local import (
+    DEFAULT_CAPTURE,
+    Canary,
+    Conversation,
+    bounded,
+    classify_done,
+    collect_artifacts,
+    converse,
+    read_capped,
+    remove_tree,
+    withhold_if_weaker,
+)
 from psych_runtime.sandbox.port import (
     HostBinding,
+    OutputCapture,
+    SandboxDescription,
     SandboxFailure,
+    SandboxGuarantees,
     SandboxLimit,
     SandboxLimits,
     SandboxResult,
     SandboxSetupError,
+    achieved_level,
 )
-from psych_runtime.sandbox.protocol import DoneFrame, SandboxProtocolError, run_protocol
+from psych_runtime.sandbox.protocol import DoneFrame, ReadyFrame, SandboxProtocolError
 
 __all__ = ["ContainerSandbox", "detect_container_runtime"]
 
@@ -139,7 +173,6 @@ before giving up and treating the container as unreachable. Generous: it has
 to cover a cold image pull's worth of container-start latency on a slow
 host, not just process spawn."""
 
-_MAX_CAPTURED_BYTES: Final = 1024 * 1024
 _CONTAINER_IPC_DIR: Final = "/run/psych-sandbox"
 _CONTAINER_WORKDIR: Final = "/workspace"
 _NOBODY: Final = (65534, 65534)
@@ -314,6 +347,67 @@ class ContainerSandbox:
         self._runtime = found
         return found
 
+    async def describe(self) -> SandboxDescription:
+        """Runtime reachable, image present, host able to mount the channel.
+
+        Predicts the guarantees the runtime's own flags provide; each result
+        then confirms ``network`` and ``filesystem`` from inside the
+        container. Nothing here starts a container.
+        """
+        problems: list[str] = []
+        if sys.platform == "win32":
+            problems.append(
+                "ContainerSandbox needs a POSIX worker: its channel is a bind-mounted "
+                "Unix socket, which cannot be mounted from a Windows path"
+            )
+        runtime: str | None = None
+        try:
+            runtime = await self._resolve_runtime()
+        except SandboxSetupError as err:
+            problems.append(str(err))
+        if runtime is not None and not await _image_present(runtime, self._image):
+            problems.append(
+                f"image {self._image!r} is not present locally and this adapter never "
+                f"pulls implicitly; run `{Path(runtime).name} pull {self._image}` first"
+            )
+        enforced = Enforcement.ENFORCED
+        guarantees = SandboxGuarantees(
+            filesystem=enforced,
+            network=enforced,
+            process_tree=enforced,
+            identity=enforced,
+            cpu=enforced,
+            memory=enforced,
+            file_size=enforced,
+            process_count=enforced,
+            wall_clock=enforced,
+            environment=enforced,
+        )
+        return SandboxDescription(
+            backend="container",
+            platform="linux",
+            isolation=IsolationLevel.ISOLATED,
+            guarantees=guarantees,
+            mechanisms=(
+                "container_namespaces",
+                "cgroups",
+                "network_none",
+                "read_only_rootfs",
+                "cap_drop_all",
+                "no_new_privileges",
+                "ulimit",
+            ),
+            network_grant_supported=True,
+            artifacts_supported=True,
+            ready=not problems,
+            problems=tuple(problems),
+            notes=(
+                "cpu_seconds and file_size_bytes rely on the image having /bin/sh with "
+                "ulimit; a distroless image gets neither",
+                f"image: {self._image}",
+            ),
+        )
+
     async def run(
         self,
         program: str,
@@ -321,13 +415,41 @@ class ContainerSandbox:
         bindings: Mapping[str, HostBinding] | None = None,
         limits: SandboxLimits | None = None,
         network: bool = False,
+        isolation: IsolationLevel | None = None,
+        capture: OutputCapture | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> SandboxResult:
         bound: dict[str, HostBinding] = dict(bindings or {})
         active_limits = limits or self._default_limits
+        active_capture = capture or DEFAULT_CAPTURE
+        if sys.platform == "win32":
+            raise SandboxSetupError(
+                "ContainerSandbox cannot run from a Windows worker: its channel is a "
+                "bind-mounted Unix socket. Run the worker on Linux or macOS, or use a "
+                "remote sandbox."
+            )
         runtime = await self._resolve_runtime()
         started = time.monotonic()
+        if cancel is not None and cancel.is_set():
+            return SandboxResult(
+                duration_seconds=time.monotonic() - started,
+                failure=SandboxFailure(
+                    kind="cancelled",
+                    message="the execution was cancelled before the program started",
+                ),
+                cancelled=True,
+            )
 
         ipc_dir = Path(tempfile.mkdtemp(prefix="psych-sandbox-ipc-"))
+        # A host directory for the container's working directory, only when
+        # the caller wants the files back: the tmpfs default carries a size
+        # cap that a bind mount does not. World-writable with the sticky bit
+        # because the container's uid is deliberately not the worker's.
+        workspace: Path | None = None
+        if active_capture.collect_artifacts:
+            workspace = Path(tempfile.mkdtemp(prefix="psych-sandbox-ws-"))
+            workspace.chmod(0o1777)
+        canary = Canary()
         # 0711, not 0755: the container's uid has to *traverse* this directory
         # to reach the socket, but nothing needs to list it. Dropping read
         # means another local account cannot enumerate the socket names of
@@ -370,6 +492,8 @@ class ContainerSandbox:
                     env_allowlist=self._env_allowlist,
                     run_as=self._run_as,
                     extra_run_args=self._extra_run_args,
+                    workspace=workspace,
+                    canary=canary,
                 )
                 try:
                     proc = await asyncio.create_subprocess_exec(
@@ -383,7 +507,7 @@ class ContainerSandbox:
                         f"could not invoke the container runtime {runtime!r}: {err}"
                     ) from err
 
-                return await _drive(
+                result = await _drive(
                     runtime=runtime,
                     name=name,
                     proc=proc,
@@ -391,12 +515,21 @@ class ContainerSandbox:
                     program=program,
                     bindings=bound,
                     limits=active_limits,
+                    capture=active_capture,
                     started=started,
+                    cancel=cancel,
+                    workspace=workspace,
+                    network=network,
+                    run_as=self._run_as,
                 )
             finally:
                 await _close_listener(server, connected, accepted)
         finally:
+            canary.close()
             shutil.rmtree(ipc_dir, ignore_errors=True)
+            if workspace is not None:
+                remove_tree(workspace)
+        return withhold_if_weaker(result, isolation, backend="container")
 
 
 async def _listen_for_one_connection(
@@ -475,11 +608,17 @@ def _build_run_argv(
     env_allowlist: Mapping[str, str],
     run_as: tuple[int, int],
     extra_run_args: Sequence[str],
+    workspace: Path | None = None,
+    canary: Canary | None = None,
 ) -> list[str]:
     fsize_blocks = max(1, (limits.file_size_bytes + 511) // 512)
     cpu_seconds = max(1, int(limits.cpu_seconds))
     tmpfs_size = max(limits.file_size_bytes * 4, 16 * 1024 * 1024)
     uid, gid = run_as
+    if workspace is None:
+        workdir_mount = ["--tmpfs", f"{_CONTAINER_WORKDIR}:size={tmpfs_size},mode=1777"]
+    else:
+        workdir_mount = ["--volume", f"{workspace}:{_CONTAINER_WORKDIR}:rw"]
 
     argv = [
         runtime,
@@ -497,8 +636,7 @@ def _build_run_argv(
         "--cpus",
         "1",
         "--read-only",
-        "--tmpfs",
-        f"{_CONTAINER_WORKDIR}:size={tmpfs_size},mode=1777",
+        *workdir_mount,
         "--workdir",
         _CONTAINER_WORKDIR,
         "--volume",
@@ -522,6 +660,11 @@ def _build_run_argv(
         "--env",
         f"PSYCH_FSIZE_BLOCKS={fsize_blocks}",
     ]
+    if canary is not None:
+        # The canary lives on the host and is not mounted; the child reporting
+        # it unreadable is the filesystem guarantee, observed rather than
+        # assumed from the runtime's flags.
+        argv += ["--env", f"{CANARY_ENV}={canary.path}"]
     for key, value in env_allowlist.items():
         argv += ["--env", f"{key}={value}"]
     argv += list(extra_run_args)
@@ -548,66 +691,142 @@ async def _drive(
     program: str,
     bindings: Mapping[str, HostBinding],
     limits: SandboxLimits,
+    capture: OutputCapture,
     started: float,
+    cancel: asyncio.Event | None,
+    workspace: Path | None,
+    network: bool,
+    run_as: tuple[int, int],
 ) -> SandboxResult:
-    stdout_task = asyncio.ensure_future(_read_capped(proc.stdout))
-    stderr_task = asyncio.ensure_future(_read_capped(proc.stderr))
+    stdout_task = asyncio.ensure_future(read_capped(proc.stdout, capture.stream_bytes))
+    stderr_task = asyncio.ensure_future(read_capped(proc.stderr, capture.stream_bytes))
 
-    timed_out = False
-    protocol_error: SandboxProtocolError | None = None
-    network_denied = False
-    done: DoneFrame | None = None
     setup_error: str | None = None
-
+    talk = Conversation()
     try:
-        reader, writer = await asyncio.wait_for(connected, timeout=_CONNECT_TIMEOUT_SECONDS)
-    except TimeoutError:
-        setup_error = (
-            f"the container never connected back within {_CONNECT_TIMEOUT_SECONDS}s of "
-            "starting. This usually means the image has no interpreter at the configured "
-            "container_python_bin, or has no /bin/sh for the ulimit wrapper; check "
-            "`docker logs` for the container, or run the image manually to diagnose."
-        )
-    else:
         try:
-            network_denied, done = await asyncio.wait_for(
-                run_protocol(reader, writer, program, bindings), timeout=limits.wall_seconds
-            )
+            reader, writer = await asyncio.wait_for(connected, timeout=_CONNECT_TIMEOUT_SECONDS)
         except TimeoutError:
-            timed_out = True
-        except SandboxProtocolError as err:
-            protocol_error = err
+            setup_error = (
+                f"the container never connected back within {_CONNECT_TIMEOUT_SECONDS}s of "
+                "starting. This usually means the image has no interpreter at the configured "
+                "container_python_bin, or has no /bin/sh for the ulimit wrapper; check "
+                "`docker logs` for the container, or run the image manually to diagnose."
+            )
+        else:
+            talk = await converse(
+                reader, writer, program, bindings, wall_seconds=limits.wall_seconds, cancel=cancel
+            )
+    finally:
+        # Also on this task being cancelled from outside: the container is
+        # stopped and removed before anything else happens.
+        exit_info = await _teardown(runtime, name, proc, timed_out=talk.timed_out or talk.cancelled)
 
-    exit_info = await _teardown(runtime, name, proc, timed_out=timed_out)
-
-    stdout_text, stdout_truncated = await _bounded(stdout_task)
-    stderr_text, stderr_truncated = await _bounded(stderr_task)
+    stdout = await bounded(stdout_task)
+    stderr = await bounded(stderr_task)
 
     if setup_error is not None:
         raise SandboxSetupError(setup_error)
 
     failure, limit_hit = _classify(
         exit_info=exit_info,
-        done=done,
-        protocol_error=protocol_error,
-        timed_out=timed_out,
+        done=talk.done,
+        protocol_error=talk.protocol_error,
+        timed_out=talk.timed_out,
+        cancelled=talk.cancelled,
         wall_seconds=limits.wall_seconds,
         elapsed=time.monotonic() - started,
         cpu_seconds=limits.cpu_seconds,
     )
-    value = done.value if (done is not None and failure is None) else None
-
+    value = talk.done.value if (talk.done is not None and failure is None) else None
+    artifacts, omitted = (
+        collect_artifacts(workspace, capture)
+        if workspace is not None and failure is None
+        else ((), 0)
+    )
+    observed = talk.ready if talk.ready is not None else ReadyFrame(network_denied=False)
+    guarantees = _grade(observed, network_granted=network, run_as=run_as)
     return SandboxResult(
-        stdout=stdout_text,
-        stderr=stderr_text,
+        stdout=stdout.data.decode("utf-8", errors="replace"),
+        stderr=stderr.data.decode("utf-8", errors="replace"),
         value=value,
         failure=failure,
         duration_seconds=time.monotonic() - started,
         limit_hit=limit_hit,
-        network_denied=network_denied,
-        stdout_truncated=stdout_truncated,
-        stderr_truncated=stderr_truncated,
+        network_denied=observed.network_denied and not network,
+        stdout_truncated=stdout.truncated,
+        stderr_truncated=stderr.truncated,
+        stdout_data=stdout.data,
+        stderr_data=stderr.data,
+        stdout_size=stdout.observed,
+        stderr_size=stderr.observed,
+        isolation=achieved_level(guarantees, network_required=not network),
+        guarantees=guarantees,
+        artifacts=artifacts,
+        artifacts_omitted=omitted,
+        cancelled=talk.cancelled,
     )
+
+
+def _grade(
+    ready: ReadyFrame, *, network_granted: bool, run_as: tuple[int, int]
+) -> SandboxGuarantees:
+    """What this execution's guarantees were worth.
+
+    The runtime's flags back everything the child cannot see for itself
+    (cgroups, capabilities, the read-only root); the child's own probe grades
+    the two it can.
+    """
+    enforced, unavailable, unverified = (
+        Enforcement.ENFORCED,
+        Enforcement.UNAVAILABLE,
+        Enforcement.UNVERIFIED,
+    )
+    network = unavailable
+    if not network_granted and ready.network_denied:
+        network = enforced
+    if ready.canary_readable is None:
+        filesystem = unverified
+    else:
+        filesystem = unavailable if ready.canary_readable else enforced
+    if ready.uid is None:
+        identity = unverified
+    else:
+        identity = enforced if ready.uid == run_as[0] else unavailable
+    return SandboxGuarantees(
+        filesystem=filesystem,
+        network=network,
+        process_tree=enforced,
+        identity=identity,
+        cpu=enforced,
+        memory=enforced,
+        file_size=enforced,
+        process_count=enforced,
+        wall_clock=enforced,
+        environment=enforced,
+    )
+
+
+async def _image_present(runtime: str, image: str) -> bool:
+    """Whether ``image`` exists locally, asked of the runtime itself."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            runtime,
+            "image",
+            "inspect",
+            image,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    try:
+        return await asyncio.wait_for(proc.wait(), timeout=_STOP_GRACE_SECONDS * 4) == 0
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
+        return False
 
 
 class _ExitInfo:
@@ -705,58 +924,23 @@ async def _inspect(runtime: str, name: str) -> _ExitInfo:
     return _ExitInfo(exit_code=exit_code, oom_killed=oom_text.strip() == "true")
 
 
-async def _read_capped(stream: asyncio.StreamReader | None) -> tuple[str, bool]:
-    if stream is None:
-        return "", False
-    chunks: list[bytes] = []
-    total = 0
-    truncated = False
-    while True:
-        chunk = await stream.read(65536)
-        if not chunk:
-            break
-        if total >= _MAX_CAPTURED_BYTES:
-            truncated = True
-            continue
-        keep = chunk[: _MAX_CAPTURED_BYTES - total]
-        chunks.append(keep)
-        total += len(keep)
-        if len(keep) < len(chunk):
-            truncated = True
-    return b"".join(chunks).decode("utf-8", errors="replace"), truncated
-
-
-async def _bounded(task: asyncio.Future[tuple[str, bool]]) -> tuple[str, bool]:
-    try:
-        return await asyncio.wait_for(task, timeout=_STOP_GRACE_SECONDS)
-    except TimeoutError:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        return "", True
-
-
 def _classify(
     *,
     exit_info: _ExitInfo,
     done: DoneFrame | None,
     protocol_error: SandboxProtocolError | None,
     timed_out: bool,
+    cancelled: bool,
     wall_seconds: float,
     elapsed: float,
     cpu_seconds: float,
 ) -> tuple[SandboxFailure | None, SandboxLimit | None]:
-    if timed_out:
-        return (
-            SandboxFailure(
-                kind="timeout",
-                message=f"execution exceeded its {wall_seconds}s wall-clock limit",
-            ),
-            SandboxLimit.WALL_SECONDS,
-        )
+    stopped = _classify_stopped(cancelled=cancelled, timed_out=timed_out, wall_seconds=wall_seconds)
+    if stopped is not None:
+        return stopped
 
     if done is not None:
-        return _classify_done(done)
+        return classify_done(done)
 
     if exit_info.oom_killed:
         return (
@@ -784,6 +968,29 @@ def _classify(
         ),
         None,
     )
+
+
+def _classify_stopped(
+    *, cancelled: bool, timed_out: bool, wall_seconds: float
+) -> tuple[SandboxFailure, SandboxLimit | None] | None:
+    """The two endings the host itself caused, before anything the child did."""
+    if cancelled:
+        return (
+            SandboxFailure(
+                kind="cancelled",
+                message="the execution was cancelled and its container was removed",
+            ),
+            None,
+        )
+    if timed_out:
+        return (
+            SandboxFailure(
+                kind="timeout",
+                message=f"execution exceeded its {wall_seconds}s wall-clock limit",
+            ),
+            SandboxLimit.WALL_SECONDS,
+        )
+    return None
 
 
 def _classify_exit_code(
@@ -856,21 +1063,4 @@ def _classify_exit_code(
             kind="terminated", message=f"the container was terminated by signal {received}"
         ),
         None,
-    )
-
-
-def _classify_done(done: DoneFrame) -> tuple[SandboxFailure | None, SandboxLimit | None]:
-    if done.error_kind is None:
-        return None, None
-    limit = None
-    if done.resource_limit is not None:
-        with contextlib.suppress(ValueError):
-            limit = SandboxLimit(done.resource_limit)
-    return (
-        SandboxFailure(
-            kind=done.error_kind,
-            message=done.error_message or "the program failed",
-            traceback=done.error_traceback,
-        ),
-        limit,
     )

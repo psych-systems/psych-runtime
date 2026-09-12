@@ -26,7 +26,7 @@ The metadata itself is stored in a '__metadata__' attribute as a tuple.
 *model*
 
 ```python
-class AgentSpec(*, kind: Literal['agent'] = 'agent', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', instructions: str = '', model: psych_runtime.core.spec.ModelRef, tools: tuple[typing.Annotated[psych_runtime.core.spec.CodeTool | psych_runtime.core.spec.HttpTool, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...] = (), mcp_servers: tuple[psych_runtime.core.spec.McpServer, ...] = (), a2a_peers: tuple[psych_runtime.core.spec.A2APeer, ...] = (), skills: tuple[psych_runtime.core.spec.Skill, ...] = (), subagents: tuple[psych_runtime.core.spec.SubagentRef, ...] = (), spawn: psych_runtime.core.spec.SpawnEnvelope | None = None, compaction: psych_runtime.core.spec.CompactionPolicy | None = None, limits: psych_runtime.core.spec.Limits = <factory>, suspension: psych_runtime.core.spec.SuspensionPolicy = <factory>, tasks_enabled: bool = False, components_enabled: bool = False, answer_style: Optional[Literal['concise']] = None)
+class AgentSpec(*, kind: Literal['agent'] = 'agent', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', instructions: str = '', model: psych_runtime.core.spec.ModelRef, tools: tuple[typing.Annotated[psych_runtime.core.spec.CodeTool | psych_runtime.core.spec.HttpTool, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...] = (), mcp_servers: tuple[psych_runtime.core.spec.McpServer, ...] = (), a2a_peers: tuple[psych_runtime.core.spec.A2APeer, ...] = (), skills: tuple[psych_runtime.core.spec.Skill, ...] = (), subagents: tuple[psych_runtime.core.spec.SubagentRef, ...] = (), spawn: psych_runtime.core.spec.SpawnEnvelope | None = None, compaction: psych_runtime.core.spec.CompactionPolicy | None = None, code_execution: psych_runtime.core.spec.CodeExecution | None = None, limits: psych_runtime.core.spec.Limits = <factory>, suspension: psych_runtime.core.spec.SuspensionPolicy = <factory>, tasks_enabled: bool = False, components_enabled: bool = False, answer_style: Optional[Literal['concise']] = None)
 ```
 
 A Step that loops Turns until a stop condition (DESIGN.md §5).
@@ -45,6 +45,7 @@ A Step that loops Turns until a stop condition (DESIGN.md §5).
 | `subagents` | `tuple` |  |
 | `spawn` | `spec.SpawnEnvelope | None` |  |
 | `compaction` | `spec.CompactionPolicy | None` |  |
+| `code_execution` | `spec.CodeExecution | None` |  |
 | `limits` | `Limits` |  |
 | `suspension` | `SuspensionPolicy` |  |
 | `tasks_enabled` | `bool` |  |
@@ -227,6 +228,241 @@ the log. Compaction changes what the model sees next, never what happened.
 | `model` | `str | None` |  |
 | `max_summary_tokens` | `int` |  |
 | `summary_instructions` | `str | None` |  |
+
+### `CodeExecution`
+
+*model*
+
+```python
+class CodeExecution(*, enabled: bool = True, profile: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')] = 'default', isolation: psych_runtime.core.code_execution.IsolationLevel = <IsolationLevel.ISOLATED: 'isolated'>, network: psych_runtime.core.code_execution.NetworkAccess = <NetworkAccess.DENIED: 'denied'>, limits: psych_runtime.core.spec.CodeExecutionLimits = <factory>, bindings: tuple[str, ...] | None = None, workspace: psych_runtime.core.code_execution.WorkspacePolicy = <WorkspacePolicy.EPHEMERAL: 'ephemeral'>, output: psych_runtime.core.spec.OutputPolicy = <factory>, artifacts: psych_runtime.core.spec.ArtifactPolicy = <factory>, language: Literal['python'] = 'python')
+```
+
+Whether this agent may run programs, and under what terms.
+
+Absent from an ``AgentSpec`` means off: the agent is never shown
+``run_code``, whatever the deployment has wired. Present, it is part of the
+Version hash like every other field here, because an agent that can write
+and run a program is a different agent from one that cannot, and its every
+turn is offered a different tool.
+
+Everything in here is a *request* expressed in serialisable names. The
+Spec never holds the sandbox, its credentials, a client or a process: a
+deployment maps ``profile`` to an implementation through
+``psych_runtime.Runtime`` (DESIGN.md §4, a Spec holds names and never a
+callable), and the effective terms of an execution are the intersection of
+what that implementation can do, what the tenant's Policy allows, and what
+is asked for here (``psych_runtime.sandbox.profiles``).
+
+Attributes:
+    enabled: whether ``run_code`` is offered at all. Kept as a field rather
+        than modelled by the presence of this object so a configuration
+        can be switched off and back on without being retyped.
+    profile: the logical sandbox this agent runs programs in. A name the
+        deployment resolves; ``"default"`` is what ``Runtime(sandbox=...)``
+        registers.
+    isolation: the *minimum* isolation this agent accepts. ``ISOLATED`` by
+        default. A profile that cannot provide it refuses the execution
+        rather than running it weaker; ``PROCESS`` is a deliberate choice
+        for trusted code and is never picked on the agent's behalf.
+    network: whether the program may open its own sockets. Denied by
+        default, and grantable only where the profile permits it.
+    limits: requested caps. Narrowed against the profile's hard limits.
+    bindings: which of this Spec's own tools the program may call as host
+        functions. ``None`` means every tool the Spec grants. A tuple
+        narrows to a subset and is validated against ``tools`` at publish.
+    workspace: what happens to the working directory between executions.
+    output: how much output the model sees and what happens to the rest.
+    artifacts: whether files the program writes are collected.
+    language: what the program is written in. Python only today.
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | `bool` |  |
+| `profile` | `str` |  |
+| `isolation` | `IsolationLevel` |  |
+| `network` | `NetworkAccess` |  |
+| `limits` | `CodeExecutionLimits` |  |
+| `bindings` | `tuple[str, ...] | None` |  |
+| `workspace` | `WorkspacePolicy` |  |
+| `output` | `OutputPolicy` |  |
+| `artifacts` | `ArtifactPolicy` |  |
+| `language` | `Literal` |  |
+
+### `CodeExecutionLimits`
+
+*model*
+
+```python
+class CodeExecutionLimits(*, cpu_seconds: Annotated[float | None, Gt(gt=0), Le(le=3600)] = None, wall_seconds: Annotated[float | None, Gt(gt=0), Le(le=3600)] = None, memory_bytes: Annotated[int | None, Gt(gt=0)] = None, file_size_bytes: Annotated[int | None, Gt(gt=0)] = None, process_count: Annotated[int | None, Gt(gt=0), Le(le=4096)] = None)
+```
+
+The resource caps an agent *asks* for, each optional.
+
+Requests, not grants. The deployment's sandbox profile carries hard
+limits, and the effective cap for an execution is the smaller of the two on
+every dimension (``psych_runtime.sandbox.profiles.narrow_limits``): an agent
+can ask for less than its deployment allows and never for more. ``None``
+means "whatever the profile's default is", which is what almost every
+agent wants.
+
+Attributes:
+    cpu_seconds: CPU time actually consumed, not wall clock.
+    wall_seconds: real time from spawn to teardown.
+    memory_bytes: the memory the program may use. Enforced as address
+        space by a process backend, as a cgroup by a container, and as a
+        job-object commit limit on Windows; the name is the same because
+        the intent is.
+    file_size_bytes: the largest single file the program may write.
+    process_count: how many processes (threads count on Linux) it may hold.
+
+| Field | Type | Notes |
+|---|---|---|
+| `cpu_seconds` | `float | None` |  |
+| `wall_seconds` | `float | None` |  |
+| `memory_bytes` | `int | None` |  |
+| `file_size_bytes` | `int | None` |  |
+| `process_count` | `int | None` |  |
+
+### `OutputPolicy`
+
+*model*
+
+```python
+class OutputPolicy(*, preview_bytes: Annotated[int, Ge(ge=256), Le(le=65536)] = 4000, max_bytes: Annotated[int, Ge(ge=4096), Le(le=268435456)] = 8388608, preserve: psych_runtime.core.code_execution.OutputPreservation = <OutputPreservation.WHEN_AVAILABLE: 'when_available'>)
+```
+
+How much of a program's output reaches the model, and what happens to
+the rest.
+
+Two budgets and one decision, because they answer different questions:
+``preview_bytes`` is what the *model* sees per stream and belongs to the
+agent's context economy; ``max_bytes`` is how much a backend will
+*capture* per stream before it stops reading and reports the stream
+truncated, which bounds this process's memory; ``preserve`` is whether the
+captured bytes beyond the preview are kept durably in the Runtime's
+``BlobStore`` so ``read_tool_output`` can page through them later.
+
+Attributes:
+    preview_bytes: per stream (stdout, stderr, returned value), the most
+        that is placed in the model's context. Deterministic head and tail.
+    max_bytes: per stream, the most a backend captures. Beyond it the
+        stream is truncated and the result says so.
+    preserve: what must happen to captured output beyond the preview.
+
+| Field | Type | Notes |
+|---|---|---|
+| `preview_bytes` | `int` |  |
+| `max_bytes` | `int` |  |
+| `preserve` | `OutputPreservation` |  |
+
+### `ArtifactPolicy`
+
+*model*
+
+```python
+class ArtifactPolicy(*, collection: psych_runtime.core.code_execution.ArtifactCollection = <ArtifactCollection.COLLECT: 'collect'>, max_count: Annotated[int, Ge(ge=0), Le(le=256)] = 16, max_total_bytes: Annotated[int, Ge(ge=0), Le(le=268435456)] = 16777216)
+```
+
+Whether, and how much, of what a program writes to its workspace is
+kept.
+
+Files are returned by their path *relative to the workspace* and never by
+a host path (DESIGN.md §18: the program's view of the filesystem is not the
+host's, and a report must not leak where an execution happened to run).
+Symbolic links, junctions and other reparse points are never followed and
+never collected.
+
+Attributes:
+    collection: collect regular files under the workspace, or ignore them.
+    max_count: the most files collected per execution. More are ignored
+        and the result says how many.
+    max_total_bytes: the most bytes collected across every file. A file
+        that would cross the cap is truncated and marked so.
+
+| Field | Type | Notes |
+|---|---|---|
+| `collection` | `ArtifactCollection` |  |
+| `max_count` | `int` |  |
+| `max_total_bytes` | `int` |  |
+
+### `IsolationLevel`
+
+*enum*
+
+```python
+class IsolationLevel(*values)
+```
+
+How strongly a program is separated from the host it runs on.
+
+Ordered: ``ISOLATED`` is stronger than ``PROCESS``. ``satisfies`` is the
+one comparison the runtime makes, so the ordering lives here rather than
+being re-derived at each call site.
+
+| Member | Value |
+|---|---|
+| `ISOLATED` | `isolated` |
+| `PROCESS` | `process` |
+
+### `NetworkAccess`
+
+*enum*
+
+```python
+class NetworkAccess(*values)
+```
+
+Whether the program may open its own sockets.
+
+| Member | Value |
+|---|---|
+| `DENIED` | `denied` |
+| `UNRESTRICTED` | `unrestricted` |
+
+### `WorkspacePolicy`
+
+*enum*
+
+```python
+class WorkspacePolicy(*values)
+```
+
+What happens to the working directory between executions.
+
+| Member | Value |
+|---|---|
+| `EPHEMERAL` | `ephemeral` |
+
+### `OutputPreservation`
+
+*enum*
+
+```python
+class OutputPreservation(*values)
+```
+
+What must happen to output too large for the model to see whole.
+
+| Member | Value |
+|---|---|
+| `WHEN_AVAILABLE` | `when_available` |
+| `REQUIRED` | `required` |
+| `NEVER` | `never` |
+
+### `ArtifactCollection`
+
+*enum*
+
+```python
+class ArtifactCollection(*values)
+```
+
+Whether files the program writes to its workspace are collected.
+
+| Member | Value |
+|---|---|
+| `COLLECT` | `collect` |
+| `IGNORE` | `ignore` |
 
 ### `SpawnEnvelope`
 
@@ -540,7 +776,7 @@ Attributes:
 *class*
 
 ```python
-class ValidationContext(registered_tools: 'Iterable[str]' = (), known_models: 'Iterable[str]' = (), reachable_mcp_servers: 'Iterable[str]' = ()) -> 'None'
+class ValidationContext(registered_tools: 'Iterable[str]' = (), known_models: 'Iterable[str]' = (), reachable_mcp_servers: 'Iterable[str]' = (), sandbox_profiles: 'Iterable[str]' = ()) -> 'None'
 ```
 
 What the world looks like at publish time.
@@ -556,6 +792,11 @@ Attributes:
         "do not check", because reachability is a network fact and a
         consumer validating a Spec offline should still get every other
         error.
+    sandbox_profiles: the logical sandbox names the deployment resolves
+        (``psych_runtime.Runtime``'s profile registry). Empty means "do not
+        check". Given, an agent whose ``code_execution.profile`` names
+        nothing here is refused at publish rather than at its first
+        ``run_code`` call.
 
 ### `AgentBuilder`
 

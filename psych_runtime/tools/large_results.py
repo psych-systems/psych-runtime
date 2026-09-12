@@ -192,10 +192,12 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from psych_runtime.core.errors import AccessDenied
+from psych_runtime.core.errors import AccessDenied, PsychError
 from psych_runtime.core.ids import ToolCallId
 from psych_runtime.core.messages import ToolDefinition
+from psych_runtime.core.records import ResultAttachment
 from psych_runtime.core.reducer import RunStateView, ToolResult
+from psych_runtime.core.scope import Scope
 from psych_runtime.store.blob import BlobKey, BlobMetadata, BlobNotFound, BlobStore, blob_key
 
 __all__ = [
@@ -203,8 +205,10 @@ __all__ = [
     "ElisionDecision",
     "MatchedLine",
     "OffloadDecision",
+    "OutputNotKept",
     "ReadToolOutputArguments",
     "ReadToolOutputResult",
+    "attachment_blob_key",
     "decide_elision",
     "decide_offload",
     "force_elision",
@@ -215,6 +219,31 @@ __all__ = [
     "read_tool_output_tools",
     "render_result_bytes",
 ]
+
+
+class OutputNotKept(PsychError):
+    """A handle names an attachment whose bytes beyond the preview were not
+    kept.
+
+    Not an access problem (the handle is this Run's) and not a missing blob
+    (none was ever written): the Spec's ``OutputPolicy.preserve`` said not to
+    keep them, or no ``BlobStore`` was wired and preservation was not
+    required. The preview in the call's own result is all there is.
+    """
+
+
+def attachment_blob_key(scope: Scope, run_id: Any, call_id: ToolCallId, slot: str) -> BlobKey:
+    """Where a ``run_code`` attachment's bytes live: the call's own key with
+    the slot folded into the call segment.
+
+    Built from the Run's own scope and run id, never from anything the model
+    sent or the record stored as text, for the same reason ``blob_key`` is
+    (DESIGN.md §14). One call has several attachments, so the slot is part
+    of the address; ``BlobKey`` refuses a segment that could escape a path,
+    and a slot is a short token this codebase mints.
+    """
+    return blob_key(scope, run_id, ToolCallId(f"{call_id}.{slot}"))
+
 
 TOOL_NAME: Final = "read_tool_output"
 """Matches the entry in ``psych_runtime.core.spec.RESERVED_TOOL_NAMES``."""
@@ -351,6 +380,11 @@ _CONTENT_TYPE_BINARY: Final = "application/octet-stream"
 _CONTENT_TYPE_TEXT: Final = "text/plain; charset=utf-8"
 _CONTENT_TYPE_JSON: Final = "application/json"
 
+_TEXT_LIKE: Final = re.compile(r"^application/(xml|x-yaml|yaml|toml|x-ndjson|javascript)")
+"""Non-``text/`` types a ``run_code`` artifact may carry that still read as
+text. Anything else that is not JSON or one of this module's own three types
+is handed back as bytes, which the reader reports by size."""
+
 _LINE_COUNT_META_KEY: Final = "line_count"
 """The ``BlobMetadata.metadata`` key :func:`decide_offload` writes a text
 result's line count under, so a later windowed read can report
@@ -394,7 +428,13 @@ def parse_result_bytes(payload: bytes, content_type: str) -> Any:
         return payload.decode("utf-8")
     if content_type == _CONTENT_TYPE_JSON:
         return json.loads(payload.decode("utf-8"))
-    raise ValueError(f"{content_type!r} is not a content type this module ever writes")
+    if content_type.startswith("text/"):
+        # A run_code artifact carries the type guessed from its name (text/csv,
+        # text/markdown); every text type reads back as text.
+        return payload.decode("utf-8", errors="replace")
+    if _TEXT_LIKE.match(content_type):
+        return payload.decode("utf-8", errors="replace")
+    return bytes(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,6 +719,10 @@ async def read_tool_output_async(
     parsed = ReadToolOutputArguments.model_validate(dict(arguments))
     call_id, stored = _resolve_handle(state, parsed.handle)
 
+    attachment = _attachment_for(stored, parsed.handle)
+    if attachment is not None:
+        return await _read_attachment(state, parsed, call_id, attachment, blob_store)
+
     if stored.blob_key is None:
         return await _answer_off_the_loop(parsed, stored.result)
 
@@ -728,6 +772,96 @@ async def read_tool_output_async(
     )
     lines = text.split("\n")
     return _slice(parsed, lines, meta.size, total_lines=total_lines).model_dump()
+
+
+def _attachment_for(stored: ToolResult, handle: str) -> ResultAttachment | None:
+    """The attachment ``handle`` names on this call, or ``None`` when the
+    handle is the call's own result handle."""
+    if handle == stored.result_handle:
+        return None
+    return next((a for a in stored.attachments if a.handle == handle and a.readable), None)
+
+
+def _attachment_slot(call_id: ToolCallId, attachment: ResultAttachment) -> str:
+    """The slot a handle was minted with: ``out_<call_id>_<slot>``.
+
+    Derived from the handle rather than stored twice, and the prefix is
+    checked rather than assumed so a record from a foreign writer cannot make
+    this address a blob it did not write.
+    """
+    prefix = f"out_{call_id}_"
+    if not attachment.handle.startswith(prefix):
+        raise AccessDenied(
+            f"handle {attachment.handle!r}",
+            "does not name an attachment of the call it was recorded on.",
+        )
+    return attachment.handle[len(prefix) :]
+
+
+async def _read_attachment(
+    state: RunStateView,
+    parsed: ReadToolOutputArguments,
+    call_id: ToolCallId,
+    attachment: ResultAttachment,
+    blob_store: BlobStore | None,
+) -> dict[str, Any]:
+    """Read one ``run_code`` attachment, wherever its bytes live.
+
+    Inline bytes are read directly. Blob-backed text takes the same bounded
+    prefix path a plain offloaded text result does, so a window near the
+    front of a large stdout costs a small fetch. Binary content is reported
+    by size rather than rendered.
+    """
+    if attachment.stored == "preview_only":
+        raise OutputNotKept(
+            f"handle {parsed.handle!r} names output whose bytes beyond the preview were "
+            "not kept: the agent's output policy did not require it and, or, no BlobStore "
+            "is configured for this Runtime. The preview in the run_code result is all "
+            "there is; re-run the program to produce less, or return what you need."
+        )
+    if attachment.stored == "inline":
+        assert attachment.data is not None  # enforced by ResultAttachment's validator
+        return await _answer_off_the_loop(
+            parsed, parse_result_bytes(attachment.data, attachment.content_type)
+        )
+
+    if blob_store is None:
+        raise AccessDenied(
+            f"handle {parsed.handle!r}",
+            "names output offloaded to a BlobStore, but this Worker has no BlobStore "
+            "configured to read it back from.",
+        )
+    key = attachment_blob_key(
+        state.scope, state.run_id, call_id, _attachment_slot(call_id, attachment)
+    )
+    if attachment.content_type == _CONTENT_TYPE_BINARY:
+        meta = await blob_store.head(key)
+        if meta is None:
+            raise BlobNotFound(str(key))
+        return ReadToolOutputResult(
+            handle=parsed.handle,
+            binary=True,
+            total_size_bytes=meta.size,
+            total_lines=0,
+            offset=parsed.offset,
+            limit=parsed.limit,
+            pattern=parsed.pattern,
+            total_matches=None,
+            returned_lines=0,
+            truncated=False,
+        ).model_dump()
+    if parsed.pattern is not None or attachment.content_type == _CONTENT_TYPE_JSON:
+        payload = await blob_store.get(key)
+        return await _answer_off_the_loop(
+            parsed, parse_result_bytes(payload, attachment.content_type)
+        )
+    meta = await blob_store.head(key)
+    if meta is None:
+        raise BlobNotFound(str(key))
+    text, total_lines = await _read_text_slice_source(
+        blob_store, key, meta, parsed.offset + parsed.limit
+    )
+    return _slice(parsed, text.split("\n"), meta.size, total_lines=total_lines).model_dump()
 
 
 async def _answer_off_the_loop(parsed: ReadToolOutputArguments, value: Any) -> dict[str, Any]:

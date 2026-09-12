@@ -5,6 +5,48 @@ and breaking changes are expected until the design survives a second consumer.
 
 ## Unreleased
 
+### Added
+
+- An agent decides whether it may run programs, in its own Spec:
+  `AgentSpec.code_execution` names a sandbox profile, the isolation level it
+  needs, its network policy, its limits, which of its tools a program may call,
+  and how much of a program's output reaches the model. It is part of the
+  Version hash, and an agent without it is never shown `run_code`.
+- Deployments register sandboxes under logical names (`Runtime(sandboxes=...)`,
+  `SandboxProfile`, `SandboxProfiles`) with their own hard limits, and can
+  narrow further per tenant with a `CodeExecutionPolicy`. The terms of an
+  execution are the intersection of backend, policy, Spec and profile, and each
+  stage may only narrow.
+- Every backend reports what it achieved rather than what it attempted:
+  `SandboxDescription`, `SandboxGuarantees` and `Enforcement` grade ten
+  guarantees per execution, and output produced under weaker isolation than was
+  requested is withheld.
+- New backends: bubblewrap namespaces on Linux, Job Objects on Windows, a
+  seatbelt profile on macOS, and `RemoteSandbox` for a sandbox service reached
+  over HTTP. `local_sandbox()` picks the strongest local backend and refuses
+  rather than downgrading; `detect_local_backends()` reports what a host can
+  offer. Nothing is installed, downloaded or pulled implicitly.
+- A tool result can carry named attachments (`ResultAttachment`): stdout,
+  stderr, the returned value and files a program wrote, each with its own
+  handle, size and content type, kept inline or in the `BlobStore` and read
+  back through `read_tool_output` by line window or pattern.
+- `psych_runtime.testing.sandbox_service` ships `ScriptedSandbox` and a real
+  local `SandboxService` for testing an agent's use of `run_code`, and a
+  remote adapter, without a child process or an external provider.
+- The Playground configures code execution per agent, manages sandbox profiles
+  with a health check that runs no model-written code, and shows a program, its
+  containment, its streams, its artifacts and its spilled output in chat,
+  Activity and Trace.
+
+### Changed
+
+- `Runtime(sandbox=...)` still works and registers that sandbox as the profile
+  named `default`, but an agent now has to opt in with `code_execution` before
+  it is offered `run_code`. Nothing else about the `Sandbox` port changed for
+  an existing implementation: `describe()` is optional, and a backend without
+  one is reported as process-level and unverified rather than refused.
+
+
 ## 0.1.1
 
 ### Fixed

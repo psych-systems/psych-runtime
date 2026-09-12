@@ -15,6 +15,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -51,11 +52,12 @@ from app.auth import (
 )
 from app.auth import create_account as register_account
 from app.config import Settings, load_allowed_origins, load_settings
+from app.demo import seed_code_execution_demo
 from app.errors import ApiProblem, from_pydantic, from_spec_validation
 from app.memory_store import FileMemoryStore
 from app.oauth_redirect import BrowserAuthorizationRedirect
 from app.observability import Observability, build_telemetry, configure_logging
-from app.ports import AccountEgressPolicy, AccountToolPolicy, SandboxProvision, same_uid_opt_in
+from app.ports import AccountEgressPolicy, AccountToolPolicy, SandboxProvider, same_uid_opt_in
 from app.runtime_router import AccountRoutedRuntime, active_provider
 from app.scenarios import SCENARIOS
 from app.scenarios.base import Assertion, ScenarioContext, ScenarioModule, ScenarioResult
@@ -74,6 +76,7 @@ from app.schemas import (
     CreateAgentResponse,
     CreateWorkflowRequest,
     CreateWorkflowResponse,
+    DemoSeedResponse,
     DispatchRequest,
     DispatchResponse,
     ForkRequest,
@@ -103,7 +106,11 @@ from app.schemas import (
     RunSummary,
     RuntimeSettingsIn,
     RuntimeSettingsOut,
+    SandboxBackendOut,
+    SandboxGuaranteesOut,
     SandboxLimitsIn,
+    SandboxProfileHealthOut,
+    SandboxProfileIn,
     ScenarioAssertionOut,
     ScenarioOut,
     ScenarioProgressEvent,
@@ -150,12 +157,13 @@ from app.settings_store import (
     ProviderConfig,
     RuntimeSettings,
     SandboxLimitsEntry,
+    SandboxProfileEntry,
     SettingsStore,
     SkillPreset,
     StateFile,
     new_provider_id,
 )
-from app.spec_builder import build_agent_spec
+from app.spec_builder import build_agent_spec, code_execution_in
 from app.store_index import (
     AgentEntry,
     AgentPointer,
@@ -209,6 +217,11 @@ from psych_runtime.store.port import RunHeader, RunState, Store
 from psych_runtime.store.postgres import PostgresStore
 from psych_runtime.tools.a2a import A2APool, A2ATools
 from psych_runtime.tools.http import HttpToolExecutor
+from psych_runtime.tools.large_results import (
+    OutputNotKept,
+    attachment_blob_key,
+    read_tool_output_async,
+)
 from psych_runtime.tools.mcp import McpConnectionStatus, McpPool, McpTools
 from psych_runtime.tools.oauth import OAuthClient
 from psych_runtime.tools.oauth.redirect import AuthorizationCallback
@@ -252,7 +265,7 @@ class AppState:
         memory: FileMemoryStore,
         a2a: A2ADeps,
         observability: Observability,
-        sandbox: SandboxProvision,
+        sandbox: SandboxProvider,
         workflows: WorkflowService,
         a2a_base_url: str,
     ) -> None:
@@ -525,7 +538,7 @@ def _a2a_preset_out(peer: A2APeerPreset) -> A2APeerPresetOut:
     )
 
 
-def _runtime_out(state: PlaygroundState, sandbox: SandboxProvision | None) -> RuntimeSettingsOut:
+def _runtime_out(state: PlaygroundState, sandbox: SandboxProvider | None) -> RuntimeSettingsOut:
     runtime = state.runtime
     return RuntimeSettingsOut(
         cost_policy=runtime.cost_policy,
@@ -533,17 +546,40 @@ def _runtime_out(state: PlaygroundState, sandbox: SandboxProvision | None) -> Ru
         catalogue_budget_chars=runtime.catalogue_budget_chars,
         sandbox_enabled=runtime.sandbox_enabled,
         sandbox_limits=SandboxLimitsIn(**runtime.sandbox_limits.model_dump()),
+        sandbox_allow_network=runtime.sandbox_allow_network,
+        sandbox_profiles=[
+            SandboxProfileIn(
+                name=entry.name,
+                backend=entry.backend,
+                enabled=entry.enabled,
+                hard_limits=SandboxLimitsIn(**entry.hard_limits.model_dump()),
+                allow_network=entry.allow_network,
+                image=entry.image,
+                runtime=entry.runtime,  # type: ignore[arg-type]
+                base_url=entry.base_url,
+                credential=entry.credential,
+            )
+            for entry in runtime.sandbox_profiles
+        ],
         egress_allow=list(runtime.egress_allow),
         denied_tools=list(runtime.denied_tools),
         sandbox_available=sandbox.available if sandbox is not None else False,
         sandbox_unavailable_reason=sandbox.reason if sandbox is not None else None,
+        sandbox_platform=sandbox.platform if sandbox is not None else "",
+        sandbox_backends=[
+            SandboxBackendOut(
+                name=b.name, isolation=b.isolation.value, available=b.available, reason=b.reason
+            )
+            for b in (sandbox.backends() if sandbox is not None else ())
+        ],
+        sandbox_profile_names=sandbox.profile_names(runtime) if sandbox is not None else [],
     )
 
 
 def _settings_response(
     state: PlaygroundState,
     live: Mapping[str, McpConnectionStatus] | None = None,
-    sandbox: SandboxProvision | None = None,
+    sandbox: SandboxProvider | None = None,
 ) -> SettingsResponse:
     return SettingsResponse(
         runtime=_runtime_out(state, sandbox),
@@ -693,9 +729,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 - one 
     # The `create_workflow` tool's way in (`app.tools`): a Run's agent can
     # publish a workflow for the account that dispatched it.
     install_workflow_publisher(ToolWorkflowPublisher(workflows))
-    sandbox = SandboxProvision(allow_same_uid=same_uid_opt_in())
+    sandbox = SandboxProvider(
+        transport=transport, secrets=secrets, allow_same_uid=same_uid_opt_in()
+    )
     if not sandbox.available:
-        _LOG.warning("run_code is unavailable on this host: %s", sandbox.reason)
+        _LOG.warning("the local sandbox is unavailable on this host: %s", sandbox.reason)
     runner = AccountRoutedRuntime(
         store=store,
         registry=registry,
@@ -1325,9 +1363,18 @@ async def create_agent(body: CreateAgentRequest, request: Request) -> CreateAgen
     except ValidationError as err:
         raise from_pydantic("the agent's fields did not validate", err) from err
 
+    workspace = await state.settings_store.load(account.id)
     try:
         version = await psych_runtime.publish(
-            state.store, spec, context=ValidationContext(registered_tools=registry.names)
+            state.store,
+            spec,
+            context=ValidationContext(
+                registered_tools=registry.names,
+                # The profiles this account can actually offer, so an agent
+                # naming one that is not configured is refused now rather
+                # than at its first program.
+                sandbox_profiles=state.sandbox.profile_names(workspace.runtime),
+            ),
         )
     except SpecValidationError as err:
         raise from_spec_validation(err) from err
@@ -1396,6 +1443,11 @@ async def create_agent(body: CreateAgentRequest, request: Request) -> CreateAgen
                 if spec.compaction is not None
                 else None
             ),
+            code_execution=(
+                spec.code_execution.model_dump(mode="json")
+                if spec.code_execution is not None
+                else None
+            ),
             published_at=version.published_at,
             approval_selectors=approval_selectors,
         ),
@@ -1443,6 +1495,11 @@ def _agent_summary(pointer: AgentPointer, entry: AgentEntry) -> AgentSummary:
                 summary_instructions=entry.compaction.summary_instructions,
             )
             if entry.compaction is not None
+            else None
+        ),
+        code_execution=code_execution_in(
+            psych_runtime.CodeExecution.model_validate(entry.code_execution)
+            if entry.code_execution is not None
             else None
         ),
         published_at=entry.published_at.isoformat(),
@@ -1811,16 +1868,25 @@ async def list_runs(request: Request) -> list[RunSummary]:
         header = await state.store.get_run(entry.run_id)
         run_state = header.state.value if header is not None else "unknown"
         run_settled_at: str | None = entry.settled_at.isoformat() if entry.settled_at else None
-        if run_settled_at is None and header is not None and header.state is RunState.SETTLED:
+        finished = {RunState.SETTLED, RunState.NESTED}
+        if run_settled_at is None and header is not None and header.state in finished:
             # One read, the first time a settled Run is listed, for the one
             # timestamp `RunHeader` does not carry. Cached on the entry after
             # that: this list is polled every few seconds while anything is
             # running, and reading every settled Run's whole log each time is
             # the kind of cost that only shows up once someone has history.
+            #
+            # `NESTED` is here because a Run nothing will ever claim -- a
+            # subagent, or the review fixture -- keeps that header state for
+            # good, and the log is the only place that says it finished. The
+            # log is the truth either way; the header is a lease, not a
+            # verdict.
             log = await state.store.read(entry.run_id)
             run_settled_at = settled_at(log)
             if run_settled_at is not None:
                 await state.index.mark_settled(entry.run_id, datetime.fromisoformat(run_settled_at))
+        if run_settled_at is not None and header is not None and header.state is RunState.NESTED:
+            run_state = RunState.SETTLED.value
         summaries.append(
             RunSummary(
                 run_id=entry.run_id,
@@ -2718,6 +2784,38 @@ def _result_out(result: ScenarioResult) -> ScenarioRunResultOut:
     )
 
 
+@app.post("/api/demo/code-execution", status_code=201, response_model=DemoSeedResponse)
+async def seed_code_execution_review(request: Request) -> DemoSeedResponse:
+    """Real Runs that show every code-execution state, with no provider.
+
+    A scripted model and this host's own sandbox drive four conversations
+    through the ordinary runtime (``app.demo``), so the chat card, Activity,
+    Trace and the attachment reader can be reviewed on any machine. What
+    appears is what a real Run recorded here, not a fixture drawn by hand.
+    """
+    state = _state(request)
+    account = await _account(request)
+    workspace = await state.settings_store.load(account.id)
+    profiles = state.sandbox.profiles_for(account.id, workspace.runtime)
+    if not profiles.names:
+        raise ApiProblem(
+            409,
+            "no sandbox profile is available for this account: "
+            + (state.sandbox.reason or "enable the default profile in Settings first"),
+        )
+    agent_id, run_ids = await seed_code_execution_demo(
+        store=state.store,
+        index=state.index,
+        settings=state.settings_store,
+        registry=registry,
+        profiles=profiles,
+        blob=state.runner.blob,
+        account=account,
+        approval_selectors=state.settings.default_approval_selectors,
+    )
+    return DemoSeedResponse(agent_id=agent_id, run_ids=[str(r) for r in run_ids])
+
+
 @app.get("/api/scenarios", response_model=list[ScenarioOut])
 async def list_scenarios(request: Request) -> list[ScenarioOut]:
     ctx = await _scenario_context(_state(request), await _account(request))
@@ -3513,6 +3611,21 @@ async def update_runtime_settings(body: RuntimeSettingsIn, request: Request) -> 
                     catalogue_budget_chars=body.catalogue_budget_chars,
                     sandbox_enabled=body.sandbox_enabled,
                     sandbox_limits=SandboxLimitsEntry(**body.sandbox_limits.model_dump()),
+                    sandbox_allow_network=body.sandbox_allow_network,
+                    sandbox_profiles=tuple(
+                        SandboxProfileEntry(
+                            name=entry.name,
+                            backend=entry.backend,
+                            enabled=entry.enabled,
+                            hard_limits=SandboxLimitsEntry(**entry.hard_limits.model_dump()),
+                            allow_network=entry.allow_network,
+                            image=entry.image,
+                            runtime=entry.runtime,
+                            base_url=entry.base_url,
+                            credential=entry.credential,
+                        )
+                        for entry in body.sandbox_profiles
+                    ),
                     egress_allow=tuple(p.strip().lower() for p in body.egress_allow),
                     denied_tools=tuple(t.strip() for t in body.denied_tools if t.strip()),
                 )
@@ -3521,6 +3634,105 @@ async def update_runtime_settings(body: RuntimeSettingsIn, request: Request) -> 
 
     updated = await state.settings_store.update(account.id, merge)
     return _settings_response(updated, _live_connections(state, account), state.sandbox)
+
+
+@app.post("/api/settings/sandbox/{name}/check", response_model=SandboxProfileHealthOut)
+async def check_sandbox_profile(name: str, request: Request) -> SandboxProfileHealthOut:
+    """What one sandbox profile's backend reports about itself, fresh.
+
+    ``Sandbox.describe()``: the runtime is asked, the image looked up, a local
+    backend probes itself with a fixed one-line program. No model-written
+    code runs. The answer names the isolation level the backend reaches and
+    how each guarantee is enforced, so the console can say what "isolated"
+    means on this host rather than implying it.
+    """
+    state = _state(request)
+    account = await _account(request)
+    workspace = await state.settings_store.load(account.id)
+    started = time.monotonic()
+    description = await state.sandbox.check(account.id, workspace.runtime, name)
+    return SandboxProfileHealthOut(
+        name=name,
+        configured=description.backend != "none",
+        backend=description.backend,
+        platform=description.platform,
+        isolation=description.isolation.value if description.isolation else None,
+        guarantees=SandboxGuaranteesOut(**description.guarantees.model_dump(mode="json")),
+        mechanisms=list(description.mechanisms),
+        network_grant_supported=description.network_grant_supported,
+        artifacts_supported=description.artifacts_supported,
+        ready=description.ready,
+        problems=list(description.problems),
+        notes=list(description.notes),
+        checked_in_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+@app.get("/api/runs/{run_id}/attachments/{handle}")
+async def read_run_attachment(
+    run_id: str,
+    handle: str,
+    request: Request,
+    *,
+    offset: int = 0,
+    limit: int = 200,
+    pattern: str | None = None,
+) -> JSONResponse:
+    """A window of one recorded output (a program's stdout, a file it wrote),
+    by the handle the record named, through the same reader the model uses.
+
+    Scoped like every other Run route: the handle resolves only against this
+    Run's own records, so a handle guessed or copied from another Run is
+    refused, and the bytes come from the BlobStore under a key derived from
+    the Run rather than from anything in the request.
+    """
+    state = _state(request)
+    header = await _require_run(state, run_id, await _account(request))
+    view = await psych_runtime.state(state.store, RunId(run_id), scope=header.scope)
+    arguments: dict[str, Any] = {"handle": handle, "offset": offset, "limit": limit}
+    if pattern:
+        arguments["pattern"] = pattern
+    try:
+        window = await read_tool_output_async(view, arguments, state.runner.blob)
+    except AccessDenied as err:
+        raise ApiProblem(404, f"no output {handle!r} on run {run_id!r}") from err
+    except OutputNotKept as err:
+        raise ApiProblem(410, str(err)) from err
+    except (ValidationError, ValueError) as err:
+        raise ApiProblem(400, str(err)) from err
+    return JSONResponse(jsonable_encoder(window))
+
+
+@app.get("/api/runs/{run_id}/attachments/{handle}/download")
+async def download_run_attachment(run_id: str, handle: str, request: Request) -> Response:
+    """The whole recorded output as a file, with the content type the record
+    carries. Inline bytes come from the record; offloaded ones from the
+    BlobStore under the Run's own key."""
+    state = _state(request)
+    header = await _require_run(state, run_id, await _account(request))
+    view = await psych_runtime.state(state.store, RunId(run_id), scope=header.scope)
+    call_id = view.result_handles.get(handle)
+    stored = next((r for r in view.tool_results if r.call_id == call_id), None) if call_id else None
+    attachment = (
+        next((a for a in stored.attachments if a.handle == handle), None) if stored else None
+    )
+    if stored is None or attachment is None:
+        raise ApiProblem(404, f"no output {handle!r} on run {run_id!r}")
+    if attachment.stored == "preview_only":
+        raise ApiProblem(410, "the bytes beyond the preview were not kept for this output")
+    filename = attachment.name.removeprefix("file:").replace("/", "_") or handle
+    if attachment.stored == "inline":
+        payload = attachment.data or b""
+    else:
+        key = attachment_blob_key(
+            header.scope, RunId(run_id), stored.call_id, handle[len(f"out_{stored.call_id}_") :]
+        )
+        payload = await state.runner.blob.get(key)
+    return Response(
+        content=payload,
+        media_type=attachment.content_type,
+        headers={"content-disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.put("/api/settings/secrets", response_model=SecretsResponse)

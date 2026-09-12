@@ -122,9 +122,13 @@ Limitations worth knowing before you build on it:
   recorded as started is settled `unknown` unless it was registered
   `safe_to_retry=True`. Psych does not make an external side effect
   repeatable; it refuses to guess.
-- **The subprocess sandbox limits, it does not isolate.** It sets rlimits and
-  drops privileges, but shares the host filesystem, and its network denial is
-  a self-report. The container sandbox is the one with kernel isolation.
+- **A sandbox says what it proved, not what it hopes.** Every backend grades
+  ten guarantees per execution and reports the isolation level it actually
+  reached; output produced under weaker terms than were requested is withheld
+  rather than returned. A plain subprocess limits a program and does not
+  isolate it, and it says so. Namespaces and containers reach a kernel
+  boundary; no local backend reaches one on macOS or Windows, where a request
+  for full isolation is refused instead of approximated.
 - **Cost is only as good as its source.** `Cost.source` distinguishes an amount
   returned by the provider from one estimated using the bundled, dated price
   snapshot or your override. A model with no known price records `cost=None`.

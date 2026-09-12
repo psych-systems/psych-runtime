@@ -48,7 +48,7 @@ one this backend could not previously offer for the model path.
 
 from __future__ import annotations
 
-from app.ports import AccountToolPolicy, SandboxProvision
+from app.ports import AccountToolPolicy, SandboxProvider
 from app.settings_store import PlaygroundState, ProviderConfig, SettingsStore
 from app.store_index import PlaygroundIndex
 from app.tools import current_scope
@@ -144,7 +144,7 @@ class AccountRoutedRuntime:
         http: HttpToolExecutor,
         blob: BlobStore,
         a2a: A2ATools,
-        sandbox: SandboxProvision,
+        sandbox: SandboxProvider,
         policy: AccountToolPolicy,
     ) -> None:
         self._store = store
@@ -152,6 +152,9 @@ class AccountRoutedRuntime:
         self._mcp = mcp
         self._http = http
         self._blob = blob
+        self.blob = blob
+        """Where offloaded outputs live, for the attachment routes in
+        ``app.main`` that read them back for a person."""
         self._a2a = a2a
         self._sandbox = sandbox
         self._policy = policy
@@ -228,15 +231,15 @@ class AccountRoutedRuntime:
             # choice read off the same workspace snapshot (`RuntimeSettings`).
             # `http`, `blob` and `a2a` are process-wide objects whose
             # per-account behaviour comes from the Scope each call carries;
-            # the sandbox is rebuilt per Attempt because its limits are the
-            # account's and the adapter takes them at construction.
+            # the sandbox profiles are the account's own configuration, built
+            # once per configuration and looked up per Attempt.
             cost_policy=state.runtime.cost_policy,
             blob=self._blob,
             blob_offload_bytes=state.runtime.blob_offload_bytes,
             catalogue_budget_chars=state.runtime.catalogue_budget_chars,
             http=self._http,
             a2a=self._a2a,
-            sandbox=self._sandbox.build(state.runtime),
+            sandboxes=self._sandbox.profiles_for(header.scope.tenant, state.runtime),
             policy=self._policy,
         )
         # Visible to every tool this Attempt calls, on this task and its

@@ -387,6 +387,10 @@ class CreateAgentRequest(_ApiModel):
     """How the agent shapes its final answer. Part of the published Spec and so
     part of its Version hash, deliberately: it changes what the model is told.
     ``None`` adds nothing to the prompt."""
+    code_execution: CodeExecutionIn | None = None
+    """Whether this agent may write and run programs, and on what terms.
+    ``None`` means it may not, whatever sandbox the installation has wired.
+    Joins the Version hash like every other field here."""
 
 
 class ToolStepIn(_ApiModel):
@@ -541,6 +545,9 @@ class AgentSummary(_ApiModel):
     compaction was on would have to invent the four numbers again, and would
     publish an agent that summarises on different terms from the one somebody
     opened."""
+    code_execution: CodeExecutionIn | None = None
+    """The agent's code-execution terms, or ``None`` when it may not run
+    programs. Reported whole so the edit form restores what was published."""
     published_at: str
     """When the *current* Version was first published. Not when the agent was
     created, and not when it was last edited: a Version republished after a
@@ -1309,6 +1316,66 @@ class SandboxLimitsIn(_ApiModel):
     wall_seconds: float = Field(default=30.0, gt=0, le=3_600)
 
 
+class SandboxProfileIn(_ApiModel):
+    """One extra sandbox profile: a container image or a remote service.
+    Mirrors ``app.settings_store.SandboxProfileEntry``. A remote profile
+    names the *secret* holding its token, never the token."""
+
+    name: str = Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$")
+    backend: Literal["container", "remote"]
+    enabled: bool = True
+    hard_limits: SandboxLimitsIn = Field(default_factory=SandboxLimitsIn)
+    allow_network: bool = False
+    image: str | None = Field(default=None, max_length=512)
+    runtime: Literal["docker", "podman"] | None = None
+    base_url: str | None = Field(default=None, max_length=2048)
+    credential: str | None = Field(default=None, max_length=256)
+
+
+class SandboxBackendOut(_ApiModel):
+    """One local backend this host could run, from
+    ``psych_runtime.sandbox.detect_local_backends``."""
+
+    name: str
+    isolation: Literal["isolated", "process"]
+    available: bool
+    reason: str = ""
+
+
+class SandboxGuaranteesOut(_ApiModel):
+    filesystem: str
+    network: str
+    process_tree: str
+    identity: str
+    cpu: str
+    memory: str
+    file_size: str
+    process_count: str
+    wall_clock: str
+    environment: str
+
+
+class SandboxProfileHealthOut(_ApiModel):
+    """``POST /api/settings/sandbox/{name}/check``: what a profile's backend
+    reports about itself, from ``Sandbox.describe()``. No model-written
+    program runs for this; a local backend probes itself with a fixed
+    one-line program."""
+
+    name: str
+    configured: bool
+    backend: str
+    platform: str
+    isolation: Literal["isolated", "process"] | None
+    guarantees: SandboxGuaranteesOut
+    mechanisms: list[str]
+    network_grant_supported: bool
+    artifacts_supported: bool
+    ready: bool
+    problems: list[str]
+    notes: list[str]
+    checked_in_ms: int
+
+
 class RuntimeSettingsIn(_ApiModel):
     """``PUT /api/settings/runtime``: the ``Runtime`` knobs this account sets.
     Mirrors ``app.settings_store.RuntimeSettings`` field for field."""
@@ -1318,15 +1385,53 @@ class RuntimeSettingsIn(_ApiModel):
     catalogue_budget_chars: int = Field(default=20_000, gt=0)
     sandbox_enabled: bool = True
     sandbox_limits: SandboxLimitsIn = Field(default_factory=SandboxLimitsIn)
+    sandbox_allow_network: bool = False
+    sandbox_profiles: list[SandboxProfileIn] = Field(default_factory=list)
     egress_allow: list[str] = Field(default_factory=list)
     denied_tools: list[str] = Field(default_factory=list)
 
 
 class RuntimeSettingsOut(RuntimeSettingsIn):
     sandbox_available: bool = True
-    """Whether this host can offer ``run_code`` at all. ``sandbox_enabled`` is
-    the account's wish; this is the process's answer."""
+    """Whether this host can offer the ``default`` (local) profile at all.
+    ``sandbox_enabled`` is the account's wish; this is the process's answer."""
     sandbox_unavailable_reason: str | None = None
+    sandbox_platform: str = ""
+    """``sys.platform`` of the worker, so the console can say which local
+    guarantees apply here."""
+    sandbox_backends: list[SandboxBackendOut] = Field(default_factory=list)
+    """Every local backend this host could run, available or not, with the
+    reason. Detection only; ``check`` runs the real probe."""
+    sandbox_profile_names: list[str] = Field(default_factory=list)
+    """Every profile an agent of this account may name, ``default`` included
+    when it is offered."""
+
+
+class CodeExecutionLimitsIn(_ApiModel):
+    cpu_seconds: float | None = Field(default=None, gt=0, le=3_600)
+    wall_seconds: float | None = Field(default=None, gt=0, le=3_600)
+    memory_bytes: int | None = Field(default=None, gt=0)
+    file_size_bytes: int | None = Field(default=None, gt=0)
+    process_count: int | None = Field(default=None, gt=0, le=4_096)
+
+
+class CodeExecutionIn(_ApiModel):
+    """An agent's ``code_execution`` (``psych_runtime.CodeExecution``), field
+    for field. Part of the published Spec and so of its Version hash: an
+    agent that can run programs is a different agent from one that cannot."""
+
+    enabled: bool = True
+    profile: str = Field(default="default", pattern=r"^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$")
+    isolation: Literal["isolated", "process"] = "isolated"
+    network: Literal["denied", "unrestricted"] = "denied"
+    limits: CodeExecutionLimitsIn = Field(default_factory=CodeExecutionLimitsIn)
+    bindings: list[str] | None = None
+    preview_bytes: int = Field(default=4_000, ge=256, le=65_536)
+    max_output_bytes: int = Field(default=8 * 1024 * 1024, ge=4_096, le=256 * 1024 * 1024)
+    preserve_output: Literal["when_available", "required", "never"] = "when_available"
+    collect_artifacts: bool = True
+    max_artifacts: int = Field(default=16, ge=0, le=256)
+    max_artifact_bytes: int = Field(default=16 * 1024 * 1024, ge=0, le=256 * 1024 * 1024)
 
 
 class UpdateSkillsRequest(_ApiModel):
@@ -1404,6 +1509,13 @@ class ScenarioProgressEvent(_ApiModel):
     step: str
     detail: str
     at: str
+
+
+class DemoSeedResponse(_ApiModel):
+    """``POST /api/demo/code-execution``: the review agent and its Runs."""
+
+    agent_id: str
+    run_ids: list[str]
 
 
 class ScenarioAssertionOut(_ApiModel):

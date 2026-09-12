@@ -49,6 +49,7 @@ from psych_runtime.sandbox.port import HostBinding
 __all__ = [
     "CallFrame",
     "DoneFrame",
+    "ReadyFrame",
     "SandboxProtocolError",
     "build_reply_frame",
     "build_run_frame",
@@ -78,7 +79,14 @@ async def read_frame(reader: asyncio.StreamReader) -> dict[str, Any]:
         SandboxProtocolError: the channel closed with no frame, the line was
             not valid JSON, or the JSON was not an object.
     """
-    line = await reader.readline()
+    try:
+        line = await reader.readline()
+    except OSError as err:
+        # A peer killed mid-conversation reads as end-of-stream on POSIX and
+        # as a connection reset on Windows; both mean the same thing here.
+        raise SandboxProtocolError(
+            f"the sandboxed process's protocol channel was reset: {err}"
+        ) from err
     if not line:
         raise SandboxProtocolError(
             "the sandboxed process closed its protocol channel without sending a frame"
@@ -97,9 +105,18 @@ async def read_frame(reader: asyncio.StreamReader) -> dict[str, Any]:
 
 
 async def write_frame(writer: asyncio.StreamWriter, frame: Mapping[str, Any]) -> None:
-    """Write one frame, newline-terminated, and flush it."""
-    writer.write(json.dumps(frame).encode() + b"\n")
-    await writer.drain()
+    """Write one frame, newline-terminated, and flush it.
+
+    Raises:
+        SandboxProtocolError: the channel was closed or reset by the peer.
+    """
+    try:
+        writer.write(json.dumps(frame).encode() + b"\n")
+        await writer.drain()
+    except OSError as err:
+        raise SandboxProtocolError(
+            f"the sandboxed process's protocol channel was closed while writing: {err}"
+        ) from err
 
 
 def build_run_frame(program: str) -> dict[str, Any]:
@@ -107,15 +124,35 @@ def build_run_frame(program: str) -> dict[str, Any]:
     return {"type": "run", "program": program}
 
 
-def parse_ready_frame(raw: Mapping[str, Any]) -> bool:
-    """Validate the child's startup frame and return its ``network_denied`` bit.
+@dataclass(frozen=True, slots=True)
+class ReadyFrame:
+    """What the child observed about itself before the program ran.
+
+    Attributes:
+        network_denied: the routing probe found no route out.
+        canary_readable: the child could read the host's canary file, so the
+            host filesystem is visible to it. ``None`` when no canary was set.
+        uid: the child's effective uid, or ``None`` where there is none.
+        platform: ``sys.platform`` inside the child.
+    """
+
+    network_denied: bool
+    canary_readable: bool | None = None
+    uid: int | None = None
+    platform: str | None = None
+
+
+def parse_ready_frame(raw: Mapping[str, Any]) -> ReadyFrame:
+    """Validate the child's startup frame and return what it observed.
 
     Sent by the bootstrap before it reads the ``run`` frame, so before the
     model's program has run at all: unlike a ``call`` or ``done`` frame this
     one is not adversarial input (the model's code has not executed yet when
     it is sent), but the shape is still checked rather than assumed, on the
     general principle that nothing arriving over this channel is cast without
-    being looked at first.
+    being looked at first. The optional fields are rebuilt the same way: a
+    remote service speaking this protocol may omit them, and a wrong type on
+    one is a protocol violation rather than a value to pass along.
 
     Raises:
         SandboxProtocolError: the frame is not a well-formed ``ready`` frame.
@@ -126,7 +163,18 @@ def parse_ready_frame(raw: Mapping[str, Any]) -> bool:
             "expected a ready frame with a boolean network_denied field as the "
             f"child's first message, got {raw!r}"
         )
-    return network_denied
+    canary = raw.get("canary_readable")
+    if canary is not None and not isinstance(canary, bool):
+        raise SandboxProtocolError("a ready frame's canary_readable was neither boolean nor null")
+    uid = raw.get("uid")
+    if uid is not None and (not isinstance(uid, int) or isinstance(uid, bool)):
+        raise SandboxProtocolError("a ready frame's uid was neither an integer nor null")
+    platform = raw.get("platform")
+    if platform is not None and not isinstance(platform, str):
+        raise SandboxProtocolError("a ready frame's platform was neither a string nor null")
+    return ReadyFrame(
+        network_denied=network_denied, canary_readable=canary, uid=uid, platform=platform
+    )
 
 
 def build_reply_frame(
@@ -243,7 +291,7 @@ async def run_protocol(
     writer: asyncio.StreamWriter,
     program: str,
     bindings: Mapping[str, HostBinding],
-) -> tuple[bool, DoneFrame]:
+) -> tuple[ReadyFrame, DoneFrame]:
     """Read the ready frame, send the program, answer calls until done.
 
     Shared by every adapter (``psych_runtime.sandbox.subprocess``,
@@ -253,8 +301,8 @@ async def run_protocol(
     socket connection.
 
     Returns:
-        Whether the child verified it has no network route
-        (``SandboxResult.network_denied``), and the final ``DoneFrame``.
+        What the child observed about itself before running anything (the
+        ``ReadyFrame``), and the final ``DoneFrame``.
 
     Raises:
         SandboxProtocolError: the child sent something that does not fit the
@@ -262,7 +310,7 @@ async def run_protocol(
             know whether that should end the whole execution or just this
             attempt to talk to it.
     """
-    network_denied = parse_ready_frame(await read_frame(reader))
+    ready = parse_ready_frame(await read_frame(reader))
     await write_frame(writer, build_run_frame(program))
 
     known = bindings.keys()
@@ -272,7 +320,7 @@ async def run_protocol(
             await read_frame(reader), expected_call_id=expected_id, known_bindings=known
         )
         if isinstance(parsed, DoneFrame):
-            return network_denied, parsed
+            return ready, parsed
 
         expected_id += 1
         binding = bindings[parsed.name]

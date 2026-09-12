@@ -74,17 +74,52 @@ half-done.
 ## Sandboxes
 
 Model-written code runs in a separate process, never in the host interpreter.
-The two backends contain different amounts:
+A deployment registers backends under logical names, and an agent's Spec asks
+for one of those names:
 
-- `SubprocessSandbox` runs a fresh interpreter under CPU, memory and
-  file-size rlimits, dropped to an unprivileged uid. It shares the host
-  filesystem, and its network denial is a self-report rather than
-  enforcement. It limits a program; it does not isolate one.
-- `ContainerSandbox` runs one container per program. Filesystem and network
-  isolation are the kernel's.
+```python
+runtime = psych_runtime.Runtime(
+    ...,
+    sandboxes=[
+        psych_runtime.SandboxProfile("default", local_sandbox()),
+        psych_runtime.SandboxProfile("heavy", container, hard_limits=limits),
+    ],
+)
+await runtime.verify_sandboxes()  # describe() each one, at startup
+```
 
-Run untrusted code in the container backend. Give the subprocess backend a
-host with nothing on it worth reading.
+A Spec holds the name and its requested terms. It never holds a backend, a
+client or a credential, and the terms of one execution are the intersection of
+what the backend can do, what the tenant's Policy allows, what the Spec asks
+for and what the profile caps. Each stage narrows and none widens.
+
+What a host can offer is discoverable before the first request, with
+`psych_runtime.sandbox.local.detect_local_backends()`:
+
+- **Linux with `bwrap`** reaches full isolation: namespaces, dropped
+  capabilities, read-only system binds, a tmpfs workspace.
+- **Linux without it, and macOS** reach process-level containment: rlimits, a
+  process group, a private workspace, and on macOS a seatbelt profile that
+  confines the filesystem and denies the network. macOS cannot cap memory, so
+  a request for full isolation is refused there.
+- **Windows** reaches process-level containment through a Job Object: the whole
+  tree is contained and killed together, with memory, CPU and process limits.
+  The child runs as the worker's own account, and the result says identity is
+  unavailable rather than implying a boundary.
+- **A container runtime** reaches full isolation. The worker itself must be
+  POSIX: the channel is a bind-mounted Unix socket, and a Windows worker is
+  refused rather than silently downgraded.
+- **A sandbox service** of your own, or a vendor's, plugs in through
+  `RemoteSandbox` and a documented HTTP protocol. Its credential resolves per
+  Scope through your `SecretResolver` and never enters a Spec, a Record, a
+  report, a trace or a URL.
+
+Nothing is installed, downloaded or pulled implicitly. `bwrap`, a container
+runtime and an image are things you provision; prefer an image digest where a
+deployment must be reproducible.
+
+Run untrusted code on a backend that reaches isolation. Give a process-level
+backend a host with nothing on it worth reading.
 
 ## Egress
 

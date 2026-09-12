@@ -32,6 +32,7 @@ import asyncio
 import contextlib
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Final
@@ -247,6 +248,10 @@ class TestCleanupCannotOutliveTheExecution:
     was found. Under 3.11 this passes either way.
     """
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the channel is a Unix socket; a Windows worker is refused outright",
+    )
     async def test_a_live_connection_does_not_hold_the_listener_open(self) -> None:
         # mkdtemp rather than tmp_path: a Unix socket path is capped near 108
         # bytes and pytest's per-test directory names spend most of that.

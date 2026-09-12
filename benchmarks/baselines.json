@@ -17,6 +17,16 @@
       "unit": "claims/sec",
       "higher_is_better": true
     },
+    "code_execution_model_calls": {
+      "value": 2.0,
+      "unit": "model calls",
+      "higher_is_better": false
+    },
+    "code_execution_prompt_ratio": {
+      "value": 0.031015,
+      "unit": "program bytes / tool bytes",
+      "higher_is_better": false
+    },
     "dispatch_throughput": {
       "value": 56715.17612599999,
       "unit": "runs/sec",

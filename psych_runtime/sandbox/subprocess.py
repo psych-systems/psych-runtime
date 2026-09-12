@@ -1,9 +1,23 @@
 """The subprocess ``Sandbox`` adapter: a fresh CPython child per execution.
 
-DESIGN.md §18. This module owns everything
-about how one execution becomes one child process: rlimits, environment,
-working directory, network denial, teardown, and the framed protocol that
-carries host bindings back and forth.
+DESIGN.md §18. This module owns everything about how one execution becomes
+one child process on a POSIX host: rlimits, environment, working directory,
+network denial, teardown, and the framed protocol that carries host bindings
+back and forth. On Windows the equivalent is ``psych_runtime.sandbox.windows``,
+and ``psych_runtime.sandbox.local`` picks between them.
+
+## What this backend is, and is not
+
+It is ``IsolationLevel.PROCESS``: a process boundary with kernel-enforced
+resource limits, a scrubbed environment, a temporary working directory and
+whole-tree teardown. It is **not** ``ISOLATED``: the child shares the host's
+filesystem view (it can read whatever the account it runs as can read), and
+network denial is attempted rather than guaranteed. Every result grades
+itself honestly on both (``SandboxResult.guarantees``, checked from inside
+the child), and an execution that asked for ``ISOLATED`` is refused with its
+output withheld rather than run at this level. For a kernel boundary use
+``psych_runtime.sandbox.namespaces`` (Linux, bubblewrap) or
+``psych_runtime.sandbox.container``.
 
 ## What each layer of containment actually is
 
@@ -21,7 +35,9 @@ carries host bindings back and forth.
   not a killed process, because CPython's allocator checks malloc's return
   value. Skipped on any platform other than Linux, Darwin especially: some
   platforms map more into every process at exec than a useful cap would
-  allow, and the child would fail to start at all.
+  allow, and the child would fail to start at all. Reported as
+  ``memory: unavailable`` there, which is why this backend never reaches
+  ``ISOLATED`` on macOS whatever else it does.
 - **``RLIMIT_FSIZE``.** Default 10 MiB. CPython installs ``SIG_IGN`` for
   ``SIGXFSZ`` at interpreter startup (the same reason it ignores
   ``SIGPIPE``: so an ordinary file operation reports a catchable error
@@ -36,7 +52,7 @@ carries host bindings back and forth.
      limit outright for ``INIT_USER``). A sandbox that runs as root and
      relies on this limit for its fork-bomb defence is not defended. That is
      why this adapter drops privileges (see below) whenever it can: without
-     that, ``RLIMIT_NPROC`` is decorative.
+     that, ``RLIMIT_NPROC`` is decorative, and the guarantees say so.
   2. **It is shared by everything else running as the same uid.** Every
      concurrent execution that drops to the same unprivileged uid (the
      default is always the same uid, "nobody") shares one counter. A limit
@@ -74,28 +90,49 @@ as a silent fallback to some other interpreter.
 
 ## Network denial: what this does and does not guarantee
 
-Unless ``network=True`` is passed to ``run()``, the child attempts
-``os.unshare(CLONE_NEWNET)`` on itself before running the model's program.
-On success this puts the process in a fresh network namespace with nothing
-but loopback: no route to anywhere else exists, which is a real kernel-level
-guarantee, not a firewall rule the program might find a way around.
+Unless ``network=True`` is passed to ``run()``, the child attempts to put
+itself in a fresh network namespace before running the model's program:
+``unshare(CLONE_NEWNET)`` first, which needs ``CAP_NET_ADMIN`` and so works
+as root, then ``unshare(CLONE_NEWUSER | CLONE_NEWNET)``, which an
+unprivileged process may do on a kernel that allows unprivileged user
+namespaces. On success there is no route to anywhere but loopback, which is
+a real kernel-level guarantee, not a firewall rule the program might find a
+way around.
 
 **This can fail, and when it does, this adapter does not fail the whole
-execution over it.** ``unshare(CLONE_NEWNET)`` needs ``CAP_NET_ADMIN`` in the
-namespace the caller is in; as root that is automatic, but a consumer whose
-worker process is *not* root will typically see this fail with
-``PermissionError`` on most hosts. When it fails, the child simply runs with
-whatever network access its process already had. **This adapter does not
-promise network denial as a floor; it promises to attempt it and to report
-the truth about whether it held**, which is what
-``SandboxResult.network_denied`` is for: the child verifies its own state
-after the attempt (a UDP "connect" to an address on TEST-NET-1, RFC 5737,
-which raises immediately if there is no route at all, and never actually
-reaches anywhere since that block is never routed) and reports what it
-found, not what was requested. A consumer that must have network denial as a
-hard guarantee, not a best effort, wants ``psych_runtime.sandbox.container`` instead:
-``--network=none`` on a container runtime does not depend on the sandboxed
-process's own privilege level.
+execution over it** unless told to. Many hosts disable unprivileged user
+namespaces; there the child simply runs with whatever network access its
+process already had. **This adapter does not promise network denial as a
+floor; it promises to attempt it and to report the truth about whether it
+held**, which is what ``SandboxResult.network_denied`` and
+``SandboxResult.guarantees.network`` are for: the child verifies its own
+state after the attempt (a UDP "connect" to an address on TEST-NET-1, RFC
+5737, which raises immediately if there is no route at all, and never
+actually reaches anywhere since that block is never routed) and reports what
+it found, not what was requested. ``require_network_denial=True`` refuses to
+return a result from an execution where denial did not hold, and an
+execution that asked for ``ISOLATED`` is refused the same way.
+
+On macOS, ``seatbelt`` (below) is the mechanism instead.
+
+## macOS: the seatbelt profile, when it is available
+
+macOS has no namespaces, but it does have a kernel-enforced sandbox reached
+through ``sandbox-exec``, an interface the vendor has marked deprecated and
+still ships and enforces. When ``seatbelt`` is on (the default is to probe
+for it), the child is launched under a generated profile that denies
+network access, denies writes outside the workspace and the system
+temporary directories, and denies reads of home directories and of the
+canary. Reads of system files stay allowed: the profile language cannot
+allow a subpath without first allowing reads generally, so a fully private
+root is not something this mechanism can express.
+
+The probe at construction runs a trivial program under the profile; if that
+fails (the interface removed, the profile rejected), seatbelt is off and the
+description says so. The child's own ``ready`` frame is what grades the
+execution either way, so a profile that silently stopped applying would
+show up as ``network: unavailable`` on the next result rather than as a
+promise nobody checked.
 
 ## Teardown
 
@@ -104,9 +141,9 @@ equivalent to ``setsid()``), so ``os.killpg`` reaches every process the
 child's own program spawned, not just the directly tracked one. This matters
 concretely for a fork bomb: killing only the tracked pid would leave every
 process it forked still running. Teardown always signals the whole group,
-whether the execution finished cleanly, hit a limit, or timed out:
-``SIGTERM``, a grace period, then ``SIGKILL`` if anything is still alive.
-This runs unconditionally after every execution, not only on failure,
+whether the execution finished cleanly, hit a limit, timed out or was
+cancelled: ``SIGTERM``, a grace period, then ``SIGKILL`` if anything is still
+alive. This runs unconditionally after every execution, not only on failure,
 because "one program per execution" (DESIGN.md §18) means nothing from this
 child should still be running once ``run()`` returns.
 
@@ -139,6 +176,7 @@ import os
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -155,18 +193,35 @@ if sys.platform != "win32":
     # The adapter still refuses to construct there; see __init__.
     import resource
 
-from psych_runtime.sandbox._bootstrap import BOOTSTRAP_SOURCE
+from psych_runtime.core.code_execution import Enforcement, IsolationLevel
+from psych_runtime.sandbox._bootstrap import BOOTSTRAP_SOURCE, CANARY_ENV
+from psych_runtime.sandbox._local import (
+    DEFAULT_CAPTURE,
+    Canary,
+    Captured,
+    bounded,
+    classify_done,
+    collect_artifacts,
+    converse,
+    read_capped,
+    remove_tree,
+    withhold_if_weaker,
+)
 from psych_runtime.sandbox.port import (
     HostBinding,
+    OutputCapture,
+    SandboxDescription,
     SandboxFailure,
+    SandboxGuarantees,
     SandboxLimit,
     SandboxLimits,
     SandboxResult,
     SandboxSetupError,
+    achieved_level,
 )
-from psych_runtime.sandbox.protocol import DoneFrame, SandboxProtocolError, run_protocol
+from psych_runtime.sandbox.protocol import DoneFrame, ReadyFrame, SandboxProtocolError
 
-__all__ = ["SubprocessSandbox"]
+__all__ = ["SubprocessSandbox", "classify_done"]
 
 # Defaults, and why each number is what it is:
 #
@@ -206,17 +261,19 @@ and stderr once the process group has been signalled. Long enough for a
 program to run its ``finally`` blocks, short enough that a program ignoring
 SIGTERM does not hold the worker."""
 
-_MAX_CAPTURED_BYTES: Final = 1024 * 1024
-"""A safety valve on this adapter's own memory, independent of the four
-rlimits above: those bound what the *child* can do, not how much of its
-output this process is willing to buffer. Not one of ``SandboxLimit``'s
-members and not reported as ``limit_hit``; only ``stdout_truncated`` /
-``stderr_truncated`` reflect it."""
-
 _NOBODY: Final = (65534, 65534)
 """The conventional "nobody" uid/gid on Linux. Used as the default account to
 drop into when this adapter is constructed by a root process; see the module
 docstring's "Dropping privileges" section."""
+
+_PROBE_LIMITS: Final = SandboxLimits(
+    cpu_seconds=2.0,
+    address_space_bytes=256 * 1024 * 1024,
+    file_size_bytes=1024 * 1024,
+    process_count=16,
+    wall_seconds=10.0,
+)
+"""What ``describe()``'s probe runs under: small, because it runs ``return 0``."""
 
 
 class _Auto:
@@ -249,6 +306,7 @@ class SubprocessSandbox:
         run_as: tuple[int, int] | _Auto | None = _AUTO,
         allow_same_uid: bool = False,
         require_network_denial: bool = False,
+        seatbelt: bool | None = None,
     ) -> None:
         """Build an adapter. No process is spawned until ``run()`` is called.
 
@@ -289,14 +347,15 @@ class SubprocessSandbox:
                 parent's ``environ`` got the worker's variables back.
             require_network_denial: fail an execution whose ``network=False``
                 could not actually be enforced, rather than running it with
-                whatever access the process already had.
-                ``unshare(CLONE_NEWNET)`` needs ``CAP_NET_ADMIN``, which an
-                unprivileged worker does not have, and the child reports
-                honestly that denial did not hold -- but nothing read that
-                report, so "no network" silently meant "full network". Off by
-                default because turning it on makes every unprivileged
-                deployment's ``run_code`` fail; on is right wherever the
-                denial is being relied on.
+                whatever access the process already had. Off by default
+                because turning it on makes every unprivileged deployment's
+                ``run_code`` fail on a host without user namespaces; on is
+                right wherever the denial is being relied on. An execution
+                requesting ``IsolationLevel.ISOLATED`` is always refused
+                here regardless, since this backend cannot reach it.
+            seatbelt: macOS only. ``None`` probes for ``sandbox-exec`` and
+                uses it when the probe passes; ``True`` requires it (setup
+                fails otherwise); ``False`` never uses it. Ignored elsewhere.
 
         Raises:
             SandboxSetupError: the child would run as the worker's own uid and
@@ -310,14 +369,12 @@ class SubprocessSandbox:
             # Refused here rather than at run(): every mechanism this adapter
             # confines the child with -- setrlimit, start_new_session,
             # os.killpg -- is POSIX-only, so there is no degraded mode worth
-            # offering. A sandbox that silently stopped bounding CPU, memory
-            # and process count would be worse than no sandbox, because
-            # DESIGN.md §18 lets callers run untrusted programs on the
-            # strength of it.
+            # offering. Windows has its own adapter with its own mechanisms.
             raise SandboxSetupError(
                 "SubprocessSandbox requires a POSIX host: it confines the child with "
                 "setrlimit, start_new_session and os.killpg, none of which exist on "
-                "Windows. Use the container backend, or run on Linux."
+                "Windows. Use psych_runtime.sandbox.windows.WindowsJobSandbox, or "
+                "psych_runtime.sandbox.local.local_sandbox() to pick the right one."
             )
         resolved = python_bin or sys.executable
         if not Path(resolved).is_absolute():
@@ -351,6 +408,77 @@ class SubprocessSandbox:
                 "Pass allow_same_uid=True only for a host where the worker holds nothing "
                 "worth reading, such as a test."
             )
+        self._seatbelt_bin: str | None = None
+        self._seatbelt_note: str | None = None
+        if sys.platform == "darwin" and seatbelt is not False:
+            self._seatbelt_bin = _probe_seatbelt(self._python_bin)
+            if self._seatbelt_bin is None:
+                if seatbelt:
+                    raise SandboxSetupError(
+                        "seatbelt=True but sandbox-exec is not usable on this host: the "
+                        "probe under a generated profile did not run"
+                    )
+                self._seatbelt_note = (
+                    "sandbox-exec is not usable here, so no filesystem or network "
+                    "restriction applies on macOS"
+                )
+
+    # -- capability report ----------------------------------------------------
+
+    async def describe(self) -> SandboxDescription:
+        """What this backend can promise here, from a probe execution.
+
+        Runs ``return 0`` under the smallest limits and reads the child's
+        own ``ready`` frame, so ``network`` and ``filesystem`` are observed
+        rather than predicted. A probe that cannot spawn is ``ready=False``
+        with the reason.
+        """
+        problems: list[str] = []
+        notes: list[str] = []
+        if self._seatbelt_note:
+            notes.append(self._seatbelt_note)
+        if self._run_as is None:
+            notes.append(
+                "the program runs as the worker's own account; RLIMIT_NPROC is shared "
+                "with everything else running as it"
+            )
+        try:
+            probe = await self.run("return 0", limits=_PROBE_LIMITS)
+        except SandboxSetupError as err:
+            probe = None
+            problems.append(str(err))
+        if probe is not None and probe.failure is not None:
+            problems.append(f"the probe program failed: {probe.failure.message}")
+        guarantees = probe.guarantees if probe is not None else self._predicted_guarantees()
+        mechanisms = ["rlimit", "setsid", "scrubbed_env"]
+        if guarantees.network is Enforcement.ENFORCED and sys.platform == "linux":
+            mechanisms.append("netns")
+        if self._seatbelt_bin is not None:
+            mechanisms.append("seatbelt")
+        if self._run_as is not None:
+            mechanisms.append("setuid")
+        return SandboxDescription(
+            backend="subprocess",
+            platform=sys.platform,
+            isolation=achieved_level(guarantees, network_required=True),
+            guarantees=guarantees,
+            mechanisms=tuple(mechanisms),
+            network_grant_supported=True,
+            artifacts_supported=True,
+            ready=not problems,
+            problems=tuple(problems),
+            notes=tuple(notes),
+        )
+
+    def _predicted_guarantees(self) -> SandboxGuarantees:
+        return _grade(
+            ReadyFrame(network_denied=False, canary_readable=None, uid=None),
+            run_as=self._run_as,
+            network_granted=False,
+            seatbelt=self._seatbelt_bin is not None,
+        )
+
+    # -- one execution ---------------------------------------------------------
 
     async def run(
         self,
@@ -359,12 +487,20 @@ class SubprocessSandbox:
         bindings: Mapping[str, HostBinding] | None = None,
         limits: SandboxLimits | None = None,
         network: bool = False,
+        isolation: IsolationLevel | None = None,
+        capture: OutputCapture | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> SandboxResult:
         bound: dict[str, HostBinding] = dict(bindings or {})
         active_limits = limits or self._default_limits
+        active_capture = capture or DEFAULT_CAPTURE
         started = time.monotonic()
 
+        if cancel is not None and cancel.is_set():
+            return _cancelled_before_start(started)
+
         workdir = Path(tempfile.mkdtemp(prefix="psych-sandbox-"))
+        canary = Canary()
         try:
             if self._run_as is not None:
                 os.chown(workdir, *self._run_as)
@@ -374,17 +510,8 @@ class SubprocessSandbox:
             os.set_inheritable(child_sock.fileno(), True)
             child_fd = child_sock.fileno()
 
-            argv = [
-                self._python_bin,
-                "-I",
-                "-B",
-                "-u",
-                "-c",
-                BOOTSTRAP_SOURCE,
-                f"fd:{child_fd}",
-                *bound.keys(),
-            ]
-            env = self._build_env(workdir)
+            argv = self._argv(child_fd, bound, workdir=workdir, canary=canary, network=network)
+            env = self._build_env(workdir, canary)
             preexec = _make_preexec(active_limits, network=network, run_as=self._run_as)
 
             try:
@@ -423,48 +550,75 @@ class SubprocessSandbox:
                 child_sock.close()
 
             result = await _drive(
-                proc, parent_sock, program, bound, limits=active_limits, started=started
+                proc,
+                parent_sock,
+                program,
+                bound,
+                limits=active_limits,
+                capture=active_capture,
+                started=started,
+                cancel=cancel,
+                workdir=workdir,
+                run_as=self._run_as,
+                network=network,
+                seatbelt=self._seatbelt_bin is not None,
             )
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            canary.close()
+            remove_tree(workdir)
 
         if not network and self._require_network_denial and not result.network_denied:
-            # The child reported honestly that unshare(CLONE_NEWNET) did not
-            # hold, so this execution had whatever network access the worker
-            # has -- and nothing on the ordinary path reads that report, so
-            # "network=False" silently meant "network". A consumer who turned
-            # this on is relying on the denial, so the honest answer is a
-            # failed execution rather than a successful one that ran with
-            # access it was told it would not have.
+            # The child reported honestly that network denial did not hold,
+            # so this execution had whatever network access the worker has. A
+            # consumer who turned this on is relying on the denial, so the
+            # honest answer is a failed execution rather than a successful one
+            # that ran with access it was told it would not have.
             return result.model_copy(
                 update={
                     "value": None,
-                    # The plain reason, not model-facing guidance: `psych_runtime.tools.code`
-                    # is where a SandboxFailure becomes text for the model, and it
-                    # applies `sandbox_failure_guidance` itself. This layer may not
-                    # import that module anyway (psych_runtime.sandbox sits below
-                    # psych_runtime.tools; import-linter enforces it).
                     "failure": SandboxFailure(
                         kind="setup",
                         message=(
-                            "network access could not be denied for this execution: "
-                            "unshare(CLONE_NEWNET) needs CAP_NET_ADMIN, which this worker "
-                            "does not have. The program's result was withheld rather than "
-                            "returned from an execution that had network access it was "
-                            "configured not to have."
+                            "network access could not be denied for this execution: no "
+                            "network namespace could be created for the child on this "
+                            "host. The program's result was withheld rather than returned "
+                            "from an execution that had network access it was configured "
+                            "not to have."
                         ),
                     ),
                 }
             )
-        return result
+        return withhold_if_weaker(result, isolation, backend="subprocess")
 
-    def _build_env(self, workdir: Path) -> dict[str, str]:
+    def _argv(
+        self,
+        child_fd: int,
+        bound: Mapping[str, HostBinding],
+        *,
+        workdir: Path,
+        canary: Canary,
+        network: bool,
+    ) -> list[str]:
+        python = [self._python_bin, "-I", "-B", "-u", "-c", BOOTSTRAP_SOURCE, f"fd:{child_fd}"]
+        python.extend(bound.keys())
+        if self._seatbelt_bin is None:
+            return python
+        profile = _seatbelt_profile(workdir, canary.path.parent, network=network)
+        return [self._seatbelt_bin, "-p", profile, *python]
+
+    def _build_env(self, workdir: Path, canary: Canary) -> dict[str, str]:
         env = dict(self._env_allowlist)
         env["HOME"] = str(workdir)
         env["TMPDIR"] = str(workdir)
         env.setdefault("PATH", "/usr/bin:/bin")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env[CANARY_ENV] = str(canary.path)
         return env
+
+
+# ---------------------------------------------------------------------------
+# The child's own confinement, applied between fork and exec
+# ---------------------------------------------------------------------------
 
 
 def _make_preexec(
@@ -497,8 +651,7 @@ def _make_preexec(
         os.umask(0o077)
 
         if not network and sys.platform == "linux" and hasattr(os, "unshare"):
-            with contextlib.suppress(OSError, AttributeError):
-                os.unshare(os.CLONE_NEWNET)
+            _try_network_namespace()
 
         if run_as is not None:
             uid, gid = run_as
@@ -507,6 +660,16 @@ def _make_preexec(
             os.setuid(uid)
 
     return _preexec
+
+
+def _try_network_namespace() -> None:
+    """A fresh network namespace, as root or through an unprivileged user
+    namespace. Failure is silent here; the child's own probe reports it."""
+    try:
+        os.unshare(os.CLONE_NEWNET)
+    except OSError:
+        with contextlib.suppress(OSError, AttributeError):
+            os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNET)
 
 
 def _clamp_rlimit(which: int, soft: int, hard: int) -> None:
@@ -533,6 +696,94 @@ def _min_allowing_infinity(a: int, b: int) -> int:
     return min(a, b)
 
 
+# ---------------------------------------------------------------------------
+# macOS seatbelt
+# ---------------------------------------------------------------------------
+
+
+def _sbpl_string(path: Path) -> str:
+    return '"' + str(path).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _seatbelt_profile(workdir: Path, canary_dir: Path, *, network: bool) -> str:
+    """A deny-by-default profile that still lets CPython start.
+
+    Reads are allowed generally (the profile language cannot allow a subpath
+    without that), then home directories and the canary are denied; writes
+    are allowed only under the workspace and the system temporary roots;
+    network is denied unless granted. Real paths, because the sandbox
+    matches on the resolved path and ``/tmp`` is a link on macOS.
+    """
+    work = Path(os.path.realpath(workdir))
+    canary = Path(os.path.realpath(canary_dir))
+    lines = [
+        "(version 1)",
+        '(deny default (with message "psych-sandbox"))',
+        "(allow process-exec)",
+        "(allow process-fork)",
+        "(allow process-info* (target same-sandbox))",
+        "(allow signal (target same-sandbox))",
+        "(allow sysctl-read)",
+        "(allow mach-lookup)",
+        "(allow ipc-posix-shm)",
+        "(allow ipc-posix-sem)",
+        "(allow user-preference-read)",
+        '(allow file-ioctl (literal "/dev/null") (literal "/dev/zero") '
+        '(literal "/dev/random") (literal "/dev/urandom") (literal "/dev/tty"))',
+        '(allow file-write-data (literal "/dev/null") (literal "/dev/zero") '
+        '(literal "/dev/random") (literal "/dev/urandom") (literal "/dev/tty"))',
+        "(allow file-read*)",
+        '(deny file-read* (subpath "/Users"))',
+        '(deny file-read* (subpath "/private/var/root"))',
+        f"(deny file-read* (subpath {_sbpl_string(canary)}))",
+        f"(allow file-read* (subpath {_sbpl_string(work)}))",
+        f"(allow file-write* (subpath {_sbpl_string(work)}))",
+        '(allow file-write* (subpath "/private/tmp"))',
+        '(allow file-write* (subpath "/private/var/folders"))',
+        "(allow network*)" if network else '(deny network* (with message "psych-sandbox"))',
+    ]
+    return "\n".join(lines)
+
+
+def _probe_seatbelt(python_bin: str) -> str | None:
+    """``sandbox-exec``'s path if a generated profile runs a program under it."""
+    binary = shutil.which("sandbox-exec")
+    if binary is None:
+        return None
+    probe_dir = Path(tempfile.mkdtemp(prefix="psych-seatbelt-probe-"))
+    try:
+        profile = _seatbelt_profile(probe_dir, probe_dir / "canary", network=False)
+        try:
+            completed = subprocess.run(
+                [binary, "-p", profile, python_bin, "-I", "-c", "import os, socket, json"],
+                capture_output=True,
+                timeout=15,
+                check=False,
+                cwd=str(probe_dir),
+                env={"HOME": str(probe_dir), "TMPDIR": str(probe_dir), "PATH": "/usr/bin:/bin"},
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return binary if completed.returncode == 0 else None
+    finally:
+        remove_tree(probe_dir)
+
+
+# ---------------------------------------------------------------------------
+# Driving one execution to a result
+# ---------------------------------------------------------------------------
+
+
+def _cancelled_before_start(started: float) -> SandboxResult:
+    return SandboxResult(
+        duration_seconds=time.monotonic() - started,
+        failure=SandboxFailure(
+            kind="cancelled", message="the execution was cancelled before the program started"
+        ),
+        cancelled=True,
+    )
+
+
 async def _drive(
     proc: asyncio.subprocess.Process,
     parent_sock: socket.socket,
@@ -540,109 +791,161 @@ async def _drive(
     bindings: Mapping[str, HostBinding],
     *,
     limits: SandboxLimits,
+    capture: OutputCapture,
     started: float,
+    cancel: asyncio.Event | None,
+    workdir: Path,
+    run_as: tuple[int, int] | None,
+    network: bool,
+    seatbelt: bool,
 ) -> SandboxResult:
     """Run the protocol conversation, enforce the wall clock, and tear down.
 
     Teardown (killing the whole process group) always runs before this
     returns, whatever happened during the conversation: a clean ``done``
-    frame, a protocol violation, or a timeout. See the module docstring's
+    frame, a protocol violation, a timeout, a cancellation, or this task
+    itself being cancelled from outside. See the module docstring's
     "Teardown" section for why this must not be conditional on failure.
     """
     reader, writer = await asyncio.open_connection(sock=parent_sock)
-    stdout_task = asyncio.ensure_future(_read_capped(proc.stdout))
-    stderr_task = asyncio.ensure_future(_read_capped(proc.stderr))
-
-    timed_out = False
-    protocol_error: SandboxProtocolError | None = None
-    network_denied = False
-    done: DoneFrame | None = None
+    stdout_task = asyncio.ensure_future(read_capped(proc.stdout, capture.stream_bytes))
+    stderr_task = asyncio.ensure_future(read_capped(proc.stderr, capture.stream_bytes))
 
     try:
-        network_denied, done = await asyncio.wait_for(
-            run_protocol(reader, writer, program, bindings), timeout=limits.wall_seconds
+        talk = await converse(
+            reader, writer, program, bindings, wall_seconds=limits.wall_seconds, cancel=cancel
         )
-    except TimeoutError:
-        timed_out = True
-    except SandboxProtocolError as err:
-        protocol_error = err
+    except asyncio.CancelledError:
+        # The caller's task was cancelled (a Worker shutting down, an abort).
+        # Nothing from the child may outlive that either.
+        await _terminate_process_group(proc)
+        raise
+    finally:
+        await _terminate_process_group(proc)
 
-    await _terminate_process_group(proc)
+    stdout = await bounded(stdout_task)
+    stderr = await bounded(stderr_task)
+    await _close_channel(writer, parent_sock)
+    returncode = await proc.wait()
 
-    stdout_text, stdout_truncated = await _bounded(stdout_task)
-    stderr_text, stderr_truncated = await _bounded(stderr_task)
-    # Closing the writer starts the transport teardown but does not finish it,
-    # and the socketpair's parent half stays open until it does. Under
-    # filterwarnings=error an unclosed socket is a test failure rather than a
-    # quiet leak, which is how this was found; in production it is a file
-    # descriptor lost per execution, which is worse.
+    failure, limit_hit = _classify(
+        returncode=returncode,
+        done=talk.done,
+        protocol_error=talk.protocol_error,
+        timed_out=talk.timed_out,
+        cancelled=talk.cancelled,
+        wall_seconds=limits.wall_seconds,
+    )
+    value = talk.done.value if (talk.done is not None and failure is None) else None
+    artifacts, omitted = collect_artifacts(workdir, capture) if failure is None else ((), 0)
+
+    observed = talk.ready if talk.ready is not None else ReadyFrame(network_denied=False)
+    guarantees = _grade(observed, run_as=run_as, network_granted=network, seatbelt=seatbelt)
+    return _result(
+        stdout,
+        stderr,
+        value=value,
+        failure=failure,
+        started=started,
+        limit_hit=limit_hit,
+        guarantees=guarantees,
+        network_denied=observed.network_denied,
+        network_granted=network,
+        artifacts=artifacts,
+        artifacts_omitted=omitted,
+        cancelled=talk.cancelled,
+    )
+
+
+async def _close_channel(writer: asyncio.StreamWriter, parent_sock: socket.socket) -> None:
+    """Close the protocol channel completely.
+
+    Closing the writer starts the transport teardown but does not finish it,
+    and the socketpair's parent half stays open until it does. Under
+    ``filterwarnings=error`` an unclosed socket is a test failure rather than
+    a quiet leak, which is how this was found; in production it is a file
+    descriptor lost per execution, which is worse.
+    """
     with contextlib.suppress(OSError):
         writer.close()
     with contextlib.suppress(OSError, ConnectionError):
         await writer.wait_closed()
     with contextlib.suppress(OSError):
         parent_sock.close()
-    returncode = await proc.wait()
 
-    failure, limit_hit = _classify(
-        returncode=returncode,
-        done=done,
-        protocol_error=protocol_error,
-        timed_out=timed_out,
-        wall_seconds=limits.wall_seconds,
-    )
-    value = done.value if (done is not None and failure is None) else None
 
+def _result(
+    stdout: Captured,
+    stderr: Captured,
+    *,
+    value: object,
+    failure: SandboxFailure | None,
+    started: float,
+    limit_hit: SandboxLimit | None,
+    guarantees: SandboxGuarantees,
+    network_denied: bool,
+    network_granted: bool,
+    artifacts: tuple[object, ...],
+    artifacts_omitted: int,
+    cancelled: bool,
+) -> SandboxResult:
     return SandboxResult(
-        stdout=stdout_text,
-        stderr=stderr_text,
+        stdout=stdout.data.decode("utf-8", errors="replace"),
+        stderr=stderr.data.decode("utf-8", errors="replace"),
         value=value,
         failure=failure,
         duration_seconds=time.monotonic() - started,
         limit_hit=limit_hit,
-        network_denied=network_denied,
-        stdout_truncated=stdout_truncated,
-        stderr_truncated=stderr_truncated,
+        network_denied=network_denied and not network_granted,
+        stdout_truncated=stdout.truncated,
+        stderr_truncated=stderr.truncated,
+        stdout_data=stdout.data,
+        stderr_data=stderr.data,
+        stdout_size=stdout.observed,
+        stderr_size=stderr.observed,
+        isolation=achieved_level(guarantees, network_required=not network_granted),
+        guarantees=guarantees,
+        artifacts=artifacts,  # type: ignore[arg-type]
+        artifacts_omitted=artifacts_omitted,
+        cancelled=cancelled,
     )
 
 
-async def _read_capped(stream: asyncio.StreamReader | None) -> tuple[str, bool]:
-    if stream is None:
-        return "", False
-    chunks: list[bytes] = []
-    total = 0
-    truncated = False
-    while True:
-        chunk = await stream.read(65536)
-        if not chunk:
-            break
-        if total >= _MAX_CAPTURED_BYTES:
-            truncated = True
-            continue
-        keep = chunk[: _MAX_CAPTURED_BYTES - total]
-        chunks.append(keep)
-        total += len(keep)
-        if len(keep) < len(chunk):
-            truncated = True
-    return b"".join(chunks).decode("utf-8", errors="replace"), truncated
-
-
-async def _bounded(task: asyncio.Future[tuple[str, bool]]) -> tuple[str, bool]:
-    """Wait for a reader task, bounded, after the process group is already dead.
-
-    A fallback, not the normal path: once ``_terminate_process_group`` has
-    run, every holder of the stdout/stderr pipes is dead, so these should
-    resolve almost immediately. Bounded anyway in case teardown itself could
-    not reach something (a process this account has no permission to
-    signal, in a misconfigured deployment).
-    """
-    try:
-        return await asyncio.wait_for(task, timeout=_GRACE_SECONDS)
-    except TimeoutError:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        return "", True
+def _grade(
+    ready: ReadyFrame, *, run_as: tuple[int, int] | None, network_granted: bool, seatbelt: bool
+) -> SandboxGuarantees:
+    """What this execution's guarantees were worth, from what the child saw."""
+    enforced, unavailable, unverified = (
+        Enforcement.ENFORCED,
+        Enforcement.UNAVAILABLE,
+        Enforcement.UNVERIFIED,
+    )
+    network = unavailable
+    if not network_granted and ready.network_denied:
+        network = enforced
+    if ready.canary_readable is None:
+        filesystem = unverified if seatbelt else unavailable
+    else:
+        filesystem = unavailable if ready.canary_readable else enforced
+    if run_as is None:
+        identity = unavailable
+    elif ready.uid is None:
+        identity = unverified
+    else:
+        identity = enforced if ready.uid == run_as[0] else unavailable
+    child_is_root = ready.uid == 0 or (ready.uid is None and run_as is None and os.geteuid() == 0)
+    return SandboxGuarantees(
+        filesystem=filesystem,
+        network=network,
+        process_tree=enforced,
+        identity=identity,
+        cpu=enforced,
+        memory=enforced if sys.platform == "linux" else unavailable,
+        file_size=enforced,
+        process_count=unavailable if child_is_root else enforced,
+        wall_clock=enforced,
+        environment=enforced,
+    )
 
 
 async def _terminate_process_group(proc: asyncio.subprocess.Process) -> None:
@@ -676,9 +979,18 @@ def _classify(
     done: DoneFrame | None,
     protocol_error: SandboxProtocolError | None,
     timed_out: bool,
+    cancelled: bool,
     wall_seconds: float,
 ) -> tuple[SandboxFailure | None, SandboxLimit | None]:
     """Turn what happened into a failure (or none) and which limit, if any."""
+    if cancelled:
+        return (
+            SandboxFailure(
+                kind="cancelled",
+                message="the execution was cancelled and its process tree was ended",
+            ),
+            None,
+        )
     if timed_out:
         return (
             SandboxFailure(
@@ -689,20 +1001,7 @@ def _classify(
         )
 
     if done is not None:
-        if done.error_kind is None:
-            return None, None
-        limit = None
-        if done.resource_limit is not None:
-            with contextlib.suppress(ValueError):
-                limit = SandboxLimit(done.resource_limit)
-        return (
-            SandboxFailure(
-                kind=done.error_kind,
-                message=done.error_message or "the program failed",
-                traceback=done.error_traceback,
-            ),
-            limit,
-        )
+        return classify_done(done)
 
     if returncode is not None and returncode < 0:
         return _classify_signal(-returncode)

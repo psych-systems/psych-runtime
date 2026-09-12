@@ -16,6 +16,7 @@ import { MemorySection } from "@/components/settings/memory-section";
 import { ModelAccessSection } from "@/components/settings/model-access-section";
 import { PricingSection } from "@/components/settings/pricing-section";
 import { RuntimeSection } from "@/components/settings/runtime-section";
+import { SandboxSection } from "@/components/settings/sandbox-section";
 import { listModels } from "@/lib/api";
 import { SecretsSection } from "@/components/settings/secrets-section";
 import { SkillLibrarySection } from "@/components/settings/skill-library-section";
@@ -45,6 +46,7 @@ export default function SettingsPage() {
     savePrices,
     saveSkills,
     saveRuntime,
+    checkSandbox,
   } = useSettings();
 
   // For the rate rows' model picker. Best-effort: a provider that will not
@@ -126,6 +128,15 @@ export default function SettingsPage() {
             <Separator />
 
             <RuntimeSection runtime={settings.runtime} onSave={saveRuntime} />
+
+            <Separator />
+
+            <SandboxSection
+              runtime={settings.runtime}
+              secrets={settings.secrets}
+              onSave={saveRuntime}
+              onCheck={checkSandbox}
+            />
 
             <Separator />
 

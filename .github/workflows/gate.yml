@@ -311,6 +311,62 @@ jobs:
           time docker version --format '{{.Server.Version}}' || true
           time docker ps -q >/dev/null || true
 
+  sandbox-platforms:
+    # The local backend is different code on each platform -- a bubblewrap
+    # namespace, a seatbelt profile, a Job Object -- and each claims a
+    # different set of guarantees. A suite that only ran here would be three
+    # untested implementations and one tested one, so the shared contract runs
+    # on all three and each reports its own skips. A skipped case is not
+    # evidence of support, which is why these are not folded into `sandbox`:
+    # that job pulls an image and exercises Linux and containers specifically,
+    # and its result would hide a Windows regression behind a green Linux run.
+    name: sandbox (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --group dev
+      # Nothing is installed implicitly at run time, so the one backend that
+      # needs a helper gets it here, where provisioning belongs. Linux only:
+      # there is no bubblewrap on the other two, and pretending otherwise
+      # would turn an honest "this host reaches process, not isolated" into a
+      # skip.
+      - name: the helper NamespaceSandbox needs
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # What this host can actually offer, printed before anything runs, so a
+      # skip further down can be read against it rather than guessed at.
+      - name: what this host can offer
+        run: uv run python -c "from psych_runtime.sandbox.local import detect_local_backends; [print(b) for b in detect_local_backends()]"
+      - run: uv run pytest tests/functional/test_sandbox_local.py tests/functional/test_sandbox_remote.py -v --timeout=120
+        env:
+          PYTHONUNBUFFERED: "1"
+      - name: the Windows backend
+        if: matrix.os == 'windows-latest'
+        run: uv run pytest tests/functional/test_sandbox_windows.py -v --timeout=120
+        env:
+          PYTHONUNBUFFERED: "1"
+      - name: the POSIX backend
+        if: matrix.os != 'windows-latest'
+        run: uv run pytest tests/functional/test_sandbox_subprocess.py -v --timeout=120
+        env:
+          PYTHONUNBUFFERED: "1"
+      # The whole point of the configuration is that an agent can be given
+      # code execution and have it work, so the end-to-end case runs on every
+      # platform too rather than only where the gate happens to be cheapest.
+      - run: uv run pytest tests/e2e/test_code_execution.py -v --timeout=180
+        env:
+          PYTHONUNBUFFERED: "1"
+
   e2e:
     name: e2e (dispatch to report)
     runs-on: ubuntu-latest
@@ -475,7 +531,8 @@ jobs:
     name: gate
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    needs: [lint, docs, benchmarks, unit, functional, stores, stores-mysql, sandbox, e2e, console, image]
+    needs: [lint, docs, benchmarks, unit, functional, stores, stores-mysql, sandbox,
+            sandbox-platforms, e2e, console, image]
     if: always()
     steps:
       - name: every job must be green
@@ -483,6 +540,7 @@ jobs:
           echo "lint=${{ needs.lint.result }} docs=${{ needs.docs.result }} benchmarks=${{ needs.benchmarks.result }}"
           echo "unit=${{ needs.unit.result }}"
           echo "functional=${{ needs.functional.result }} sandbox=${{ needs.sandbox.result }}"
+          echo "sandbox-platforms=${{ needs['sandbox-platforms'].result }}"
           echo "stores=${{ needs.stores.result }} stores-mysql=${{ needs['stores-mysql'].result }}"
           echo "e2e=${{ needs.e2e.result }} image=${{ needs.image.result }}"
           [ "${{ needs.lint.result }}" = "success" ] || exit 1
@@ -493,6 +551,7 @@ jobs:
           [ "${{ needs.stores.result }}" = "success" ] || exit 1
           [ "${{ needs['stores-mysql'].result }}" = "success" ] || exit 1
           [ "${{ needs.sandbox.result }}" = "success" ] || exit 1
+          [ "${{ needs['sandbox-platforms'].result }}" = "success" ] || exit 1
           [ "${{ needs.e2e.result }}" = "success" ] || exit 1
           [ "${{ needs.image.result }}" = "success" ] || exit 1
           [ "${{ needs.console.result }}" = "success" ] || exit 1

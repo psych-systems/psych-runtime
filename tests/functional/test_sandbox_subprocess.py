@@ -26,7 +26,13 @@ from psych_runtime.sandbox.contract import SandboxContractSuite
 from psych_runtime.sandbox.port import Sandbox, SandboxLimit, SandboxLimits, SandboxSetupError
 from psych_runtime.sandbox.subprocess import SubprocessSandbox
 
-pytestmark = pytest.mark.functional
+pytestmark = [
+    pytest.mark.functional,
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the POSIX subprocess backend; test_sandbox_windows.py covers Windows",
+    ),
+]
 
 _FAST_LIMITS = SandboxLimits(
     cpu_seconds=3.0,

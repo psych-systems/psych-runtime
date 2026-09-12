@@ -21,6 +21,7 @@ from psych_runtime.core.components import Component
 from psych_runtime.core.ids import AttemptId, RunId, StepId, ToolCallId, VersionHash
 from psych_runtime.core.records import (
     ModelTimings,
+    ResultAttachment,
     SuspendReason,
     TerminalState,
     ToolFailure,
@@ -121,6 +122,10 @@ class ToolCallReport(BaseModel):
     result_handle: str | None
     preview: str | None
     result_bytes: int
+    attachments: tuple[ResultAttachment, ...] = ()
+    """Named streams and files recorded beside ``result`` (a ``run_code``
+    call's stdout, stderr, returned value and workspace files). Reported with
+    their sizes, storage and handles, never with a host path."""
     started_at: datetime
     finished_at: datetime | None
     interruptible: bool

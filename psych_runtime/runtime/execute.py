@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, runtime_checkable
 
@@ -41,7 +42,15 @@ from psych_runtime.runtime.notify import notify_parent
 from psych_runtime.runtime.subagent import SpawnRequest, child_input, compose_child_spec
 from psych_runtime.runtime.thread import load_thread_history
 from psych_runtime.runtime.workflow import WorkflowEngine
-from psych_runtime.sandbox.port import Sandbox
+from psych_runtime.sandbox.port import Sandbox, SandboxDescription
+from psych_runtime.sandbox.profiles import (
+    DEFAULT_PROFILE,
+    CodeExecutionPolicy,
+    ExecutionRefusal,
+    SandboxProfile,
+    SandboxProfiles,
+    resolve_execution,
+)
 from psych_runtime.store.blob import BlobStore
 from psych_runtime.store.port import RunHeader, RunState, Store
 from psych_runtime.telemetry.port import (
@@ -78,6 +87,27 @@ class StepFailed(Exception):
     def __init__(self, failure: ToolFailure) -> None:
         self.failure = failure
         super().__init__(failure.message)
+
+
+def _accepts_execution_options(sandbox: object) -> bool:
+    """Whether ``sandbox.run`` takes the options the port grew after v0.1.
+
+    A backend written against the three-option port is called with those
+    three and nothing else, so it keeps working unchanged; one that takes
+    ``isolation``, ``capture`` and ``cancel`` gets all of them. Decided from
+    the signature rather than by trying and catching ``TypeError``, which
+    would also catch a genuine error inside the backend.
+    """
+    run = getattr(sandbox, "run", None)
+    if run is None:
+        return False
+    try:
+        parameters = inspect.signature(run).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return True
+    return {"isolation", "capture", "cancel"} <= set(parameters)
 
 
 @runtime_checkable
@@ -146,8 +176,23 @@ class Runtime:
     approval_selectors: Sequence[str] = field(default_factory=tuple)
     telemetry: Telemetry | None = None
     sandbox: Sandbox | None = None
-    """Where a model-written program runs. Absent means no ``run_code``, which
-    is right: offering a tool that can only fail is worse than not offering it."""
+    """Where a model-written program runs when a Spec names no other profile.
+
+    Registered as the ``"default"`` sandbox profile. An agent is offered
+    ``run_code`` only when its Spec carries an enabled ``code_execution``
+    (DESIGN.md §18): wiring a sandbox here makes execution *possible*, and
+    the Spec is what makes it *granted*. Absent, and with no ``sandboxes``, no
+    agent can run code, which is right: offering a tool that can only fail is
+    worse than not offering it."""
+    sandboxes: SandboxProfiles | Sequence[SandboxProfile] | None = None
+    """Every logical sandbox this deployment resolves, by name
+    (``psych_runtime.sandbox.profiles``). A Spec's ``code_execution.profile``
+    names one of these. ``sandbox`` above is folded in as ``"default"``;
+    naming a profile ``"default"`` here as well is a configuration error."""
+    code_execution_policy: CodeExecutionPolicy | None = None
+    """An optional per-tenant narrowing of code execution: limits, network,
+    bindings, the required isolation level. Whatever it returns is
+    intersected with the grant it was given, so it can only take away."""
     memory: MemoryPort | None = None
     end_user_id: str | None = None
     """Whose durable facts a Run may read and write. Required when ``memory`` is
@@ -215,6 +260,7 @@ class Runtime:
 
     _resolver: ToolResolver = field(init=False, repr=False)
     _executor: ToolExecutor = field(init=False, repr=False)
+    _profiles: SandboxProfiles = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         # The public fields are optional so a consumer can pass nothing and get
@@ -227,6 +273,28 @@ class Runtime:
             catalogue_budget_chars=self.catalogue_budget_chars,
         )
         self._executor = self.executor or ToolExecutor(self.registry)
+        if isinstance(self.sandboxes, SandboxProfiles):
+            self._profiles = self.sandboxes
+        else:
+            self._profiles = SandboxProfiles(self.sandboxes or ())
+        if self.sandbox is not None:
+            self._profiles.add(SandboxProfile(name=DEFAULT_PROFILE, sandbox=self.sandbox))
+
+    @property
+    def sandbox_profiles(self) -> frozenset[str]:
+        """The profile names this Runtime resolves, for
+        ``ValidationContext(sandbox_profiles=...)``."""
+        return self._profiles.names
+
+    async def verify_sandboxes(self) -> Mapping[str, SandboxDescription]:
+        """Ask every sandbox profile what it can do, and cache the answers.
+
+        Call at startup, before the first Run: a profile that cannot reach the
+        isolation its agents require is then a startup finding rather than a
+        structured failure on a customer's first ``run_code`` call. Nothing
+        here runs a model's program.
+        """
+        return await self._profiles.verify()
 
     async def __call__(self, journal: Journal, header: RunHeader, abort: AbortSignal) -> None:
         """Run one Attempt to a terminal record. The ``AttemptRunner`` signature.
@@ -482,22 +550,76 @@ class Runtime:
             history=history,
             abort=abort,
         )
-        if self.sandbox is not None:
-            granted = [tool.name for tool in spec.tools]
+        if spec.code_execution is not None and spec.code_execution.enabled:
+            await self._offer_run_code(loop, spec, journal, abort)
+        return loop
+
+    async def _offer_run_code(
+        self, loop: AgentLoop, spec: AgentSpec, journal: Journal, abort: AbortSignal | None
+    ) -> None:
+        """Resolve the Spec's request against the deployment and offer the tool.
+
+        The intersection of what the backend provides, what the deployment
+        allows, what the tenant's policy allows and what the Spec asked for is
+        computed once per Attempt here (``psych_runtime.sandbox.profiles``). A
+        request the profile cannot meet is still offered as ``run_code``, but
+        every call returns the refusal as data: the agent keeps its other
+        tools and the report shows exactly why no program ran, rather than
+        the Run failing or the tool silently vanishing.
+
+        Raises:
+            SandboxSetupError: the Spec names a profile this Runtime does not
+                have. A configuration error, not something a Run can route
+                around, and one publish-time validation catches when it is
+                given ``ValidationContext(sandbox_profiles=...)``.
+        """
+        config = spec.code_execution
+        assert config is not None  # checked by the caller
+        granted = [tool.name for tool in spec.tools]
+        resolved = await resolve_execution(
+            config,
+            granted,
+            self._profiles,
+            scope=journal.scope,
+            policy=self.code_execution_policy,
+        )
+        if isinstance(resolved, ExecutionRefusal):
             loop.offer_run_code(
-                run_code_definition(granted),
+                run_code_definition(granted, preview_bytes_budget=config.output.preview_bytes),
                 make_run_code(
-                    self.sandbox,
-                    # A binding routes back through the loop, not the executor:
-                    # that is what makes Policy, the approval selectors, the
-                    # repetition and failure-streak guards and the record log
-                    # apply to a call a program makes exactly as they apply to
-                    # one the model makes directly. §18: no back door.
-                    host_call=loop.call_as_binding,
-                    binding_names=granted,
+                    None,
+                    refusal=(resolved.kind, resolved.message),
+                    preserve=config.output.preserve,
                 ),
             )
-        return loop
+            return
+        sandbox = resolved.profile.sandbox
+        loop.offer_run_code(
+            run_code_definition(
+                resolved.bindings,
+                network=resolved.network,
+                preview_bytes_budget=config.output.preview_bytes,
+                wall_seconds=resolved.limits.wall_seconds,
+            ),
+            make_run_code(
+                sandbox,
+                # A binding routes back through the loop, not the executor:
+                # that is what makes Policy, the approval selectors, the
+                # repetition and failure-streak guards and the record log
+                # apply to a call a program makes exactly as they apply to
+                # one the model makes directly. §18: no back door.
+                host_call=loop.call_as_binding,
+                binding_names=resolved.bindings,
+                limits=resolved.limits,
+                network=resolved.network,
+                isolation=resolved.isolation,
+                capture=resolved.capture,
+                preview_bytes_budget=config.output.preview_bytes,
+                preserve=config.output.preserve,
+                cancel=abort,
+                legacy_signature=not _accepts_execution_options(sandbox),
+            ),
+        )
 
     def _end_user_id(self, journal: Journal) -> str | None:
         """Whose durable facts this Run may read and write.

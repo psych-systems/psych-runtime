@@ -46,6 +46,10 @@ export type TraceEntryStatus =
 
 interface TraceEntryBase {
   key: string;
+  /** The Run this entry belongs to. Stamped by `entriesOf`, so a detail
+   *  panel can fetch something the report only names, such as a program's
+   *  recorded output by handle. */
+  runId?: string;
   turn: number | null;
   stepId: string | null;
   label: string;
@@ -363,7 +367,11 @@ function buildStepEntry(step: StepReport, index: number, report: RunReport, t0: 
  * same picture.
  */
 function entriesOf(report: RunReport, t0: number, keyPrefix: string): TraceEntry[] {
-  const prefixed = (entry: TraceEntry): TraceEntry => ({ ...entry, key: keyPrefix + entry.key });
+  const prefixed = (entry: TraceEntry): TraceEntry => ({
+    ...entry,
+    key: keyPrefix + entry.key,
+    runId: report.run_id,
+  });
   return [
     ...report.model_calls.map((call, i) =>
       prefixed(buildModelEntry(call, i === 0 ? null : report.model_calls[i - 1], i, t0))
@@ -446,6 +454,7 @@ export function buildThreadTraceModel(
     entries.push({
       kind: "message",
       key: `message:${runId}`,
+      runId,
       turn: null,
       stepId: null,
       label: `Message ${index + 1}`,

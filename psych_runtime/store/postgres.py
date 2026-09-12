@@ -366,6 +366,18 @@ class PostgresStore:
             state.value,
         )
 
+    async def settle_inline(self, run_id: RunId) -> bool:
+        pool = await self._get_pool()
+        # The state is the whole condition: a NESTED Run has no lease and no
+        # competing writer, and every other state is left alone by the WHERE
+        # rather than by a check the caller could skip.
+        row = await pool.fetchrow(
+            "UPDATE psych_runs SET state = 'settled' "
+            "WHERE run_id = $1 AND state = 'nested' RETURNING run_id",
+            run_id,
+        )
+        return row is not None
+
     async def set_runnable_at(self, run_id: RunId, runnable_at: datetime | None) -> None:
         pool = await self._get_pool()
         row = await pool.fetchrow(

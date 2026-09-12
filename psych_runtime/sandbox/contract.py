@@ -497,6 +497,39 @@ class SandboxContractSuite:
         assert result.value is None
         assert "secret" not in result.stdout
 
+    async def test_a_request_above_the_backends_level_never_runs_the_program(
+        self, sandbox: Sandbox, description: SandboxDescription
+    ) -> None:
+        """The refusal has to come before the program, not after its output.
+
+        Withholding output proves nothing on its own: a program that ran has
+        already read what it could read and reached what it could reach, and
+        discarding what it printed does not undo any of it. A host binding is
+        the one side effect this suite can see from outside, so it is the
+        evidence -- if the binding was never called, the program was never
+        run.
+        """
+        called: list[str] = []
+
+        async def touched(arguments: Mapping[str, Any]) -> str:
+            called.append(str(arguments))
+            return "ok"
+
+        result = await sandbox.run(
+            "await touched()\nreturn 'ran'",
+            bindings={"touched": touched},
+            limits=_TINY_LIMITS,
+            isolation=IsolationLevel.ISOLATED,
+        )
+        if description.isolation is IsolationLevel.ISOLATED:
+            assert result.ok, result.failure
+            assert len(called) == 1, called
+            return
+        assert not result.ok
+        assert result.failure is not None
+        assert result.failure.kind == "isolation_unavailable"
+        assert called == [], "the program ran before its isolation was checked"
+
     async def test_describe_is_ready_and_names_its_mechanisms(
         self, description: SandboxDescription
     ) -> None:

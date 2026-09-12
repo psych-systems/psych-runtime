@@ -131,6 +131,7 @@ from psych_runtime.sandbox._local import (
     DEFAULT_CAPTURE,
     Canary,
     Conversation,
+    admission,
     bounded,
     classify_done,
     collect_artifacts,
@@ -521,6 +522,7 @@ class ContainerSandbox:
                     workspace=workspace,
                     network=network,
                     run_as=self._run_as,
+                    isolation=isolation,
                 )
             finally:
                 await _close_listener(server, connected, accepted)
@@ -697,6 +699,7 @@ async def _drive(
     workspace: Path | None,
     network: bool,
     run_as: tuple[int, int],
+    isolation: IsolationLevel | None,
 ) -> SandboxResult:
     stdout_task = asyncio.ensure_future(read_capped(proc.stdout, capture.stream_bytes))
     stderr_task = asyncio.ensure_future(read_capped(proc.stderr, capture.stream_bytes))
@@ -715,7 +718,18 @@ async def _drive(
             )
         else:
             talk = await converse(
-                reader, writer, program, bindings, wall_seconds=limits.wall_seconds, cancel=cancel
+                reader,
+                writer,
+                program,
+                bindings,
+                wall_seconds=limits.wall_seconds,
+                cancel=cancel,
+                admit=admission(
+                    lambda ready: _grade(ready, network_granted=network, run_as=run_as),
+                    isolation,
+                    network_required=not network,
+                    backend="container",
+                ),
             )
     finally:
         # Also on this task being cancelled from outside: the container is

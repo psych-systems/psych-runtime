@@ -422,6 +422,132 @@ class StoreContractSuite:
         assert header.lease_holder is None
         assert header.lease_expires_at is None
 
+    async def test_settle_inline_settles_a_nested_run_nobody_holds(self, store: Store) -> None:
+        """The one settle with no lease behind it.
+
+        A NESTED Run is executed inline by the Attempt that dispatched it and
+        no Worker ever claims it, so ``release`` -- which matches on the lease
+        holder -- can never settle one. Without this operation the header stays
+        NESTED after the log says the Run finished.
+        """
+        run_id = new_run_id()
+        await store.create_run(_header(run_id, state=RunState.NESTED))
+
+        assert await store.settle_inline(run_id) is True
+
+        header = await store.get_run(run_id)
+        assert header is not None
+        assert header.state == RunState.SETTLED
+        assert header.lease_holder is None
+
+    async def test_settle_inline_is_idempotent(self, store: Store) -> None:
+        run_id = new_run_id()
+        await store.create_run(_header(run_id, state=RunState.NESTED))
+        assert await store.settle_inline(run_id) is True
+
+        # The second call is an unwinding parent that already settled this
+        # child, or a retry. It reports that it changed nothing.
+        assert await store.settle_inline(run_id) is False
+
+        header = await store.get_run(run_id)
+        assert header is not None
+        assert header.state == RunState.SETTLED
+
+    async def test_settle_inline_leaves_a_runnable_run_alone(self, store: Store) -> None:
+        """The state is the authorisation, so it has to be checked by the store.
+
+        A caller with a Run id and no lease may settle a NESTED Run because a
+        NESTED Run has no competing writer. A RUNNABLE one does, the moment a
+        Worker claims it.
+        """
+        run_id = new_run_id()
+        await store.create_run(_header(run_id))
+
+        assert await store.settle_inline(run_id) is False
+
+        header = await store.get_run(run_id)
+        assert header is not None
+        assert header.state == RunState.RUNNABLE
+
+    async def test_settle_inline_does_not_take_a_run_a_worker_is_holding(
+        self, store: Store
+    ) -> None:
+        run_id = new_run_id()
+        await store.create_run(_header(run_id))
+        holder = new_worker_id()
+        assert await store.claim(holder, datetime.now(UTC), _DEFAULT_LEASE_SECONDS) == run_id
+
+        assert await store.settle_inline(run_id) is False
+
+        header = await store.get_run(run_id)
+        assert header is not None
+        assert header.state == RunState.RUNNING
+        assert header.lease_holder == holder
+
+    async def test_settle_inline_does_not_resurrect_or_re_settle(self, store: Store) -> None:
+        run_id = new_run_id()
+        await store.create_run(_header(run_id))
+        holder = new_worker_id()
+        await store.claim(holder, datetime.now(UTC), _DEFAULT_LEASE_SECONDS)
+        await store.release(run_id, holder, RunState.SETTLED)
+
+        assert await store.settle_inline(run_id) is False
+
+        header = await store.get_run(run_id)
+        assert header is not None
+        assert header.state == RunState.SETTLED
+
+    async def test_settle_inline_changes_the_state_and_nothing_else(self, store: Store) -> None:
+        """It settles a Run; it does not rewrite one.
+
+        An adapter that implements this by reading the header and writing it
+        back whole reverts anything written between the two calls, and its
+        condition cannot catch that: a concurrent writer touching some other
+        attribute leaves the state ``NESTED`` and the condition still holds.
+        The parking written here stands in for that writer -- it is the one
+        unrelated field a NESTED Run can legitimately have changed from
+        outside -- and it has to survive.
+        """
+        run_id = new_run_id()
+        parked_at = datetime.now(UTC) + timedelta(hours=1)
+        await store.create_run(
+            _header(run_id, state=RunState.NESTED, idempotency_key="settle-inline-key")
+        )
+        await store.set_runnable_at(run_id, parked_at)
+        before = await store.get_run(run_id)
+        assert before is not None
+
+        assert await store.settle_inline(run_id) is True
+
+        after = await store.get_run(run_id)
+        assert after is not None
+        assert after.state == RunState.SETTLED
+        assert after.model_dump(exclude={"state"}) == before.model_dump(exclude={"state"})
+
+    async def test_settle_inline_on_an_unknown_run_is_false(self, store: Store) -> None:
+        assert await store.settle_inline(new_run_id()) is False
+
+    async def test_a_settled_inline_run_is_not_claimable_and_not_overdue(
+        self, store: Store
+    ) -> None:
+        """Settling has to reach the supervisor's queries, not just the header.
+
+        ``overdue_deadlines`` selects everything that is not SETTLED, so a Run
+        left NESTED for good becomes a supervision candidate the moment its
+        deadline passes and stays one for ever. That is the durable
+        inconsistency this operation removes.
+        """
+        run_id = new_run_id()
+        await store.create_run(_header(run_id, state=RunState.NESTED, deadline_seconds=-60))
+        now = datetime.now(UTC)
+        assert any(header.run_id == run_id for header in await store.overdue_deadlines(now))
+
+        assert await store.settle_inline(run_id) is True
+
+        assert await store.claim(new_worker_id(), now, _DEFAULT_LEASE_SECONDS) is None
+        assert all(header.run_id != run_id for header in await store.overdue_deadlines(now))
+        assert all(header.run_id != run_id for header in await store.expired_leases(now))
+
     async def test_release_is_tolerant_of_a_non_holder(self, store: Store) -> None:
         run_id = new_run_id()
         await store.create_run(_header(run_id))

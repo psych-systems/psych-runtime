@@ -62,7 +62,12 @@ __all__ = ["SandboxService", "ScriptedSandbox", "ServiceFault", "scripted_result
 ServiceFault = str
 """One of: ``reject_auth``, ``server_error``, ``disconnect_after_ready``,
 ``malformed_frame``, ``hang_after_ready``, ``slow_ready``, ``error_frame``,
-``weaker_isolation``."""
+``weaker_isolation``, ``giant_frame``.
+
+``weaker_isolation`` is the service that accepted terms it could not meet and
+said so only afterwards -- what the adapter's post-hoc check exists to catch.
+``giant_frame`` is the service that answers with more bytes than any limit it
+was sent."""
 
 
 def scripted_result(
@@ -315,6 +320,33 @@ class SandboxService:
         else:
             await _respond(writer, 404, {"error": "not found"})
 
+    async def _injected_fault(
+        self,
+        writer: asyncio.StreamWriter,
+        send: Callable[[Mapping[str, Any]], Any],
+        execution: _Execution,
+    ) -> bool:
+        """Act out whichever fault is armed, if any. ``True`` means the
+        execution ends here and the program never runs."""
+        if "disconnect_after_ready" in self.faults:
+            writer.close()
+            return True
+        if "hang_after_ready" in self.faults:
+            await execution.cancel.wait()
+            return True
+        if "malformed_frame" in self.faults:
+            writer.write(b"this is not json\n")
+            await writer.drain()
+            return True
+        if "giant_frame" in self.faults:
+            writer.write(b'{"type":"done","result":"' + b"x" * (9 * 1024 * 1024) + b'"}\n')
+            await writer.drain()
+            return True
+        if "error_frame" in self.faults:
+            await send({"type": "error", "kind": "provider_error", "message": "capacity"})
+            return True
+        return False
+
     async def _start_execution(self, request: _Request, writer: asyncio.StreamWriter) -> None:
         try:
             body = json.loads(request.body or b"{}")
@@ -345,18 +377,7 @@ class SandboxService:
                 "platform": description.platform,
             }
         )
-        if "disconnect_after_ready" in self.faults:
-            writer.close()
-            return
-        if "hang_after_ready" in self.faults:
-            await execution.cancel.wait()
-            return
-        if "malformed_frame" in self.faults:
-            writer.write(b"this is not json\n")
-            await writer.drain()
-            return
-        if "error_frame" in self.faults:
-            await send({"type": "error", "kind": "provider_error", "message": "capacity"})
+        if await self._injected_fault(writer, send, execution):
             return
 
         bindings = {
@@ -366,6 +387,28 @@ class SandboxService:
         capture = OutputCapture.model_validate(body["capture"]) if body.get("capture") else None
         requested = body.get("isolation")
         isolation = IsolationLevel(requested) if isinstance(requested, str) else None
+
+        # Before the program runs, which is the only moment a refusal still
+        # prevents anything. A service that ran the program and then said "I
+        # could not give you isolation" has already let it touch whatever it
+        # was going to touch. The reference implementation refuses here so
+        # that anyone reading it to build their own service copies that
+        # order rather than inventing the late one.
+        if isolation is not None and not (
+            description.isolation is not None and description.isolation.satisfies(isolation)
+        ):
+            offered = description.isolation.value if description.isolation else "none"
+            await send(
+                {
+                    "type": "error",
+                    "kind": "isolation_unavailable",
+                    "message": (
+                        f"this service reaches {offered!r} isolation and the execution "
+                        f"required {isolation.value!r}; the program was not run"
+                    ),
+                }
+            )
+            return
         if "weaker_isolation" in self.faults:
             isolation = None
         result = await self._sandbox.run(

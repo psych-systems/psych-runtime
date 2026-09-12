@@ -97,7 +97,10 @@ What a host can offer is discoverable before the first request, with
 `psych_runtime.sandbox.local.detect_local_backends()`:
 
 - **Linux with `bwrap`** reaches full isolation: namespaces, dropped
-  capabilities, read-only system binds, a tmpfs workspace.
+  capabilities, read-only system binds, a tmpfs workspace. Detection runs it
+  rather than looking for it, so a host that ships `bwrap` and forbids
+  unprivileged user namespaces reports process-level instead of an isolation
+  that would fail at every spawn.
 - **Linux without it, and macOS** reach process-level containment: rlimits, a
   process group, a private workspace, and on macOS a seatbelt profile that
   confines the filesystem and denies the network. macOS cannot cap memory, so
@@ -112,7 +115,11 @@ What a host can offer is discoverable before the first request, with
 - **A sandbox service** of your own, or a vendor's, plugs in through
   `RemoteSandbox` and a documented HTTP protocol. Its credential resolves per
   Scope through your `SecretResolver` and never enters a Spec, a Record, a
-  report, a trace or a URL.
+  report, a trace or a URL, and is refused over plaintext `http://` unless the
+  service is on loopback or you pass `allow_insecure_http=True`. A service
+  asked for terms it cannot meet must refuse before it runs the program; the
+  adapter also reads its description first and will not send one to a service
+  that already says it cannot comply.
 
 Nothing is installed, downloaded or pulled implicitly. `bwrap`, a container
 runtime and an image are things you provision; prefer an image digest where a

@@ -124,8 +124,18 @@ the contract.
 
 `append(run_id, seq, record)`, `read(run_id, after, limit)`, `head(run_id)`,
 `put_version`, `get_version`, `create_run`, `get_run`, `claim`, `renew`,
-`release`, `set_runnable_at`, `expired_leases`, `overdue_deadlines`. Plus an
-optional `Queue` and the separate `BlobStore` port (see `psych-blobs`).
+`release`, `settle_inline`, `set_runnable_at`, `expired_leases`,
+`overdue_deadlines`. Plus an optional `Queue` and the separate `BlobStore` port
+(see `psych-blobs`).
+
+`settle_inline(run_id)` is the one settle that is addressed by Run rather than
+by lease, and the only one. A `NESTED` Run — a subagent executed inline, or
+anything else driven by whoever dispatched it — never has a lease, so
+`release` matches nothing and would leave a header saying `nested` beside a log
+saying the Run finished. Its state is its authorisation: only `NESTED` is
+touched, because only a `NESTED` Run has no competing writer. It returns
+whether it changed anything, is idempotent, never makes a Run claimable, and
+never writes to the log.
 
 ## The same Spec on all four
 

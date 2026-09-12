@@ -171,6 +171,17 @@ class InMemoryStore:
                 update={"state": state, "lease_holder": None, "lease_expires_at": None}
             )
 
+    async def settle_inline(self, run_id: RunId) -> bool:
+        async with self._lock:
+            header = self._runs.get(run_id)
+            if header is None or header.state is not RunState.NESTED:
+                # The state is the authorisation (Store.settle_inline): only a
+                # NESTED Run has no competing writer, so only a NESTED Run may
+                # be settled without holding a lease.
+                return False
+            self._runs[run_id] = header.model_copy(update={"state": RunState.SETTLED})
+            return True
+
     async def set_runnable_at(self, run_id: RunId, runnable_at: datetime | None) -> None:
         async with self._lock:
             header = self._runs.get(run_id)

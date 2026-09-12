@@ -109,11 +109,21 @@ async def dispatch(
             it but a resumed child must never be counted from zero, or it
             delegates as though it were top-level and the recursion budget is
             defeated (DESIGN.md §17).
-        nested: this Run is a subagent executed inline by the Attempt that
-            dispatched it, so it is admitted ``NESTED`` and no Worker claims
-            it (DESIGN.md §17). Set by ``psych_runtime.runtime.execute`` and by
-            nothing else; a caller who wants a Run a Worker will pick up
-            leaves it False.
+        nested: this Run is executed inline by whoever dispatched it, so it
+            is admitted ``NESTED`` and no Worker claims it (DESIGN.md §17).
+            A subagent is the usual case (``psych_runtime.runtime.execute``);
+            a fixture that drives a Runtime itself against a store a Worker
+            is also polling is the other, and it needs this for the same
+            reason -- two Attempts writing one log is what the Journal
+            refuses. A caller who wants a Run a Worker will pick up leaves
+            it False.
+
+            Whoever executes a ``NESTED`` Run settles it with
+            ``Store.settle_inline`` when it finishes. ``Store.release`` cannot:
+            it answers only the Worker holding the lease, and nothing ever
+            claimed this Run. A caller that drives a Run and never settles it
+            leaves a header that disagrees with its own log for good, so it is
+            part of the bargain rather than an optional tidy-up.
         continues: the Run this one continues, for "a second message in the
             same conversation" (DESIGN.md §23.3). ``psych_runtime.report()``
             covers this Run alone, as always; the joined conversation a Worker

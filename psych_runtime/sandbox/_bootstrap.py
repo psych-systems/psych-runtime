@@ -86,23 +86,39 @@ def _connect(spec):
     raise RuntimeError("psych sandbox bootstrap: unknown connection spec " + repr(spec))
 
 
-def _network_denied():
+def _route_exists(family, address):
     # A UDP "connect" never sends a packet; it only asks the kernel to pick a
     # route. In a namespace with nothing but loopback (what a successful
     # ``unshare(CLONE_NEWNET)`` leaves behind) there is no route to a
     # non-loopback address at all, so this raises immediately rather than
-    # depending on anything actually being reachable at the far end. TEST-NET-1
-    # (RFC 5737) is used because it is guaranteed never to be routed anywhere
-    # real, so this never actually reaches out even when a route exists.
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # depending on anything actually being reachable at the far end. The
+    # addresses used are documentation ranges guaranteed never to be routed
+    # anywhere real, so this never actually reaches out even when a route
+    # exists.
     try:
-        probe.connect(("192.0.2.1", 53))
+        probe = socket.socket(family, socket.SOCK_DGRAM)
     except OSError:
-        return True
-    else:
         return False
+    try:
+        probe.connect(address)
+    except OSError:
+        return False
+    else:
+        return True
     finally:
         probe.close()
+
+
+def _network_denied():
+    # Both families. A host with IPv6 configured and IPv4 unrouted is not a
+    # host with no network, and reporting denial from the v4 probe alone would
+    # grade an execution that could still reach the world -- including a
+    # link-local metadata service -- as contained.
+    if _route_exists(socket.AF_INET, ("192.0.2.1", 53)):  # TEST-NET-1, RFC 5737
+        return False
+    if _route_exists(socket.AF_INET6, ("2001:db8::1", 53)):  # RFC 3849
+        return False
+    return True
 
 
 def _canary_readable():
@@ -180,6 +196,12 @@ async def _amain():
 
     first_line = await _read_line()
     first_frame = json.loads(first_line)
+    if first_frame.get("type") == "abort":
+        # The host read this child's own report of its containment and would
+        # not run the program on those terms. Nothing is compiled and nothing
+        # is executed: the point of answering `ready` before receiving the
+        # program is that a refusal here still prevents everything.
+        return
     if first_frame.get("type") != "run":
         raise RuntimeError("psych sandbox: expected a run frame first")
     program = first_frame["program"]

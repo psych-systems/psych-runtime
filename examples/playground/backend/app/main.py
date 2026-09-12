@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -1868,25 +1869,21 @@ async def list_runs(request: Request) -> list[RunSummary]:
         header = await state.store.get_run(entry.run_id)
         run_state = header.state.value if header is not None else "unknown"
         run_settled_at: str | None = entry.settled_at.isoformat() if entry.settled_at else None
-        finished = {RunState.SETTLED, RunState.NESTED}
-        if run_settled_at is None and header is not None and header.state in finished:
+        if run_settled_at is None and header is not None and header.state is RunState.SETTLED:
             # One read, the first time a settled Run is listed, for the one
             # timestamp `RunHeader` does not carry. Cached on the entry after
             # that: this list is polled every few seconds while anything is
             # running, and reading every settled Run's whole log each time is
             # the kind of cost that only shows up once someone has history.
             #
-            # `NESTED` is here because a Run nothing will ever claim -- a
-            # subagent, or the review fixture -- keeps that header state for
-            # good, and the log is the only place that says it finished. The
-            # log is the truth either way; the header is a lease, not a
-            # verdict.
+            # A Run executed inline -- a subagent, or the review fixture -- is
+            # settled by whoever drove it (`Store.settle_inline`), so it
+            # reaches this branch like any other. A header still reading
+            # `nested` means the Run is being executed right now.
             log = await state.store.read(entry.run_id)
             run_settled_at = settled_at(log)
             if run_settled_at is not None:
                 await state.index.mark_settled(entry.run_id, datetime.fromisoformat(run_settled_at))
-        if run_settled_at is not None and header is not None and header.state is RunState.NESTED:
-            run_state = RunState.SETTLED.value
         summaries.append(
             RunSummary(
                 run_id=entry.run_id,
@@ -3703,6 +3700,29 @@ async def read_run_attachment(
     return JSONResponse(jsonable_encoder(window))
 
 
+def _download_filename(name: str, handle: str) -> str:
+    """A filename safe to put in a header, from a name a program chose.
+
+    The name comes from a path the model's own program wrote, so it is
+    attacker-controlled in the only sense that matters: nothing stops it
+    containing a quote, a newline, or a carriage return. A raw header value
+    with CRLF in it is a response-splitting bug, so this keeps printable
+    ASCII and nothing else, and falls back to the handle when that leaves
+    nothing.
+    """
+    base = name.removeprefix("file:").replace("\\", "/").rsplit("/", 1)[-1]
+    kept = "".join(c for c in base if c.isascii() and c.isprintable() and c not in '"\\')
+    return kept.strip() or handle
+
+
+def _content_disposition(filename: str) -> str:
+    """``Content-Disposition`` for a download, with the name encoded rather
+    than interpolated. RFC 6266's ``filename*`` form carries anything the
+    sanitised name still holds without a quoting question."""
+    quoted = quote(filename, safe="")
+    return f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quoted}"
+
+
 @app.get("/api/runs/{run_id}/attachments/{handle}/download")
 async def download_run_attachment(run_id: str, handle: str, request: Request) -> Response:
     """The whole recorded output as a file, with the content type the record
@@ -3720,7 +3740,7 @@ async def download_run_attachment(run_id: str, handle: str, request: Request) ->
         raise ApiProblem(404, f"no output {handle!r} on run {run_id!r}")
     if attachment.stored == "preview_only":
         raise ApiProblem(410, "the bytes beyond the preview were not kept for this output")
-    filename = attachment.name.removeprefix("file:").replace("/", "_") or handle
+    filename = _download_filename(attachment.name, handle)
     if attachment.stored == "inline":
         payload = attachment.data or b""
     else:
@@ -3731,7 +3751,7 @@ async def download_run_attachment(run_id: str, handle: str, request: Request) ->
     return Response(
         content=payload,
         media_type=attachment.content_type,
-        headers={"content-disposition": f'attachment; filename="{filename}"'},
+        headers={"content-disposition": _content_disposition(filename)},
     )
 
 

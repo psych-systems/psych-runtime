@@ -63,10 +63,12 @@ class RunState(StrEnum):
 
     Without this state a child Run was admitted RUNNABLE while its parent was
     already executing it, so the parent's own Worker could claim it a poll
-    later and two writers would race one log. The parent releases it SETTLED
-    when the child finishes, and a parent that dies leaves it here rather than
-    running twice -- the parent's reclaim re-executes the delegation and mints
-    a new child, which is the same at-least-once story every other step has."""
+    later and two writers would race one log. The parent settles it with
+    ``Store.settle_inline`` when the child finishes -- not ``release``, which
+    matches on a lease this Run never had -- and a parent that dies leaves it
+    here rather than running twice: the parent's reclaim re-executes the
+    delegation and mints a new child, which is the same at-least-once story
+    every other step has."""
     SETTLED = "settled"
     """Terminal. Never claimable again."""
 
@@ -223,6 +225,39 @@ class Store(Protocol):
         the time a slow Attempt unwinds, another Worker may already own the Run,
         and turning that into an error would only produce noise in a log that
         already recorded the real story.
+        """
+        ...
+
+    async def settle_inline(self, run_id: RunId) -> bool:
+        """Settle a ``NESTED`` Run, which nobody holds a lease on.
+
+        ``release`` cannot do this. It takes the Worker that held the lease and
+        matches on it, and a ``NESTED`` Run never had one: it is executed inline
+        by the Attempt that dispatched it and no Worker ever claims it. So the
+        settle an inline executor issues at the end of a child matches no row,
+        the header stays ``NESTED`` for good, and the store disagrees with a log
+        that says the Run finished. This is the operation that agrees with it.
+
+        Addressed by Run rather than by lease, which is what makes it usable by
+        the one caller that legitimately has no lease. The state is the
+        authorisation: only ``NESTED`` is touched, and a ``NESTED`` Run has no
+        competing writer by construction, so there is no lease to check.
+
+        Invariants:
+
+        - ``NESTED`` becomes ``SETTLED``. Every other state is left exactly as
+          it is, which is what stops this from resurrecting a settled Run or
+          taking one a Worker is holding.
+        - Idempotent. A second call changes nothing.
+        - Never makes a Run claimable. There is no path from here to
+          ``RUNNABLE``.
+        - Never writes to the log. The log already said the Run finished; this
+          brings the header into line with it.
+
+        Returns:
+            ``True`` when this call settled the Run, ``False`` when it did not
+            -- already settled, never admitted, or in a state this may not
+            touch.
         """
         ...
 

@@ -52,7 +52,7 @@ from psych_runtime.sandbox.profiles import (
     resolve_execution,
 )
 from psych_runtime.store.blob import BlobStore
-from psych_runtime.store.port import RunHeader, RunState, Store
+from psych_runtime.store.port import RunHeader, Store
 from psych_runtime.telemetry.port import (
     NOOP_TELEMETRY,
     GuardedTelemetry,
@@ -743,10 +743,14 @@ class Runtime:
                 failure=outcome.failure,
             )
 
-        # The child is nested, so nothing else could have claimed it; releasing
-        # it settled keeps it out of every Worker's claim query for good.
+        # The child is nested, so nothing else could have claimed it and there
+        # is no lease to release -- which is why this is ``settle_inline`` and
+        # not ``release``: ``release`` matches on the lease holder, finds none,
+        # and leaves the header NESTED while the log says the child finished.
+        # Suppressed because a child that ran is not failed by a header write,
+        # and the log is the durable answer either way.
         with contextlib.suppress(Exception):
-            await self.store.release(dispatched.run_id, WorkerId("inline"), RunState.SETTLED)
+            await self.store.settle_inline(dispatched.run_id)
 
         if outcome.failure is not None:
             return {

@@ -7,6 +7,8 @@ through a Journal or a Store.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from pydantic import ValidationError
 
@@ -259,6 +261,28 @@ class TestPatternSearch:
         state = _state_with_result("some text")
         with pytest.raises(ValueError, match="not a valid regular expression"):
             read_tool_output(state, {"handle": "res_call-1", "pattern": "("})
+
+    def test_a_pattern_that_backtracks_forever_is_stopped(self) -> None:
+        """The pattern is an executable language written by the model, and
+        `re` backtracks: `(a+)+$` against a few dozen characters already runs
+        for seconds, and a longer subject runs for longer than anyone waits.
+        The bound is enforced on a process that gets killed, because a thread
+        cannot be interrupted and enough of these would take the worker's
+        whole pool with them.
+
+        The wall clock is asserted loosely -- this is about the difference
+        between seconds and never, not about a precise budget. The deadline
+        covers starting an interpreter as well as matching, because a loaded
+        machine can take longer to spawn one than the pattern is allowed to
+        run, and counting that against the pattern would refuse ordinary
+        searches whenever the host was busy.
+        """
+        text = "\n".join(["a" * 60 + "!"] * 10)
+        state = _state_with_result(text)
+        started = time.monotonic()
+        with pytest.raises(ValueError, match="was stopped after"):
+            read_tool_output(state, {"handle": "res_call-1", "pattern": "(a+)+$"})
+        assert time.monotonic() - started < 60
 
 
 class TestPatternWithNoMatch:

@@ -231,10 +231,12 @@ async def seed_code_execution_demo(
         header = await store.get_run(dispatched.run_id)
         assert header is not None
         await runtime(journal, header, AbortSignal())
-        # Nothing releases a nested Run's header -- `Store.release` only
-        # answers the Worker holding the lease, and nothing ever claimed this
-        # one -- so it keeps that state for good. Its log is what says it
-        # finished, and the console reads the log rather than the header for
-        # exactly this reason.
+        # Settled the way any inline executor settles what it drove. Nothing
+        # holds a lease on a nested Run, so `Store.release` would match no row
+        # and leave a header that disagrees with a log saying this finished;
+        # `settle_inline` is addressed by Run and admits only the NESTED state
+        # for that reason.
+        settled = await store.settle_inline(dispatched.run_id)
+        assert settled, "the seeded Run should have been nested and unsettled"
         run_ids.append(dispatched.run_id)
     return agent_id, run_ids

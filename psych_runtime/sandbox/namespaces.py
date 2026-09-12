@@ -88,6 +88,7 @@ from psych_runtime.sandbox._local import (
     DEFAULT_CAPTURE,
     Canary,
     Conversation,
+    admission,
     bounded,
     classify_done,
     collect_artifacts,
@@ -286,7 +287,9 @@ class NamespaceSandbox:
         try:
             server, connected, accepted = await _listen(socket_path)
             try:
-                argv = self._argv(bound, ipc_dir=ipc_dir, workdir=workdir, network=network)
+                argv = self._argv(
+                    bound, ipc_dir=ipc_dir, workdir=workdir, network=network, canary=canary
+                )
                 env = self._build_env(canary)
                 try:
                     proc = await asyncio.create_subprocess_exec(
@@ -311,6 +314,7 @@ class NamespaceSandbox:
                     cancel=cancel,
                     workdir=workdir,
                     network=network,
+                    isolation=isolation,
                 )
             finally:
                 await _close_listener(server, connected, accepted)
@@ -321,7 +325,13 @@ class NamespaceSandbox:
         return withhold_if_weaker(result, isolation, backend="bubblewrap")
 
     def _argv(
-        self, bound: Mapping[str, HostBinding], *, ipc_dir: Path, workdir: Path, network: bool
+        self,
+        bound: Mapping[str, HostBinding],
+        *,
+        ipc_dir: Path,
+        workdir: Path,
+        network: bool,
+        canary: Canary,
     ) -> list[str]:
         argv = [
             self._bwrap,
@@ -380,10 +390,13 @@ class NamespaceSandbox:
         ]
         for key, value in self._env_allowlist.items():
             argv += ["--setenv", key, value]
-        # The canary path is on the host and never bound, so the child can
-        # only fail to open it; the variable is set inside so the bootstrap
-        # performs the check.
-        argv += ["--setenv", CANARY_ENV, "/run/psych-sandbox/canary-never-bound"]
+        # The real canary, at its real host path. A made-up path proves
+        # nothing: it would be unreadable inside a working private root and
+        # unreadable on a host whose root leaked in by accident, so the two
+        # cases it exists to tell apart would look identical. This file does
+        # exist, is readable on the host, and is never bound here -- so
+        # reading it means the private root is not private.
+        argv += ["--setenv", CANARY_ENV, str(canary.path)]
         argv += [
             "--",
             self._python_bin,
@@ -398,11 +411,9 @@ class NamespaceSandbox:
         return argv
 
     def _build_env(self, canary: Canary) -> dict[str, str]:
-        # bubblewrap's own environment. It clears it for the child; what the
-        # child gets is the --setenv list above. The canary's real host path
-        # is deliberately not passed through: the private root cannot see
-        # it wherever it is, and the check still runs against a path that
-        # exists nowhere inside.
+        # bubblewrap's own environment, not the child's: it clears the
+        # environment and the child gets only the --setenv list, which is
+        # where the canary path is passed.
         _ = canary
         return {"PATH": "/usr/bin:/bin"}
 
@@ -512,6 +523,7 @@ async def _drive(
     cancel: asyncio.Event | None,
     workdir: Path,
     network: bool,
+    isolation: IsolationLevel | None,
 ) -> SandboxResult:
     stdout_task = asyncio.ensure_future(read_capped(proc.stdout, capture.stream_bytes))
     stderr_task = asyncio.ensure_future(read_capped(proc.stderr, capture.stream_bytes))
@@ -529,7 +541,18 @@ async def _drive(
             )
         else:
             talk = await converse(
-                reader, writer, program, bindings, wall_seconds=limits.wall_seconds, cancel=cancel
+                reader,
+                writer,
+                program,
+                bindings,
+                wall_seconds=limits.wall_seconds,
+                cancel=cancel,
+                admit=admission(
+                    lambda ready: _grade(ready, network),
+                    isolation,
+                    network_required=not network,
+                    backend="bubblewrap",
+                ),
             )
     finally:
         await _terminate_process_group(proc)

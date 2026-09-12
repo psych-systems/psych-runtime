@@ -19,8 +19,14 @@ and breaking changes are expected until the design survives a second consumer.
   stage may only narrow.
 - Every backend reports what it achieved rather than what it attempted:
   `SandboxDescription`, `SandboxGuarantees` and `Enforcement` grade ten
-  guarantees per execution, and output produced under weaker isolation than was
-  requested is withheld.
+  guarantees per execution.
+- A program is not run at all when the isolation it asked for is not
+  available. The child reports its containment, the host accepts it or sends
+  an abort, and only then is the program sent; a remote service must refuse
+  before executing for the same reason, and the adapter will not send a
+  program to one that already says it cannot comply. Output produced under
+  weaker terms is still withheld, as the backstop for a backend that
+  misreported itself.
 - New backends: bubblewrap namespaces on Linux, Job Objects on Windows, a
   seatbelt profile on macOS, and `RemoteSandbox` for a sandbox service reached
   over HTTP. `local_sandbox()` picks the strongest local backend and refuses
@@ -50,6 +56,30 @@ and breaking changes are expected until the design survives a second consumer.
 ## 0.1.1
 
 ### Fixed
+
+- **A Run executed inline now settles.** `Store.settle_inline(run_id)` is new
+  on the port and implemented by all four adapters: it moves a `NESTED` Run to
+  `SETTLED` and touches nothing else. `release` could never do it, because it
+  matches on the lease holder and a `NESTED` Run — a subagent executed inline,
+  or anything else driven by whoever dispatched it — has never had one, so the
+  settle an inline `delegate` already issued matched no row. The header stayed
+  `nested` for good beside a log saying the Run had finished, and
+  `overdue_deadlines`, which selects everything not settled, reported it as a
+  supervision candidate for ever. The state is the authorisation: only
+  `NESTED` may be settled this way, because only a `NESTED` Run has no
+  competing writer.
+- **A nested Run can be admitted against PostgreSQL.** The `psych_runs` check
+  constraint still listed the four states that existed before `nested` was
+  added, so `create_run` raised a check violation and every inline delegation
+  failed there while passing against the in-memory adapter, which enforces no
+  such list. Migration `0004_nested_run_state.sql` widens it rather than
+  dropping it: a state outside the enum is still a bug worth catching.
+- The remote sandbox adapter bounds the number of frames and of empty lines in
+  a response as well as its bytes, parses without repeatedly slicing the front
+  of its buffer, and hands the event loop back every few hundred lines — a
+  stream can sit well inside the byte ceiling and still be millions of lines,
+  and parsing them all in one synchronous pass disables the very timeout meant
+  to end it.
 
 - MCP connection edits now send only writable fields, and validation failures
   are shown as readable field errors.

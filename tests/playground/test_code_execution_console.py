@@ -208,6 +208,13 @@ class TestReviewData:
         assert download.status_code == 200
         assert download.headers["content-type"].startswith("text/plain")
         assert download.content.count(b"\n") >= 4000
+        # The filename comes from a path the model's own program chose, so
+        # it reaches the header as attacker-controlled text. Nothing that
+        # could split a response survives into it.
+        disposition = download.headers["content-disposition"]
+        assert "\r" not in disposition
+        assert "\n" not in disposition
+        assert disposition.startswith("attachment; ")
         forged = await client.get(f"/api/runs/{run_ids[3]}/attachments/out_forged_stdout")
         assert forged.status_code == 404
         # The agent the seeder published is listed like any other.

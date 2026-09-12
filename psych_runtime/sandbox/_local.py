@@ -44,7 +44,7 @@ import secrets
 import shutil
 import stat
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -151,6 +151,9 @@ class Conversation:
     protocol_error: SandboxProtocolError | None = None
     timed_out: bool = False
     cancelled: bool = False
+    refused: str | None = None
+    """Set when the child's own report did not meet the terms the caller
+    asked for. The program was never sent, so nothing ran."""
 
 
 async def converse(
@@ -161,6 +164,7 @@ async def converse(
     *,
     wall_seconds: float,
     cancel: asyncio.Event | None,
+    admit: Callable[[ReadyFrame], str | None] | None = None,
 ) -> Conversation:
     """Run the protocol against the wall clock and the caller's cancellation.
 
@@ -171,7 +175,17 @@ async def converse(
     re-raised after the conversation task is stopped, never swallowed.
     """
     outcome = Conversation()
-    conversation = asyncio.ensure_future(run_protocol(reader, writer, program, bindings))
+    refusals: list[str] = []
+
+    def _admit(ready: ReadyFrame) -> str | None:
+        reason = admit(ready) if admit is not None else None
+        if reason is not None:
+            refusals.append(reason)
+        return reason
+
+    conversation = asyncio.ensure_future(
+        run_protocol(reader, writer, program, bindings, admit=_admit)
+    )
     waiters: list[asyncio.Future[Any]] = [conversation]
     cancel_wait: asyncio.Task[bool] | None = None
     if cancel is not None:
@@ -186,6 +200,9 @@ async def converse(
                 outcome.ready, outcome.done = conversation.result()
             except SandboxProtocolError as err:
                 outcome.protocol_error = err
+            else:
+                outcome.refused = refusals[0] if refusals else None
+
         elif cancel_wait is not None and cancel_wait in finished:
             outcome.cancelled = True
         else:
@@ -369,6 +386,41 @@ def remove_tree(root: Path) -> None:
 
     with contextlib.suppress(OSError):
         shutil.rmtree(root, onexc=on_error)
+
+
+def admission(
+    grade: Callable[[ReadyFrame], SandboxGuarantees],
+    requested: IsolationLevel | None,
+    *,
+    network_required: bool,
+    backend: str,
+) -> Callable[[ReadyFrame], str | None] | None:
+    """The check every local backend runs between ``ready`` and ``run``.
+
+    The child reports what it observed about its own containment before the
+    program exists on its side of the channel. This grades that report and
+    answers the one question worth asking at that moment: may this program be
+    sent at all? A refusal here is the only kind that prevents anything --
+    once the program has run, a filesystem it read, an address it reached and
+    a file it wrote are facts, and discarding its output does not undo them.
+
+    Returns ``None`` when no level was requested, because then there is
+    nothing to refuse and the handshake stays one-phase.
+    """
+    if requested is None:
+        return None
+
+    def admit(ready: ReadyFrame) -> str | None:
+        achieved = achieved_level(grade(ready), network_required=network_required)
+        if achieved is not None and achieved.satisfies(requested):
+            return None
+        offered = achieved.value if achieved is not None else "none"
+        return (
+            f"the {backend} backend reached {offered!r} isolation on this host and "
+            f"{requested.value!r} was required"
+        )
+
+    return admit
 
 
 def withhold_if_weaker(

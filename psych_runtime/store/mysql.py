@@ -553,6 +553,18 @@ class MySQLStore:
                 (state.value, run_id, worker_id),
             )
 
+    async def settle_inline(self, run_id: RunId) -> bool:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as conn, conn.cursor() as cur:
+            # The state is the whole condition: a NESTED Run has no lease and
+            # no competing writer, and every other state is left alone by the
+            # WHERE rather than by a check the caller could skip.
+            await cur.execute(
+                "UPDATE runs SET state = %s WHERE run_id = %s AND state = %s",
+                (RunState.SETTLED.value, run_id, RunState.NESTED.value),
+            )
+            return bool(cur.rowcount)
+
     async def set_runnable_at(self, run_id: RunId, runnable_at: datetime | None) -> None:
         pool = await self._ensure_pool()
         async with pool.acquire() as conn, conn.cursor() as cur:

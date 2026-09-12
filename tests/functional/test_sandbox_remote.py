@@ -12,6 +12,7 @@ the same egress seam the rest of the library uses.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from collections.abc import AsyncIterator, Mapping
@@ -27,7 +28,7 @@ from psych_runtime.core.scope import Scope
 from psych_runtime.model.egress import HttpTransport
 from psych_runtime.sandbox.contract import SandboxContractSuite
 from psych_runtime.sandbox.local import local_sandbox
-from psych_runtime.sandbox.port import SandboxFailure, SandboxLimits
+from psych_runtime.sandbox.port import SandboxFailure, SandboxLimits, SandboxSetupError
 from psych_runtime.sandbox.remote import RemoteSandbox
 from psych_runtime.testing.sandbox_service import (
     SandboxService,
@@ -107,6 +108,24 @@ async def _remote(
         default_limits=_LIMITS,
         **kwargs,
     )
+
+
+async def _post_execution(
+    transport: HttpTransport, service: SandboxService, body: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Speak the protocol by hand, to test the service rather than the client."""
+    frames: list[dict[str, Any]] = []
+    async with transport.stream(
+        "POST",
+        f"{service.base_url}/v1/executions",
+        scope=SCOPE,
+        headers={"authorization": "Bearer test-token"},
+        json=body,
+    ) as response:
+        async for line in response.aiter_lines():
+            if line.strip():
+                frames.append(json.loads(line))
+    return frames
 
 
 class TestDescribe:
@@ -203,6 +222,8 @@ class TestExecutionSemantics:
     async def test_a_service_that_reports_weaker_isolation_has_its_result_withheld(
         self, transport: HttpTransport
     ) -> None:
+        """The backstop, for a service that advertised one thing and did
+        another. The control is the pre-flight below."""
         scripted = _scripted(script={"return 'secret'": scripted_result(value="secret")})
         async with SandboxService(
             scripted, token="test-token", faults={"weaker_isolation"}
@@ -215,6 +236,102 @@ class TestExecutionSemantics:
         assert result.failure is not None
         assert result.failure.kind == "isolation_unavailable"
         assert result.value is None
+
+    async def test_a_service_that_cannot_reach_the_level_is_never_sent_the_program(
+        self, transport: HttpTransport
+    ) -> None:
+        """Refusing after the program ran is not refusing. The adapter reads
+        the service's own description first, and a service that says it only
+        reaches process-level never receives a program that asked for more --
+        which `ScriptedSandbox.calls` proves, because it stays empty."""
+        scripted = _scripted(isolation=IsolationLevel.PROCESS)
+        async with SandboxService(scripted, token="test-token") as service:
+            remote = await _remote(service, transport)
+            result = await remote.run(
+                "return 'secret'", limits=_LIMITS, isolation=IsolationLevel.ISOLATED
+            )
+        assert not result.ok
+        assert result.failure is not None
+        assert result.failure.kind == "isolation_unavailable"
+        assert "not sent" in result.failure.message
+        assert scripted.calls == [], "the program reached the service"
+
+    async def test_a_service_refuses_before_executing_when_it_cannot_comply(
+        self, transport: HttpTransport
+    ) -> None:
+        """The other side of the same rule, in the reference implementation:
+        a service asked for terms it cannot meet answers with an error frame
+        and does not run the program."""
+        scripted = _scripted(isolation=IsolationLevel.PROCESS)
+        async with SandboxService(scripted, token="test-token") as service:
+            remote = await _remote(service, transport)
+            # Past the adapter's own pre-flight, so the service's refusal is
+            # what is under test rather than the client's.
+            await remote.describe()
+            session_result = await remote.run("return 1", limits=_LIMITS)
+        assert session_result.ok
+        assert len(scripted.calls) == 1
+
+        scripted_two = _scripted(isolation=IsolationLevel.PROCESS)
+        async with SandboxService(scripted_two, token="test-token") as service:
+            remote = await _remote(service, transport)
+            body = {
+                "execution_id": "exec_manual",
+                "program": "return 'secret'",
+                "bindings": [],
+                "limits": _LIMITS.model_dump(mode="json"),
+                "network": False,
+                "isolation": IsolationLevel.ISOLATED.value,
+                "capture": {},
+            }
+            frames = await _post_execution(transport, service, body)
+        assert scripted_two.calls == [], "the service ran a program it had refused"
+        assert frames[-1]["type"] == "error"
+        assert frames[-1]["kind"] == "isolation_unavailable"
+
+    async def test_a_frame_larger_than_the_ceiling_is_a_provider_error(
+        self, transport: HttpTransport
+    ) -> None:
+        """A service is not trusted to respect the capture limits it was sent:
+        one enormous line is bounded here rather than decoded."""
+        scripted = _scripted()
+        async with SandboxService(scripted, token="test-token", faults={"giant_frame"}) as service:
+            remote = await _remote(service, transport)
+            result = await remote.run("return 1", limits=_LIMITS)
+        assert not result.ok
+        assert result.failure is not None
+        assert result.failure.kind == "provider_error"
+        assert "ceiling" in result.failure.message, result.failure.message
+
+    async def test_a_credential_is_not_sent_over_plaintext_http(
+        self, transport: HttpTransport
+    ) -> None:
+        """A bearer token in clear is a bearer token for the network. Loopback
+        is the exception, because there is no network to be on."""
+        with pytest.raises(SandboxSetupError, match="plaintext"):
+            RemoteSandbox(
+                base_url="http://sandboxes.example.com",
+                transport=transport,
+                scope=SCOPE,
+                credential=_token,
+            )
+        # Same URL, opted into deliberately.
+        RemoteSandbox(
+            base_url="http://sandboxes.example.com",
+            transport=transport,
+            scope=SCOPE,
+            credential=_token,
+            allow_insecure_http=True,
+        )
+        # Loopback needs no opt-in.
+        RemoteSandbox(
+            base_url="http://127.0.0.1:8931",
+            transport=transport,
+            scope=SCOPE,
+            credential=_token,
+        )
+        # No credential, nothing to leak.
+        RemoteSandbox(base_url="http://sandboxes.example.com", transport=transport, scope=SCOPE)
 
     async def test_a_scripted_failure_round_trips_as_data(self, transport: HttpTransport) -> None:
         failing = scripted_result(

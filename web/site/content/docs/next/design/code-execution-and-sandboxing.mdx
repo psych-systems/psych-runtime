@@ -193,22 +193,43 @@ things: the level it reached, and a grade for each guarantee separately.
 
 The ten guarantees — filesystem, network, process tree, identity, CPU, memory,
 file size, process count, wall clock, environment — are each `enforced`,
-`unverified`, or `unavailable`. `enforced` is reserved for a guarantee the
-execution *observed*: the filesystem grade comes from a canary file written
-outside the workspace whose contents the child reports it could not read, and
-the network grade comes from the child attempting to reach an address that
-cannot be routed. A mechanism that was requested and not contradicted is
-`unverified`, which is a weaker claim on purpose. A platform that cannot offer
-the guarantee at all says `unavailable` rather than leaving it implied.
+`unverified`, or `unavailable`. A mechanism that was requested and not
+contradicted is `unverified`, which is a weaker claim on purpose. A platform
+that cannot offer the guarantee at all says `unavailable` rather than leaving
+it implied.
+
+The asymmetry of the evidence matters more than the grades. A canary file
+written outside the workspace that the child *can* read proves exposure, and
+the grade is `unavailable`. The same file failing to open proves only that one
+path was out of reach: under a profile that allows reads generally and then
+denies particular subtrees, everything not named is still readable. So an
+unreadable canary earns `unverified`, and `enforced` is kept for a backend
+whose boundary makes the question moot — a mount namespace, a container — where
+nothing of the host is there to read. The network probe is symmetric in the
+same way and is run over both address families, because a host with IPv6
+routed and IPv4 unrouted is not a host without a network.
 
 The level follows from the grades rather than being asserted alongside them, so
 there is one function and no second opinion.
 
-**A request that was not met withholds the output.** If an execution asked for
-`isolated` and the backend reached `process`, the result carries an
-`isolation_unavailable` failure and no stdout, stderr or value. Returning bytes
-produced on terms the caller refused is worse than returning nothing, because
-the caller cannot tell the difference afterwards.
+**A request that cannot be met stops the program before it runs.** The
+handshake has two phases for this reason. The child connects and reports what
+it observes about its own containment; only then does the host send the
+program, and a host that does not accept the report sends an abort instead, so
+nothing is compiled and nothing executes. A refusal issued after execution
+would be theatre: a program that has run has already read what it could read,
+reached what it could reach and written what it wrote, and none of that is
+undone by discarding its output.
+
+The same rule crosses the wire. An adapter for a remote service reads that
+service's description before sending a program and refuses locally when what
+it advertises is not enough; a service asked for terms it cannot meet must
+answer with an error before executing rather than after.
+
+Output produced under weaker terms is still withheld, with an
+`isolation_unavailable` failure, because a backend can misreport itself. That
+is the backstop. It is not the control, and a backend that reaches it is a
+backend to stop using.
 
 ## Four narrowings, never a widening
 
@@ -235,15 +256,20 @@ request rather than during it.
 - **Linux with unprivileged user namespaces and `bwrap`** reaches `isolated`:
   user, pid, ipc, uts, mount and network namespaces unshared, every capability
   dropped, system directories bound read-only, a tmpfs workspace, and the
-  child dying with its parent.
+  child dying with its parent. Selection runs `bwrap` rather than looking for
+  it: a distribution that ships the binary and forbids unprivileged user
+  namespaces would otherwise be handed an isolated backend whose every
+  execution fails at spawn, which is a worse answer than an honest weaker one.
 - **Linux without it** reaches `process`: rlimits, a process group, a dropped
   uid where the worker is privileged enough to drop one, and a network
-  namespace where an unprivileged user namespace permits one. The filesystem
-  guarantee is honestly `unverified` unless the canary proves otherwise.
+  namespace where an unprivileged user namespace permits one. There is no
+  filesystem mechanism at all here, so that guarantee is `unavailable`.
 - **macOS** reaches `process`: a generated seatbelt profile confines the
   filesystem and denies the network, and rlimits cap CPU, file size and
-  processes. It cannot usefully cap memory, so a request for `isolated` is
-  refused there rather than approximated.
+  processes. The profile allows reads generally and denies named subtrees, so
+  its filesystem guarantee is `unverified` rather than `enforced` however the
+  canary comes back. It cannot usefully cap memory either, so a request for
+  `isolated` is refused there rather than approximated.
 - **Windows** reaches `process`: a Job Object contains the whole tree with
   active-process, job-memory and job-CPU limits, kill-on-close so no
   descendant outlives the handle, and UI restrictions. The child runs as the
@@ -313,7 +339,35 @@ another Run or another tenant, is denied rather than served.
 **Lying about the protocol.** Everything the child sends is hostile input: it
 holds the descriptor and can forge any frame. Frames are rebuilt field by
 field, bytes are metered before parsing, and a malformed frame ends the
-execution as a protocol error rather than being interpreted.
+execution as a protocol error rather than being interpreted. A remote service
+is treated the same way rather than as infrastructure: a single frame and a
+whole response stream each have a ceiling here, because the limits it was sent
+are a request to it and not a property of it. The ceiling is applied to the
+bytes as they arrive, not to assembled lines: a line that never ends is
+already allocated by the time anything can measure it. Bytes are not the only
+budget. A stream can stay well inside them and still be millions of lines, or
+millions of empty ones, so lines and blanks are counted against ceilings of
+their own and the failure names whichever was spent. The reader also hands the
+event loop back every few hundred lines: parsing is synchronous, and a reader
+that runs a whole hostile chunk without yielding has disabled the wall-clock
+timeout that was supposed to end the stream. Its credential is refused over
+plaintext unless the service is on loopback or the operator said explicitly
+that the path is trusted.
+
+**A pattern as a denial of service.** One tool argument in this library is an
+executable language the model writes: the regular expression `read_tool_output`
+searches with. Python's engine backtracks, so a pattern of a dozen characters
+can run for longer than anyone will wait, and neither shortening the subject
+nor moving the call to a thread bounds it — the first only changes the
+exponent, and the second cannot be interrupted, so enough of them exhaust the
+pool and take every other Run with them. The match therefore runs in a child
+process with a deadline, and the deadline is enforced by killing it from
+outside — the child cannot police itself, because a backtracking match holds
+the interpreter lock and a watchdog thread inside it never wakes. The deadline
+is wall clock from spawn to exit, and that is the only bound claimed: from
+outside the process there is no way to tell a second spent matching from a
+second spent starting Python, so there is no separate matching limit to
+enforce. Ten seconds is sized so that neither reading refuses ordinary work.
 
 **Replaying arbitrary code.** Nothing retries an execution. A remote provider's
 timeout, disconnection, malformed answer or error is reported as a failure with

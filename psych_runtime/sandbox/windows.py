@@ -110,6 +110,7 @@ from psych_runtime.sandbox._local import (
     DEFAULT_CAPTURE,
     Canary,
     Conversation,
+    admission,
     bounded,
     classify_done,
     collect_artifacts,
@@ -502,6 +503,7 @@ class WindowsJobSandbox:
                     cancel=cancel,
                     workdir=workdir,
                     network=network,
+                    isolation=isolation,
                 )
             finally:
                 await _close_listener(server, connected, accepted)
@@ -603,6 +605,7 @@ async def _drive(
     cancel: asyncio.Event | None,
     workdir: Path,
     network: bool,
+    isolation: IsolationLevel | None,
 ) -> SandboxResult:
     stdout_task = asyncio.ensure_future(read_capped(proc.stdout, capture.stream_bytes))
     stderr_task = asyncio.ensure_future(read_capped(proc.stderr, capture.stream_bytes))
@@ -620,7 +623,18 @@ async def _drive(
             )
         else:
             talk = await converse(
-                reader, writer, program, bindings, wall_seconds=limits.wall_seconds, cancel=cancel
+                reader,
+                writer,
+                program,
+                bindings,
+                wall_seconds=limits.wall_seconds,
+                cancel=cancel,
+                admit=admission(
+                    lambda ready: _grade(ready, network_granted=network),
+                    isolation,
+                    network_required=not network,
+                    backend="windows-job",
+                ),
             )
     finally:
         # Whatever happened, including this task being cancelled from outside:

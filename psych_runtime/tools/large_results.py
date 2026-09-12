@@ -186,6 +186,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -1055,26 +1057,112 @@ def _slice(
     )
 
 
+_SEARCH_DEADLINE_SECONDS: Final = 10.0
+"""The whole wall clock one search gets, from spawn to exit, before it is killed.
+
+One number, and it is the only bound enforced. It covers starting an
+interpreter, piping the subject over, compiling the pattern and matching, and
+it is measured by the parent because it cannot be measured anywhere else: a
+backtracking match holds the GIL, so a watchdog thread inside the child never
+wakes to fire.
+
+There is deliberately no separate limit on matching alone. Splitting the
+deadline would mean claiming a bound on one part of it, and nothing here can
+tell the parts apart from outside the process -- a search that took nine
+seconds might have spent them matching or waiting for a loaded machine to
+start Python. Ten seconds is sized so that neither reading is a refusal of
+ordinary work: a pattern worth running over a few megabytes needs under two,
+and spawning an interpreter on a busy host has been seen to take seconds.
+"""
+
+_SEARCH_PROGRAM: Final = """
+import json, re, sys
+request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+matcher = re.compile(request["pattern"])
+hits = [
+    [index + 1, line]
+    for index, line in enumerate(request["lines"])
+    if matcher.search(line)
+]
+sys.stdout.write(json.dumps({"matches": hits}))
+"""
+"""The search, run somewhere it can be killed. See ``_matching_lines``."""
+
+
+def _creation_flags() -> int:
+    # On Windows a console child would paint a window on every search; the
+    # worker may well be running behind a GUI. Zero everywhere else.
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _matching_lines(pattern: str, lines: list[str]) -> list[tuple[int, str]]:
+    """Every line matching ``pattern``, with a hard ceiling on the time spent.
+
+    The pattern is written by the model and Python's ``re`` backtracks, so
+    ``(a+)+$`` against a couple of dozen characters already runs for seconds
+    and against a longer line runs for longer than anyone will wait. Neither
+    capping the subject nor moving the call to a thread bounds that: the cap
+    only changes the exponent, and a thread cannot be interrupted, so enough
+    bad patterns exhaust the pool and take every other Run down with them.
+
+    So the match runs in a child process that can be killed, and is. What is
+    bounded is the whole search, spawn to exit: the child cannot police itself,
+    because a backtracking match holds the GIL and a watchdog thread inside it
+    never wakes, so the parent holds the clock and no narrower guarantee is
+    available from out here. The cost is one interpreter spawn per search,
+    which is a fair price for the one tool argument in this library that is an
+    executable language written by the model.
+
+    Raises:
+        ValueError: the pattern did not finish inside the budget, or the
+            search could not be run at all. Both reach the model as an
+            ordinary tool failure it can correct, and neither is silently
+            downgraded to an unbounded in-process search.
+    """
+    # Capped first: a pattern anchored with `$` should see what the model will
+    # be shown, and a shorter subject is a smaller exponent even though it is
+    # not the bound.
+    subjects = [_cap_line(line) for line in lines]
+    request = json.dumps({"pattern": pattern, "lines": subjects}).encode("utf-8")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", _SEARCH_PROGRAM],
+            input=request,
+            capture_output=True,
+            timeout=_SEARCH_DEADLINE_SECONDS,
+            check=False,
+            creationflags=_creation_flags(),
+        )
+    except subprocess.TimeoutExpired as err:
+        raise ValueError(
+            f"searching with {pattern!r} was stopped after {_SEARCH_DEADLINE_SECONDS}s. "
+            "Some patterns take exponential time on some text; try a simpler one, or "
+            "anchor it, or read the lines and filter them in a program."
+        ) from err
+    except OSError as err:
+        raise ValueError(
+            f"the pattern search could not be run on this host ({err}). Read the output "
+            "in windows instead of searching it."
+        ) from err
+    if completed.returncode != 0:
+        raise ValueError(f"{pattern!r} could not be searched with: the search exited abnormally")
+    try:
+        answer = json.loads(completed.stdout.decode("utf-8"))
+        return [(int(number), str(text)) for number, text in answer["matches"]]
+    except (ValueError, KeyError, TypeError) as err:
+        raise ValueError(f"the pattern search returned nothing readable: {err}") from err
+
+
 def _search(
     parsed: ReadToolOutputArguments, lines: list[str], total_size_bytes: int
 ) -> ReadToolOutputResult:
     assert parsed.pattern is not None  # only called in search mode
     try:
-        matcher = re.compile(parsed.pattern)
+        re.compile(parsed.pattern)
     except re.error as err:
         raise ValueError(f"{parsed.pattern!r} is not a valid regular expression: {err}") from err
 
-    # Matched against the capped line, not the raw one. The pattern is written
-    # by the model and the subject is a stored result of arbitrary size, and
-    # Python's `re` has no timeout: a catastrophic-backtracking pattern like
-    # `(a+)+$` over a 50KB line stalls this thread for minutes. Capping first
-    # bounds the subject to _MAX_LINE_CHARS, which is what turns an unbounded
-    # stall into a bounded one; `read_tool_output_async` runs the whole search
-    # off the event loop as well, so even that bounded cost is not paid by
-    # every other Run in the process.
-    all_matches = [
-        (index + 1, line) for index, line in enumerate(lines) if matcher.search(_cap_line(line))
-    ]
+    all_matches = _matching_lines(parsed.pattern, lines)
     window = all_matches[parsed.offset : parsed.offset + parsed.limit]
     kept_text = _take_within_budget([_cap_line(line) for _, line in window])
     matches = tuple(

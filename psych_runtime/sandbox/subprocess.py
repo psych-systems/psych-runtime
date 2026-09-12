@@ -199,6 +199,7 @@ from psych_runtime.sandbox._local import (
     DEFAULT_CAPTURE,
     Canary,
     Captured,
+    admission,
     bounded,
     classify_done,
     collect_artifacts,
@@ -562,6 +563,7 @@ class SubprocessSandbox:
                 run_as=self._run_as,
                 network=network,
                 seatbelt=self._seatbelt_bin is not None,
+                isolation=isolation,
             )
         finally:
             canary.close()
@@ -798,6 +800,7 @@ async def _drive(
     run_as: tuple[int, int] | None,
     network: bool,
     seatbelt: bool,
+    isolation: IsolationLevel | None,
 ) -> SandboxResult:
     """Run the protocol conversation, enforce the wall clock, and tear down.
 
@@ -813,7 +816,22 @@ async def _drive(
 
     try:
         talk = await converse(
-            reader, writer, program, bindings, wall_seconds=limits.wall_seconds, cancel=cancel
+            reader,
+            writer,
+            program,
+            bindings,
+            wall_seconds=limits.wall_seconds,
+            cancel=cancel,
+            # Before the program is sent, not after it has run: see
+            # `psych_runtime.sandbox._local.admission`.
+            admit=admission(
+                lambda ready: _grade(
+                    ready, run_as=run_as, network_granted=network, seatbelt=seatbelt
+                ),
+                isolation,
+                network_required=not network,
+                backend="subprocess",
+            ),
         )
     except asyncio.CancelledError:
         # The caller's task was cancelled (a Worker shutting down, an abort).
@@ -923,10 +941,17 @@ def _grade(
     network = unavailable
     if not network_granted and ready.network_denied:
         network = enforced
-    if ready.canary_readable is None:
-        filesystem = unverified if seatbelt else unavailable
-    else:
-        filesystem = unavailable if ready.canary_readable else enforced
+    # A readable canary is proof of exposure; an unreadable one is not proof
+    # of confinement. Under seatbelt the profile allows reads generally and
+    # then denies specific subtrees, so failing to read one deliberately
+    # denied file says that denial worked and nothing about the rest of the
+    # filesystem -- which is most of it. That is `unverified`: a mechanism is
+    # in place and this execution did not contradict it. Without seatbelt
+    # there is no filesystem mechanism at all, so an unreadable canary is
+    # still `unavailable` rather than a guarantee.
+    filesystem = unverified if seatbelt else unavailable
+    if ready.canary_readable:
+        filesystem = unavailable
     if run_as is None:
         identity = unavailable
     elif ready.uid is None:

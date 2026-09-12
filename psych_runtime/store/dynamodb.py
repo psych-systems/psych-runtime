@@ -722,6 +722,42 @@ class DynamoDBStore:
             f"release: could not settle run {run_id} after {_MAX_OPTIMISTIC_RETRIES} retries"
         )
 
+    async def settle_inline(self, run_id: RunId) -> bool:
+        """One conditional ``UpdateItem``, touching two attributes and no others.
+
+        Not a read followed by a full ``PutItem``: a whole-item replace built
+        from a snapshot silently reverts anything written between the two
+        calls, and the condition cannot catch it, because a concurrent writer
+        that changes some other attribute leaves the state ``nested`` and the
+        condition still holds. An update names the attributes it changes, so
+        everything it does not name survives by construction.
+
+        The GSI attributes go because the deadline index is sparse: a settled
+        Run ages out of ``overdue_deadlines`` by no longer carrying them, the
+        same way ``release`` and every other settle leaves it.
+        """
+        runs_table = await (await self._ensure_resource()).Table(self._runs_table_name)
+        try:
+            await runs_table.update_item(
+                Key={"run_id": str(run_id)},
+                UpdateExpression="SET #state = :settled REMOVE deadline_gsi_pk, deadline_gsi_sk",
+                # Unlike ``release``, a failed condition here is an answer and
+                # not a race to retry: it means the Run is not NESTED, and a
+                # Run in any other state is one this may not touch. A
+                # nonexistent item fails the same way and is the same answer.
+                ConditionExpression="#state = :nested",
+                ExpressionAttributeNames={"#state": "state"},
+                ExpressionAttributeValues={
+                    ":settled": RunState.SETTLED.value,
+                    ":nested": RunState.NESTED.value,
+                },
+            )
+        except ClientError as err:
+            if _error_code(err) == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
     async def set_runnable_at(self, run_id: RunId, runnable_at: datetime | None) -> None:
         runs_table = await (await self._ensure_resource()).Table(self._runs_table_name)
         for _ in range(_MAX_OPTIMISTIC_RETRIES):

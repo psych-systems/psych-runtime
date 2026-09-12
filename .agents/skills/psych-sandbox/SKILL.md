@@ -103,16 +103,25 @@ result.guarantees.network
 # .process_count, .wall_clock, .environment
 ```
 
-`ENFORCED` means the execution observed the guarantee hold — the filesystem
-grade, for instance, comes from a canary file the host writes *outside* the
-workspace and the child reports it could not read. `UNVERIFIED` means the
-mechanism was requested and nothing contradicted it. `UNAVAILABLE` means this
-platform does not offer it and the result says so rather than implying it.
+`ENFORCED` means the execution observed the guarantee hold. `UNVERIFIED` means
+the mechanism was requested and nothing contradicted it. `UNAVAILABLE` means
+this platform does not offer it and the result says so rather than implying it.
 
-**Output produced under weaker terms than requested is withheld.** If a
-program asked for `ISOLATED` and the backend only reached `PROCESS`, the result
-carries an `isolation_unavailable` failure and no stdout, stderr or value. A
-model never sees bytes produced on terms it did not get.
+The canary is the clearest case of the difference. The host writes a file
+*outside* the workspace and the child reports whether it could read it. Reading
+it proves exposure, so that grade is `UNAVAILABLE`. Failing to read it proves
+only that this one file was out of reach — under a profile that allows reads
+generally and denies specific subtrees, most of the filesystem is still
+readable — so that grade is `UNVERIFIED`, and only a backend with a real
+boundary (a mount namespace, a container) reports `ENFORCED`.
+
+**A program that asked for more isolation than the backend provides is never
+run.** The child reports its containment before the program is sent, and a
+host that does not accept what it sees sends an abort instead: the result
+carries an `isolation_unavailable` failure and nothing executed. Withholding
+output afterwards is the backstop for a backend that misreported itself, not
+the mechanism — a program that has run has already read what it could read and
+reached what it could reach, and discarding its output does not undo that.
 
 Ask a backend before running anything:
 
@@ -159,8 +168,10 @@ or a missing image is a configuration error you learn about from
 
 ### Honest limits per platform
 
-- **Linux without `bwrap`** cannot promise a filesystem boundary. It says so:
-  `guarantees.filesystem` is `UNVERIFIED` unless the canary proves otherwise.
+- **Linux without `bwrap`** cannot promise a filesystem boundary at all, so
+  `guarantees.filesystem` is `UNAVAILABLE`. **macOS** confines reads with a
+  seatbelt profile but cannot prove the confinement from one canary, so it is
+  `UNVERIFIED`. Neither reports `ENFORCED`, and neither can reach `ISOLATED`.
 - **macOS** cannot cap memory (no address-space rlimit that CPython respects
   usefully), so `local_sandbox(isolation=ISOLATED)` refuses there and points at
   a container or a remote service.
@@ -192,7 +203,24 @@ reproducible.
 docstring of `psych_runtime.sandbox.remote` for the four routes and the NDJSON
 frames. Credentials come from a callback resolved fresh per request
 (`SecretResolver` in a deployment), never from the Spec, and never appear in a
-Record, a report, a trace, a URL or an exception.
+Record, a report, a trace, a URL or an exception. A credential is refused over
+plaintext `http://` unless the host is loopback or the caller passes
+`allow_insecure_http=True` to say the network in between is trusted.
+
+The same "refuse before running" rule applies across the wire, on both sides:
+the adapter reads the service's description first and does not send a program
+to a service that already says it cannot meet the terms, and a service that is
+asked for terms it cannot meet must answer with an error frame *before*
+executing. Responses are bounded here too — a single frame and a whole stream
+each have a ceiling — because a limit the other side enforces is a request.
+The bound is applied to bytes as they arrive rather than to assembled lines:
+a reader that hands back whole lines has already allocated an endless one by
+the time its length can be measured. Size is not the only budget either — the
+number of lines and the number of *empty* lines have their own ceilings, since
+a stream can sit well inside the byte ceiling and still be millions of them —
+and the reader hands the event loop back every few hundred lines, because
+parsing is synchronous and a reader that never yields has disabled the very
+timeout meant to end a hostile stream.
 
 Its failure semantics are deterministic, because arbitrary code must not be
 re-run by accident: a non-200, a stream that ends before the program does, or a
@@ -276,8 +304,9 @@ Off by default, and a grant has to come from both the profile and the Spec.
 - **Namespace and container backends** deny by unsharing or `--network=none`, a
   kernel guarantee that does not depend on this process's privilege.
 - **Subprocess and Windows backends** attempt denial and report whether it
-  held. The child tests it directly and the grade is its answer, never an
-  assumption.
+  held. The child tests it directly, over IPv4 *and* IPv6, and the grade is
+  its answer rather than an assumption: a host with v6 configured and v4
+  unrouted still has a route to the world.
 
 Granted network access is **not** a bound HTTP client handed to the program.
 Anything the program is meant to fetch goes through a binding that itself uses

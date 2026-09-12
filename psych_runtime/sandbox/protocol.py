@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Any
@@ -51,6 +51,7 @@ __all__ = [
     "DoneFrame",
     "ReadyFrame",
     "SandboxProtocolError",
+    "build_abort_frame",
     "build_reply_frame",
     "build_run_frame",
     "parse_call_or_done_frame",
@@ -120,8 +121,23 @@ async def write_frame(writer: asyncio.StreamWriter, frame: Mapping[str, Any]) ->
 
 
 def build_run_frame(program: str) -> dict[str, Any]:
-    """The one host-to-child frame that starts an execution."""
+    """The frame that starts an execution, sent only once the host has read
+    the child's ``ready`` report and accepted the terms it describes."""
     return {"type": "run", "program": program}
+
+
+def build_abort_frame(reason: str) -> dict[str, Any]:
+    """The other answer to ``ready``: the terms are not what was asked for, so
+    this child never receives the program.
+
+    The point of the two-phase handshake. Grading a child's containment after
+    it has already run the program tells you what happened, which is too late:
+    the filesystem it touched, the address it reached and the file it wrote
+    are not undone by discarding the output. The child reports what it
+    observes about itself first, and the program is sent only if that is
+    acceptable.
+    """
+    return {"type": "abort", "reason": reason}
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,8 +307,9 @@ async def run_protocol(
     writer: asyncio.StreamWriter,
     program: str,
     bindings: Mapping[str, HostBinding],
-) -> tuple[ReadyFrame, DoneFrame]:
-    """Read the ready frame, send the program, answer calls until done.
+    admit: Callable[[ReadyFrame], str | None] | None = None,
+) -> tuple[ReadyFrame, DoneFrame | None]:
+    """Read the ready frame, accept or refuse it, then run and answer calls.
 
     Shared by every adapter (``psych_runtime.sandbox.subprocess``,
     ``psych_runtime.sandbox.container``): once a child is reachable as a pair of
@@ -300,9 +317,17 @@ async def run_protocol(
     whether those streams sit on an inherited socket fd or an accepted Unix
     socket connection.
 
+    Args:
+        admit: given what the child reported about its own containment,
+            returns ``None`` to send the program or a reason to refuse. A
+            refusal sends an ``abort`` frame and the program is never sent,
+            which is the only point at which refusing still prevents
+            anything. Omitted, every child is admitted.
+
     Returns:
         What the child observed about itself before running anything (the
-        ``ReadyFrame``), and the final ``DoneFrame``.
+        ``ReadyFrame``), and the final ``DoneFrame`` -- or ``None`` for that
+        second element when ``admit`` refused, because nothing ran.
 
     Raises:
         SandboxProtocolError: the child sent something that does not fit the
@@ -311,6 +336,10 @@ async def run_protocol(
             attempt to talk to it.
     """
     ready = parse_ready_frame(await read_frame(reader))
+    refusal = admit(ready) if admit is not None else None
+    if refusal is not None:
+        await write_frame(writer, build_abort_frame(refusal))
+        return ready, None
     await write_frame(writer, build_run_frame(program))
 
     known = bindings.keys()

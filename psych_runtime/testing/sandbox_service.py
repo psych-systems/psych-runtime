@@ -249,15 +249,28 @@ class SandboxService:
         assert self._server is not None
         self._server.close()
         connections = list(self._connections)
-        for writer in connections:
-            writer.close()
-        for task in list(self._tasks):
-            task.cancel()
-        for task in list(self._tasks):
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
         for execution in self._executions.values():
             execution.cancel.set()
+
+        # Let cancellation reach the sandbox and its streaming response before
+        # forcing the connection tasks down. Abruptly cancelling these tasks
+        # can leave asyncio transports to be finalized after the test ends.
+        tasks = list(self._tasks)
+        pending: set[asyncio.Task[None]] = set()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=3.0)
+
+        for writer in self._connections:
+            writer.close()
+        for task in pending:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+        for writer in self._connections:
+            if writer not in connections:
+                connections.append(writer)
         for writer in connections:
             await _close_writer(writer)
         with contextlib.suppress(OSError):

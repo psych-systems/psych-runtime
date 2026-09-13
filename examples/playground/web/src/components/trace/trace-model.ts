@@ -65,6 +65,12 @@ interface TraceEntryBase {
   timed: boolean;
   offsetSeconds: number | null;
   durationSeconds: number | null;
+  /** A tool call a sandboxed program made, shown under the `run_code` that
+   *  made it. Indentation rather than a collapsible tree: a program's calls
+   *  belong in the timeline in the order they happened, and hiding them
+   *  behind a disclosure is how a destructive call made by a program stops
+   *  being noticed. */
+  parentKey?: string;
   /** True when this entry has no `finishedAt` and the Run has not settled --
    * still in flight as of this report, as opposed to `dangling` (the Attempt
    * that was doing it died and nothing will finish it). */
@@ -244,6 +250,7 @@ function buildToolEntry(call: ToolCallReport, t0: number): TraceEntry {
     key: `tool:${call.call_id}`,
     kind: "tool",
     data: call,
+    parentKey: call.parent_call_id ? `tool:${call.parent_call_id}` : undefined,
     turn: call.turn,
     stepId: call.step_id,
     label: call.tool,

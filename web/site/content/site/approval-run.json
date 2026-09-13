@@ -1,6 +1,6 @@
 {
   "generated_by": "scripts/generate_site_fixtures.py",
-  "psych_runtime": "0.1.1",
+  "psych_runtime": "0.1.2",
   "input": "refund order A1, it arrived broken",
   "model": "gpt-4o-mini",
   "approval_selectors": [
@@ -145,7 +145,8 @@
           "turn": 1,
           "step_id": null,
           "interruptible": true,
-          "safe_to_retry": false
+          "safe_to_retry": false,
+          "parent_call_id": null
         },
         {
           "run_id": "run_9b7c",
@@ -261,7 +262,8 @@
           "turn": 2,
           "step_id": null,
           "interruptible": true,
-          "safe_to_retry": true
+          "safe_to_retry": true,
+          "parent_call_id": null
         },
         {
           "run_id": "run_9b7c",
@@ -379,7 +381,8 @@
           "turn": 3,
           "step_id": null,
           "interruptible": false,
-          "safe_to_retry": false
+          "safe_to_retry": false,
+          "parent_call_id": null
         },
         {
           "run_id": "run_9b7c",
@@ -536,7 +539,8 @@
           "turn": 4,
           "step_id": null,
           "interruptible": true,
-          "safe_to_retry": false
+          "safe_to_retry": false,
+          "parent_call_id": null
         },
         {
           "run_id": "run_9b7c",
@@ -806,7 +810,8 @@
           "turn": 1,
           "step_id": null,
           "interruptible": true,
-          "safe_to_retry": false
+          "safe_to_retry": false,
+          "parent_call_id": null
         },
         {
           "run_id": "run_9b7c",
@@ -922,7 +927,8 @@
           "turn": 2,
           "step_id": null,
           "interruptible": true,
-          "safe_to_retry": true
+          "safe_to_retry": true,
+          "parent_call_id": null
         },
         {
           "run_id": "run_9b7c",
@@ -1040,7 +1046,8 @@
           "turn": 3,
           "step_id": null,
           "interruptible": false,
-          "safe_to_retry": false
+          "safe_to_retry": false,
+          "parent_call_id": null
         },
         {
           "run_id": "run_9b7c",

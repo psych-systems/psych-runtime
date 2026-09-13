@@ -71,6 +71,16 @@ Metadata Document use Psych's compatibility flow because the SDK's client
 credentials provider requires an already registered client ID and secret. MCP
 protocol traffic still runs through the official SDK.
 
+## Code execution changes nothing here
+
+A sandboxed program calling an MCP tool uses the pooled connection this Scope
+already holds, with the authorization that connection already carries. The
+exchange, the refresh and the retry all happen on the host.
+
+No token, refresh token, client secret, transport object or authenticated URL
+crosses into the sandbox. A program sends a tool name and JSON arguments and
+receives a result; it has no way to ask for a credential and nothing to ask.
+
 ## Rules
 
 - Put only secret names in a Spec.

@@ -487,7 +487,6 @@ class ContainerSandbox:
                     image=self._image,
                     container_python_bin=self._container_python_bin,
                     ipc_dir=ipc_dir,
-                    bindings=bound,
                     limits=active_limits,
                     network=network,
                     env_allowlist=self._env_allowlist,
@@ -604,7 +603,6 @@ def _build_run_argv(
     image: str,
     container_python_bin: str,
     ipc_dir: Path,
-    bindings: Mapping[str, HostBinding],
     limits: SandboxLimits,
     network: bool,
     env_allowlist: Mapping[str, str],
@@ -679,7 +677,6 @@ def _build_run_argv(
         container_python_bin,
         BOOTSTRAP_SOURCE,
         f"unix:{_CONTAINER_IPC_DIR}/ipc.sock",
-        *bindings.keys(),
     ]
     return argv
 

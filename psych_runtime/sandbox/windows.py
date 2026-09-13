@@ -468,7 +468,6 @@ class WindowsJobSandbox:
                     "-u",
                     str(bootstrap),
                     f"tcp:127.0.0.1:{port}:{token}",
-                    *bound.keys(),
                 ]
                 try:
                     proc = await asyncio.create_subprocess_exec(

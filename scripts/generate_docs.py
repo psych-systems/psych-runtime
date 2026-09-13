@@ -141,6 +141,7 @@ GROUPS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "OutputCapture",
             "Enforcement",
             "CodeExecutionGrant",
+            "BindingBudget",
             "HostBinding",
             "BlobKey",
             "RunHeader",

@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  allBindingNames,
+  STATUS_COPY,
+  type BindingGroup,
+} from "@/components/agents/bindable-tools";
 import { ShieldCheckIcon, ShieldIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -23,8 +28,11 @@ interface CodeExecutionFieldsProps {
   onChange: (next: CodeExecutionFormState) => void;
   /** Keyed `code_execution.<field>`. */
   fieldErrors: Record<string, string>;
-  /** The tools the agent currently grants, which bound what a program may call. */
-  tools: string[];
+  /** What a program may call, grouped by where each tool comes from.
+   *  Not a flat list of the agent's own tools any more: a program reaches
+   *  every tool the agent is authorized to call, and an MCP tool is
+   *  discovered rather than declared, so each entry carries its own status. */
+  toolGroups: BindingGroup[];
   /** Profile names this account offers, from Settings. */
   profiles: string[];
   runtime: RuntimeSettings | null;
@@ -43,7 +51,7 @@ export function CodeExecutionFields({
   value,
   onChange,
   fieldErrors,
-  tools,
+  toolGroups,
   profiles,
   runtime,
 }: CodeExecutionFieldsProps) {
@@ -193,51 +201,92 @@ export function CodeExecutionFields({
           <h3 className="text-body font-medium">Tools a program may call</h3>
           <p className="text-caption text-muted-foreground">
             Host functions available inside the program, each going through the same policy,
-            approvals and record as a direct call. Only tools this agent already holds can be
-            offered; narrowing here never widens anything.
+            approvals and record as a direct call. Only tools this agent is already authorized
+            to call can be offered; narrowing here never widens anything.
           </p>
         </div>
-        {tools.length === 0 ? (
+        {toolGroups.length === 0 ? (
           <p className="text-caption text-muted-foreground italic">
-            This agent holds no tools yet, so a program can call none.
+            This agent holds no tools and is connected to nothing, so a program can call none.
           </p>
         ) : (
-          <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+          <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
             <label className="flex items-center gap-2 text-body">
               <Checkbox
                 checked={value.bindings === null}
                 onCheckedChange={(checked) =>
-                  onChange({ ...value, bindings: checked ? null : [...tools] })
+                  onChange({
+                    ...value,
+                    bindings: checked ? null : allBindingNames(toolGroups),
+                  })
                 }
               />
-              Every tool the agent holds
+              Every tool it is authorized to call
             </label>
-            {value.bindings !== null && (
-              <div className="grid grid-cols-1 gap-1.5 pl-6 sm:grid-cols-2">
-                {tools.map((tool) => {
-                  const on = value.bindings?.includes(tool) ?? false;
-                  return (
-                    <label key={tool} className="flex items-center gap-2 text-caption">
-                      <Checkbox
-                        checked={on}
-                        onCheckedChange={(checked) => {
-                          const current = value.bindings ?? [];
-                          onChange({
-                            ...value,
-                            bindings: checked
-                              ? [...current, tool].filter((t, i, a) => a.indexOf(t) === i)
-                              : current.filter((t) => t !== tool),
-                          });
-                        }}
-                      />
-                      <span className="font-technical">{tool}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
+            <p className="pl-6 text-caption text-muted-foreground">
+              Including tools discovered from a connected system at run time. Leaving this on
+              keeps a program in step with the agent: a tool added to a connection becomes
+              callable, and one withdrawn stops being callable, in the same turn either happens
+              for the model.
+            </p>
+            {value.bindings !== null &&
+              toolGroups.map((group) => (
+                <div key={`${group.origin}:${group.label}`} className="flex flex-col gap-1.5 pl-6">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-caption font-medium">{group.label}</span>
+                    <span className="text-caption text-muted-foreground">
+                      {group.origin === "mcp" ? "connected system" : `${group.origin} tools`}
+                    </span>
+                  </div>
+                  {group.note && (
+                    <p className="text-caption text-muted-foreground">{group.note}</p>
+                  )}
+                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                    {group.options.map((option) => {
+                      const on = value.bindings?.includes(option.name) ?? false;
+                      const status = STATUS_COPY[option.status];
+                      return (
+                        <label
+                          key={option.name}
+                          className="flex items-start gap-2 text-caption"
+                          title={option.note}
+                        >
+                          <Checkbox
+                            checked={on}
+                            disabled={option.status === "incompatible"}
+                            onCheckedChange={(checked) => {
+                              const current = value.bindings ?? [];
+                              onChange({
+                                ...value,
+                                bindings: checked
+                                  ? [...current, option.name].filter(
+                                      (t, i, a) => a.indexOf(t) === i,
+                                    )
+                                  : current.filter((t) => t !== option.name),
+                              });
+                            }}
+                          />
+                          <span className="flex flex-col">
+                            <span className="font-technical">{option.name}</span>
+                            {option.status !== "available" && (
+                              <span className={status.tone}>{status.label}</span>
+                            )}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
           </div>
         )}
+        <p className="text-caption text-muted-foreground">
+          No credential ever enters the sandbox. A program sends a tool name and JSON arguments
+          and receives a result; the token, the connection and the OAuth exchange stay on the
+          worker. A tool needing a person&apos;s approval or an answer cannot be called from a
+          program at all — the call is refused before it runs and the model is told to make it
+          directly.
+        </p>
       </div>
 
       <div className="flex flex-col gap-3">
@@ -378,7 +427,9 @@ export function CodeExecutionSummary({
         {requested.length > 0 ? requested.join(", ") : "the profile's ceiling"}
       </DetailRow>
       <DetailRow label="Tools a program may call">
-        {terms.bindings === null ? "every tool it holds" : terms.bindings.join(", ") || "none"}
+        {terms.bindings === null
+          ? "every tool it is authorized to call"
+          : terms.bindings.join(", ") || "none"}
       </DetailRow>
       <DetailRow label="Preview per stream">{terms.preview_bytes.toLocaleString()} bytes</DetailRow>
       <DetailRow label="Output beyond the preview">

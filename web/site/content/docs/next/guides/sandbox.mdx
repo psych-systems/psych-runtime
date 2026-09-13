@@ -59,8 +59,9 @@ in with `code_execution` to see the tool.
   seam and recording. There is no privileged back door, and the package
   enforces that by construction rather than convention: it has no import path
   to a tool registry to reach around in the first place. A binding is the same
-  tool the model could have called directly, reached a different way. A
-  binding must also be a tool the Spec grants — publishing fails otherwise.
+  tool the model could have called directly, reached a different way — and that
+  now includes every MCP tool and A2A skill the agent is currently granted, not
+  only the ones written into the Spec.
 - **Failures are data.** stdout, stderr and the full traceback come back as
   part of the result, never raised so they kill the turn. A model shown only
   "it failed" rewrites the program from scratch and usually reproduces the
@@ -71,6 +72,110 @@ in with `code_execution` to see the tool.
   returns a structured refusal naming the reason. Its other tools keep working.
   The one loud failure is a profile name nothing is registered under: that is a
   deployment mistake, and it stops the Attempt at startup.
+
+## What a program may call
+
+`bindings=None` — the default — means **every tool this agent can currently
+call**, after every narrowing plane: registered `CodeTool`s, `HttpTool`s, and
+whatever each granted MCP server and A2A peer offers this tenant right now. A
+tuple narrows that set and can never widen it.
+
+The set is resolved **at every turn boundary**, from the same catalogue the
+model's own tool list comes from. A tenant policy that withdraws a tool stops a
+program calling it in the same turn it stops the model calling it.
+
+A tool an MCP server offers is bindable **even when its catalogue is deferred**
+out of the prompt. That is the case code execution is best at: a program pays
+nothing for a schema it never reads, so a 351-tool server is exactly where
+looping beats forty turns.
+
+### Inside the program
+
+```python
+rows = []
+for sku in ("A", "B", "C"):
+    rows.append(await support__lookup(sku=sku))  # a direct alias
+raw = await call_tool("docs__list-repos", {"owner": "psych"})  # any name at all
+return {"count": len(rows)}
+```
+
+- `call_tool(name, arguments)` reaches **every** offered tool by its
+  model-facing name. It exists because a name is not an identifier: MCP servers
+  legitimately offer `list-repos`, `2fa` and `class`.
+- A **direct alias** exists for each name that *is* a usable identifier.
+  Never a mangled one: two servers can offer `list-repos` and `list_repos`, and
+  mangling would make one answer for the other.
+- `TOOLS` is the sorted tuple of names, so a program can look before it calls.
+- `ToolError` is raised when a call does not produce a result, carrying `.kind`
+  and `.tool`. Branch on `.kind`, never on the message.
+
+### Kinds a program can branch on
+
+| `.kind` | What happened |
+| --- | --- |
+| `approval_required_in_program` | A human would have to approve it. Call it directly. |
+| `input_required_in_program` | The far side wants more input. Call it directly. |
+| `binding_not_available` | No tool of that name is callable by this Run now, including a built-in that programs are never offered. |
+| `repeated_call` | The same call, arguments and answer, over and over. |
+| `binding_calls_exhausted` (and `…_for_run`) | The call budget ran out. |
+| `binding_arguments_too_large` | The arguments were over the per-call ceiling. |
+| `binding_result_too_large` | A `read` window was wider than the ceiling. Ask for fewer lines. |
+| `binding_result_not_paged` | Over the ceiling and not preserved, so there is nothing to page. |
+| `binding_handle_not_yours` | A handle this program's own calls did not produce. |
+| `binding_produced_bytes_exhausted` | The tools this program called produced too much. |
+| `binding_preserved_bytes_exhausted_for_run` | This Run's programs have stored too much. |
+| `result_not_inline` | A handle was used as if it were the result. Call `.read()`. |
+| `binding_traffic_exhausted` | The execution's total byte budget ran out. |
+| `McpToolError` | The tool ran and returned an error. |
+| `McpServerUnreachable` | The server is not there. The tool never ran. |
+
+### Built-ins, and why most are excluded
+
+`list_tools` and `get_tool_info` are callable from a program — bounded,
+read-only, and the only way to learn a deferred server's argument shapes.
+`read_tool_output` is callable too, and is how a program reads a result too
+large to hand it in one piece; it resolves only handles this program's own
+calls produced.
+Everything else Psych registers is refused, each for its own reason
+(`psych_runtime.core.code_execution.EXCLUDED_BUILTINS` holds the sentence):
+`ask_question` suspends the Run and nothing can resume into a subprocess;
+`delegate`, `spawn_subagent`, `check_subagent` and `message_subagent` start or
+address child Runs that outlive the execution; `remember`, `forget`,
+`update_tasks`, `load_skill` and `show_component` act on the model's own
+context or on the person in the conversation; `read_tool_output` is redundant,
+because the program already holds its own bytes.
+
+### Budgets
+
+A program compresses model turns; it does not get to compress the host's work.
+The **deployment** owns the numbers, on the profile:
+
+```python
+SandboxProfile(
+    "default",
+    local_sandbox(),
+    binding_budget=psych_runtime.BindingBudget(max_calls=200, max_total_bytes=8 << 20),
+)
+```
+
+Five things are metered, and they are not the same thing counted five ways:
+calls, *transfer* (bytes that crossed into the sandbox), *produced* (bytes
+the host's tools made, whether the program received them or not), *preserved*
+(bytes still sitting in the log or the BlobStore afterwards), and the
+per-call ceilings on arguments and results. A result replaced by a handle
+transfers about a hundred bytes and may have cost the host megabytes of
+fetching and storage, so metering only the transfer would price it at the
+size of its handle.
+
+Per execution and per Run, so a model cannot buy a fresh allowance by writing a
+second program. The per-Run half is counted from the Run's own log rather than
+in memory, so a Worker that dies mid-program does not hand the next Attempt a
+fresh allowance either: a call is spent when its `tool_call_started` record is
+written, whether it then succeeded, failed, was refused, was aborted, or was
+left dangling by the crash. A `CodeExecutionPolicy` may narrow them per tenant; a Spec
+cannot raise them, and does not carry them at all — a denial-of-service
+question about somebody's host is not an agent author's to answer, and a Spec
+field would put the answer in the Version hash.
 
 ## Isolation levels, and what a backend may claim
 
@@ -356,16 +461,45 @@ distinguish them either.
 ## Gotchas
 
 - **`run_code` is a reserved tool name.** A Spec cannot claim it.
-- **A binding must be a granted tool.** Publishing fails if `bindings` names
-  something outside `tools`.
+- **A binding must be something the agent holds.** Publishing fails if an
+  explicit `bindings` entry is neither a granted tool, a callable built-in, nor
+  addressed to a connected MCP server or A2A peer. Whether that server still
+  *offers* it is not checked at publish — publication must not depend on
+  somebody else's uptime — so a name that no longer resolves comes back in the
+  `run_code` result as `unavailable_bindings` and is never quietly replaced
+  with a different tool.
 - **An unknown profile name fails at publish** when the Runtime knows its
   profiles, and at Attempt startup otherwise. It is never silently ignored.
-- **Bindings go through Policy.** A program calling a binding for a destructive
-  tool suspends for approval exactly as a direct call would, and the program is
-  torn down rather than parked mid-execution.
+- **Bindings go through Policy.** A program calling a binding for a
+  destructive tool is refused with `approval_required_in_program` **before the
+  tool runs** — the only refusal that prevents anything — and told to call it
+  directly. Nothing can ask a person while a subprocess waits.
 - **Cancellation kills the tree.** Timeout, interrupt or caller cancellation
   terminates the process group or Job Object; no child, grandchild or listener
-  survives an execution.
+  survives an execution. An abort is noticed at the boundaries the host
+  controls: before the start, and around a binding call — where it also
+  cancels the in-flight operation. A program doing nothing but arithmetic is
+  not interrupted mid-loop; it ends at its wall clock, which is why the wall
+  clock is the limit that always applies.
+- **A program's calls are not replayed.** A Worker that dies with a binding
+  call in flight records `UNKNOWN` and the next Attempt does not re-run it,
+  exactly as for a direct call. Somebody else's MCP tool is not known to be
+  idempotent because a program made the call.
+- **The program sees more of the result than the model, and sometimes a
+  handle to it.** A large tool result is elided, and above the offload
+  threshold moved to the `BlobStore`, for the *model's* context. A program
+  receives the whole thing whenever it fits the per-call transfer ceiling —
+  filtering it down is why the program was written. Above that ceiling it
+  receives a `ToolResultHandle` instead and reads the result in bounded
+  windows on the host (`await handle.read(offset=…, limit=…)`, or
+  `pattern=…` to search); the call itself is still recorded as the success it
+  was. A window wider than the transfer ceiling is refused with
+  `binding_result_too_large` rather than turned into a second handle: the
+  program asked for too much of something it is already reading, and what
+  it needs to hear is to ask for less. A result over the ceiling that was not preserved under a handle is
+  refused with `binding_result_not_paged` rather than truncated — a program
+  computing over a silently shortened result is the one wrong answer nobody
+  downstream can detect.
 - **Container and `bwrap` tests skip where the runtime is absent.** A skip is
   not evidence of support; the cross-platform matrix in CI runs the shared
   contract suite on Linux, Windows and macOS.

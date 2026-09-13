@@ -147,6 +147,45 @@ member Psych never implemented: a Spec could ask for it, validation passed, and
 the connection could never work. Adding a real stdio transport is open work, not
 a silent revival.
 
+## MCP tools inside `run_code`
+
+An agent with `code_execution` can call **every MCP tool it is currently
+granted** from inside a program, through the same pool, the same connection,
+the same OAuth and the same three narrowing planes. There is no second MCP
+client, no MCP credential inside the sandbox, and no separate configuration
+surface: a program reaches the agent's existing connections or nothing.
+
+```python
+rows = []
+for sku in ("A", "B", "C"):
+    rows.append(await support__lookup(sku=sku))  # identifier names
+raw = await call_tool("docs__list-repos", {"owner": "psych"})  # any name
+```
+
+Three things follow from "the same narrowing", and each is worth knowing:
+
+- **A deferred server's tools are bindable.** They are absent from the prompt
+  and present in the program, which is the case code execution is best at: a
+  program pays nothing for a schema it never reads. `list_tools` and
+  `get_tool_info` are callable from a program too, for the argument shapes.
+- **Server-qualified names stay qualified.** Two servers both offering `search`
+  remain independently callable as `docs__search` and `tickets__search`, and
+  each routes to its own scoped connection.
+- **The set is re-resolved every turn.** A tool the server removed, or a tenant
+  policy withdrew, stops being callable from a program in the same turn it
+  stops being callable directly. A Spec that named it explicitly gets it back
+  as `unavailable_bindings` in the `run_code` result, never as a substitute.
+
+A binding call is recorded as its own `tool_call_started`/`tool_call_finished`
+pair carrying `parent_call_id`, so a report shows forty MCP calls nested under
+the one `run_code` that made them.
+
+MCP failures keep their identity inside the program: `ToolError.kind` is
+`McpToolError` when the tool ran and said no, and `McpServerUnreachable` when
+it never ran. A server asking for elicitation arrives as
+`input_required_in_program`, because nothing can answer it while a subprocess
+waits — the model is told to make that call itself.
+
 ## Gotchas
 
 - **`credential` is a name, never a value.** Your `SecretResolver` resolves it

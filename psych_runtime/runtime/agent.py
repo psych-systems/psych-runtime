@@ -42,17 +42,23 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Final, Literal
 
 from pydantic import ValidationError
 
-from psych_runtime.core.code_execution import OutputPreservation
+from psych_runtime.a2a.models import INTERRUPTED_STATES, TaskState
+from psych_runtime.core.code_execution import (
+    DEFAULT_BINDING_BUDGET,
+    BindingBudget,
+    OutputPreservation,
+)
 from psych_runtime.core.conversation import build_conversation
-from psych_runtime.core.errors import AccessDenied, TransientError
+from psych_runtime.core.errors import AccessDenied, ProgramToolRefused, TransientError
 from psych_runtime.core.ids import ToolCallId, new_tool_call_id
 from psych_runtime.core.messages import Message, SystemMessage, ToolDefinition
 from psych_runtime.core.questions import render_questions
@@ -66,7 +72,7 @@ from psych_runtime.core.records import (
     ToolFailure,
     ToolOutcome,
 )
-from psych_runtime.core.reducer import call_digest
+from psych_runtime.core.reducer import ToolResult, call_digest
 from psych_runtime.core.spec import AgentSpec, HttpTool, SpawnEnvelope
 from psych_runtime.core.usage import Cost, Usage
 from psych_runtime.model.port import (
@@ -111,8 +117,22 @@ from psych_runtime.telemetry.port import (
     TelemetrySpan,
 )
 from psych_runtime.tools import repetition
+from psych_runtime.tools.bindings import (
+    BindableTool,
+    BindingCounter,
+    EffectiveBindings,
+    effective_bindings,
+    exclusion_reason,
+    handle_descriptor,
+    measure_bytes,
+)
 from psych_runtime.tools.builtins import ASK_QUESTION, parse_questions
-from psych_runtime.tools.code import SLOT_PLACEHOLDER, CodeExecutionOutcome, attachment_handle
+from psych_runtime.tools.code import (
+    SLOT_PLACEHOLDER,
+    CodeExecutionOutcome,
+    attachment_handle,
+    run_code_definition,
+)
 from psych_runtime.tools.code import TOOL_NAME as RUN_CODE
 from psych_runtime.tools.code import digest as attachment_digest
 from psych_runtime.tools.deferred import DEFERRED_TOOL_NAMES, DeferredDiscovery
@@ -130,6 +150,7 @@ from psych_runtime.tools.large_results import (
     decide_offload,
     force_elision,
     read_tool_output_async,
+    read_tool_output_definition,
     read_tool_output_tools,
 )
 from psych_runtime.tools.policy import AllowAll, Decision, Policy, approval_required
@@ -293,6 +314,150 @@ class ToolExecutor:
         )
 
 
+_PROGRAM_REFUSAL_KINDS: Final[Mapping[str, str]] = {
+    "McpInputRequiredError": "input_required_in_program",
+}
+"""Failures that mean something different to a program than to the model.
+
+An MCP server asking for elicitation is a perfectly ordinary thing for the
+model to handle and an impossible one for a program: there is nobody to ask
+while a subprocess waits. The record keeps the exception's own name, because
+that is what happened; the program is told the one thing it can act on, in the
+same word the A2A equivalent uses."""
+
+
+_ACTIVE_CODE_CALL: Final[ContextVar[ToolCallId | None]] = ContextVar(
+    "psych_active_code_call", default=None
+)
+"""The ``run_code`` call whose program is running right now, for the calls it
+makes to be recorded underneath.
+
+A context variable rather than an attribute because the relationship is a
+dynamic extent -- everything that happens while this program runs belongs to
+it -- and because a loop that one day executes two of a turn's tool calls
+concurrently would otherwise file one program's bindings under the other."""
+
+
+def _json_shaped(value: Any) -> Any:
+    """A tool's return value as the sandbox channel can carry it.
+
+    Most tools already return JSON-shaped data. Some return a model -- an A2A
+    call answers with ``A2ACallResult``, because the model reading it needs the
+    task state and not a sentence about it -- and a model cannot cross a JSON
+    channel. Dumped rather than stringified: a program branching on
+    ``result["state"]`` is the point of that type existing, and ``str(model)``
+    would give it a repr to parse.
+    """
+    dump = getattr(value, "model_dump", None)
+    return dump(mode="json") if callable(dump) else value
+
+
+def _refuse_if_peer_needs_input(name: str, result: Any) -> None:
+    """Stop a program that reached an A2A task waiting on a person.
+
+    The call itself is finished and recorded: the peer took the message and
+    answered that it needs more before it can go on. What cannot happen is the
+    *next* step, because what to say next is a judgement, and the thing holding
+    that judgement is the model, which is not running while the program is.
+
+    So the program is stopped with the task id rather than handed a result it
+    would have to interpret. The model reads the refusal, sees the task id in
+    the log, and continues the conversation with a direct call -- which is the
+    same thing it would do if it had made the call itself.
+    """
+    state = result.get("state") if isinstance(result, Mapping) else getattr(result, "state", None)
+    if state is None:
+        return
+    try:
+        # A peer may answer with a state this version of A2A does not know.
+        # That is not a reason to fail the call: it is a reason to let the
+        # result through and let the model read it.
+        parsed = TaskState(state)
+    except ValueError:
+        return
+    if parsed not in INTERRUPTED_STATES:
+        return
+    task_id = (
+        result.get("task_id") if isinstance(result, Mapping) else getattr(result, "task_id", None)
+    )
+    raise ProgramToolRefused(
+        "input_required_in_program",
+        f"tool {name!r}",
+        "the peer agent needs more input before it can finish"
+        + (f" (task {task_id})" if task_id else "")
+        + ". A program cannot answer it; call the tool directly with that task_id.",
+    )
+
+
+_FOREIGN_HANDLE_MESSAGE: Final = (
+    "a program may only read results its own calls produced in this execution. "
+    "This handle is not one of them."
+)
+"""One sentence for every rejected read.
+
+A handle nobody issued, one from another Run or another tenant, one the model
+produced with a direct call, and one an earlier program in this same Run
+earned all get this. They are different situations and two of them name
+something that really exists, which is exactly why the answer must not
+differ: a refusal that varied would answer questions about the Run's store."""
+
+
+def _with_output_reader(bindings: EffectiveBindings) -> EffectiveBindings:
+    """Add the large-result reader to what an execution may call.
+
+    Added after the narrowing rather than inside it, and that is deliberate:
+    ``CodeExecution.bindings`` narrows which of the agent's *tools* a program
+    may call, and this is not one of them. It is part of how a program receives
+    an answer at all -- the same kind of thing as ``call_tool`` or ``TOOLS`` --
+    and an agent that named two tools explicitly would otherwise be handed
+    results it had no way to read.
+
+    It grants nothing new. ``read_tool_output`` reaches this Run's own stored
+    results and nothing else, and the runtime refuses even those unless this
+    program's own calls produced them.
+    """
+    if any(tool.name == READ_TOOL_OUTPUT for tool in bindings.tools):
+        return bindings
+    reader = BindableTool(definition=read_tool_output_definition(), origin="builtin")
+    return EffectiveBindings(
+        tools=tuple(sorted((*bindings.tools, reader), key=lambda tool: tool.name)),
+        missing=bindings.missing,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RunCodeOffer:
+    """How one Run offers ``run_code``, rebuilt at every turn boundary.
+
+    Not a finished tool. Which tools a program may call is a fact about *this
+    turn*: an MCP server renames one, a tenant policy withdraws one, an
+    optional server stops answering, a failure streak withholds one. Deciding
+    it once when the Attempt started -- which is what this replaced -- kept a
+    program's access to whatever the catalogue said at that moment, which is
+    the one direction DESIGN.md §10.5 forbids, and made MCP tools unbindable
+    altogether because they are not in the Spec to be enumerated from.
+
+    So the runtime hands the loop the *terms*, and the loop resolves the tools
+    against each turn's own ``ResolvedTools.bindable``.
+
+    Attributes:
+        filter: the Spec's explicit ``code_execution.bindings``, already
+            intersected with any tenant narrowing, or ``None`` for every
+            bindable tool. Only ever removes.
+        budget: what a program may spend on host tool calls.
+        build: given the bindings this turn resolved to and the callback that
+            routes a program's call through this loop, returns the tool
+            definition the model is shown and the executor that runs it.
+    """
+
+    filter: frozenset[str] | None
+    budget: BindingBudget
+    build: Callable[
+        [EffectiveBindings, Callable[[str, dict[str, Any]], Awaitable[Any]], BindingCounter],
+        tuple[ToolDefinition, Any],
+    ]
+
+
 class AgentLoop:
     """One agent, looping turns against one Run's journal."""
 
@@ -352,14 +517,61 @@ class AgentLoop:
         self._blob = blob
         self._blob_offload_bytes = blob_offload_bytes
         self._abort = abort
-        self._run_code_definition: ToolDefinition | None = None
+        self._code_offer: RunCodeOffer | None = None
+        self._turn_bindings = EffectiveBindings()
+        """This turn's binding set, for the approval gate. A binding call is
+        not a turn boundary, so it reads what the turn resolved rather than
+        resolving again: re-resolving mid-turn would change what the model was
+        told it could do while it was acting on it."""
+        self._binding_result_ceiling = DEFAULT_BINDING_BUDGET.max_result_bytes
+        """How many bytes one binding call may hand a program in one piece.
+
+        The deployment's, once ``run_code`` is offered. A result over it is
+        not truncated and not refused out of hand: it is replaced by a handle
+        the program can read in bounded windows, which is the whole reason
+        the ceiling can be small without making large results unusable."""
+        self._program_produced_bytes = 0
+        """Bytes host tools have produced for the program now running.
+
+        Per execution, and safe as one attribute because a loop runs one
+        program at a time: ``_execute_and_record`` is what starts an
+        execution, and a binding call only happens while one is in flight.
+        Reset there, alongside the handles, for the same reason.
+
+        Separate from the transfer budget because they answer different
+        questions. A 90 MB result replaced by a handle moves 90 bytes into
+        the sandbox and costs the host 90 MB of fetching, parsing and
+        storing; a budget that only counted the crossing would price that at
+        the size of the handle."""
+        self._program_handles: set[str] = set()
+        """Handles issued to the program currently running.
+
+        Cleared when each ``run_code`` call starts, so a program may read
+        back only what its *own* calls produced. Without this, a program
+        could pass any string to ``read_tool_output`` and read every large
+        result the Run ever stored, including ones from turns it had nothing
+        to do with."""
+        self._binding_counter = BindingCounter(
+            source=lambda: self._journal.state.program_tool_calls
+        )
+        """Host tool calls this Run has made from programs, across every
+        execution. A per-execution cap alone would let a model buy another
+        allowance by writing a second program.
+
+        Read from the Run's folded log rather than counted in memory, because a
+        Worker dying mid-program must not hand the Run a fresh allowance: the
+        next Attempt folds the same records and reaches the same number. The
+        fold counts a call at its ``tool_call_started``, and this loop appends
+        that record before executing, so a check here sees every call this Run
+        has already begun -- including ones that failed, were refused after
+        starting, were aborted, or are still dangling from a dead Worker."""
         # Guarded, always. A consumer's exporter being broken is never the
         # reason a Run failed (DESIGN.md §13.5).
         self._telemetry: Telemetry = GuardedTelemetry(
             telemetry if telemetry is not None else NOOP_TELEMETRY
         )
 
-    def offer_run_code(self, definition: ToolDefinition, caller: Any) -> None:
+    def offer_run_code(self, offer: RunCodeOffer) -> None:
         """Offer ``run_code`` for this Run, executing through this loop.
 
         Set after construction rather than in ``__init__`` because the sandbox
@@ -369,8 +581,37 @@ class AgentLoop:
         through the loop is what applies Policy, the approval selectors, the
         guards and the record log to them (DESIGN.md §18).
         """
-        self._run_code_definition = definition
+        self._code_offer = offer
+
+    def _build_run_code(self, resolved: ResolvedTools) -> ResolvedTools:
+        """Resolve this turn's bindings and put the real ``run_code`` in the set.
+
+        The turn resolves with a placeholder in ``extra`` -- it has to, because
+        the description names the bindings and the bindings are not known until
+        the catalogue has been resolved -- and this substitutes the finished
+        definition for it. Substituting rather than resolving twice keeps one
+        answer about name collisions and failure streaks: a ``run_code`` the
+        streak guard withheld is simply not in the set, and nothing is put
+        back.
+        """
+        offer = self._code_offer
+        if offer is None or RUN_CODE not in resolved.names:
+            return resolved
+        self._turn_bindings = _with_output_reader(
+            effective_bindings(resolved.bindable, requested=offer.filter)
+        )
+        self._binding_result_ceiling = offer.budget.max_result_bytes
+        definition, caller = offer.build(
+            self._turn_bindings, self.call_as_binding, self._binding_counter
+        )
         self._executor = self._executor.with_code_caller(caller)
+        return replace(
+            resolved,
+            definitions=tuple(
+                definition if existing.name == RUN_CODE else existing
+                for existing in resolved.definitions
+            ),
+        )
 
     async def call_as_binding(self, name: str, arguments: dict[str, Any]) -> Any:
         """Execute one tool call a sandboxed program made, recorded and gated.
@@ -387,7 +628,32 @@ class AgentLoop:
         while a subprocess waits -- so a call the selectors would gate is refused
         here, as data the program can read and explain, naming the tool to call
         directly instead.
+
+        Every refusal carries a stable ``kind``, which reaches the program as
+        ``ToolError.kind``. A program that can only read prose cannot tell "a
+        person has to approve this" from "the server is down", and those call
+        for opposite next moves.
         """
+        self._refuse_if_bytes_exhausted(name)
+        bound = self._turn_bindings.by_name().get(name)
+        if bound is None:
+            # Refused here rather than passed to the executor, which would look
+            # the name up across every connected server and might find it. What
+            # a program may call is settled at the turn boundary and this is the
+            # same list the sandbox was given, so anything else is a program
+            # that forged a name or a catalogue that moved underneath it.
+            excluded = exclusion_reason(name)
+            if excluded is not None:
+                raise ProgramToolRefused(
+                    "not_callable_from_a_program",
+                    f"tool {name!r}",
+                    f"{excluded}. Call it directly rather than from run_code.",
+                )
+            raise ProgramToolRefused(
+                "binding_not_available",
+                f"tool {name!r}",
+                "no tool of that name is available to programs in this Run right now.",
+            )
         call_id = new_tool_call_id()
         await self._journal.append(
             type="tool_call_started",
@@ -397,7 +663,37 @@ class AgentLoop:
             turn=max(self._journal.state.turn, 1),
             interruptible=_interruptible(self._spec, name),
             safe_to_retry=self._safe_to_retry(name),
+            # What makes a report and a trace able to nest this underneath the
+            # program that made it, rather than showing forty calls that appear
+            # to have come from the model.
+            parent_call_id=_ACTIVE_CODE_CALL.get(),
         )
+        if name == READ_TOOL_OUTPUT and not self._owns_handle(arguments):
+            # After the start record, deliberately. A read a program was not
+            # entitled to make is still a call it made: it is in the log, under
+            # its program, and it has spent the allowance like any other. The
+            # refusal happens here rather than in the reader, so nothing
+            # reaches the BlobStore and the answer cannot be used to learn
+            # whether the handle exists.
+            await self._journal.append(
+                type="tool_call_finished",
+                call_id=call_id,
+                outcome=ToolOutcome.ERROR,
+                failure=ToolFailure(
+                    kind="binding_handle_not_yours",
+                    message=_FOREIGN_HANDLE_MESSAGE,
+                ),
+            )
+            raise ProgramToolRefused(
+                "binding_handle_not_yours",
+                # Not the handle that was asked for. The subject is rendered
+                # into the message, and a message that named the handle would
+                # differ between rejections -- which is the one thing this
+                # refusal must not do. The attempt is in the log with its
+                # arguments for anyone reviewing the Run.
+                "a result handle",
+                _FOREIGN_HANDLE_MESSAGE,
+            )
         gate = await self._gate(call_id, name, arguments, self._binding_definitions(name))
         if gate is _Gate.SUSPENDED:
             # _gate wrote a suspension record. Nothing may resume into a
@@ -416,29 +712,202 @@ class AgentLoop:
                     ),
                 ),
             )
-            raise AccessDenied(
+            raise ProgramToolRefused(
+                "approval_required_in_program",
                 f"tool {name!r}",
                 "it needs a human approval, which cannot be asked for from inside a "
                 "program. Call it directly instead of from run_code.",
             )
         if gate is _Gate.DENIED:
-            raise AccessDenied(f"tool {name!r}", "the policy refused this call")
-        await self._execute_and_record(call_id, name, arguments)
+            raise ProgramToolRefused(
+                "access_denied", f"tool {name!r}", "the policy refused this call"
+            )
+
+        # The same guard the model's own calls go through, and it means the
+        # same thing here: an identical call, with identical arguments, that
+        # already returned an identical answer taught the program nothing, and
+        # a loop making it a thousand times is spinning. Fan-out is untouched,
+        # because forty lookups of forty different orders are forty different
+        # calls.
+        call_key = call_digest(name, arguments)
+        tally = self._journal.state.repeat_counts.get(call_key)
+        verdict = repetition.assess(
+            call_key,
+            (tally.count if tally is not None else 0) + 1,
+            threshold=self._spec.limits.repeat_call_threshold,
+            hard_stop=self._spec.limits.repeat_call_hard_stop,
+        )
+        if verdict.refuse:
+            message = verdict.advisory or repetition.advisory_message(verdict.repeats)
+            await self._journal.append(
+                type="tool_call_finished",
+                call_id=call_id,
+                outcome=ToolOutcome.ERROR,
+                failure=ToolFailure(
+                    kind="repeated_call",
+                    message=failure_guidance("repeated_call", message),
+                ),
+            )
+            raise ProgramToolRefused("repeated_call", f"tool {name!r}", message)
+
+        produced = await self._execute_and_record(call_id, name, arguments)
         settled = self._journal.state.tool_results[-1]
         if settled.outcome is not ToolOutcome.OK:
             # The program reads the failure as an exception it can catch, and
-            # the log already holds the whole story.
-            raise RuntimeError(settled.failure.message if settled.failure else "the call failed")
-        return settled.result
+            # the log already holds the whole story. The kind comes from the
+            # record, so `McpToolError` (the tool ran and said no) and
+            # `McpServerUnreachable` (it never ran) stay apart in the program
+            # exactly as they do in the log.
+            failure = settled.failure
+            kind = failure.kind if failure is not None else "tool_failed"
+            raise ProgramToolRefused(
+                _PROGRAM_REFUSAL_KINDS.get(kind, kind),
+                f"tool {name!r}",
+                failure.message if failure is not None else "the call failed",
+            )
+        if bound.origin == "a2a":
+            _refuse_if_peer_needs_input(name, produced)
+        # `produced`, not `settled.result`: see `_execute_and_record`. Shaped
+        # for JSON on the way out, because a tool may hand back a model (an
+        # A2A call returns one) and the sandbox channel carries JSON.
+        shaped = _json_shaped(produced)
+        # What the host actually produced, whatever the program ends up
+        # receiving. Measured here, before the transfer decision, because the
+        # transfer decision is exactly what would otherwise hide it.
+        size = measure_bytes(shaped)
+        self._program_produced_bytes += size
+        return self._inline_or_handle(name, shaped, settled, size)
+
+    def _refuse_if_bytes_exhausted(self, name: str) -> None:
+        """Stop before the call, once this program or this Run has spent its
+        share of the host's work and the host's storage.
+
+        Before, and not after, because both quantities are spent by the tool
+        running: a result is fetched, parsed and (when it is large) written to
+        the BlobStore before anything decides how much of it the program may
+        see. Checking afterwards would bound the number a report shows and
+        nothing that actually costs anything -- the work would already be
+        done and the bytes would already be stored.
+
+        The storage half is read from the Run's own log, so it is the same
+        number before and after a Worker replacement. A program cannot fill a
+        BlobStore by arranging to be restarted."""
+        budget = self._code_offer.budget if self._code_offer is not None else None
+        if budget is None:
+            return
+        if self._program_produced_bytes >= budget.max_produced_bytes:
+            raise ProgramToolRefused(
+                "binding_produced_bytes_exhausted",
+                f"tool {name!r}",
+                f"the tools this program has called have produced "
+                f"{self._program_produced_bytes} bytes and it may spend "
+                f"{budget.max_produced_bytes}. Ask for less per call -- a filter, a "
+                "narrower query, a smaller page -- rather than fetching everything "
+                "and reducing it here.",
+            )
+        preserved = self._journal.state.program_preserved_bytes
+        if preserved >= budget.max_preserved_bytes_per_run:
+            raise ProgramToolRefused(
+                "binding_preserved_bytes_exhausted_for_run",
+                f"tool {name!r}",
+                f"this Run's programs have stored {preserved} bytes of tool "
+                f"results and may store {budget.max_preserved_bytes_per_run}. Answer "
+                "with what is already stored, or call the tool directly.",
+            )
+
+    def _owns_handle(self, arguments: Mapping[str, Any]) -> bool:
+        """Whether this program's own calls produced the handle being read.
+
+        Three separate things are being refused, and only the first is about
+        a program doing something wrong:
+
+        - a handle this program invented, or copied out of a trace;
+        - a handle from another Run or another tenant, which never resolves
+          here anyway (``read_tool_output`` scopes every handle to the Run
+          that minted it) and is refused one step earlier so the attempt is
+          not even worth making;
+        - a handle this Run really did mint, for a *direct* call the model
+          made. That one exists and would resolve, and it is still refused:
+          a program reads back what its own calls produced, and reaching
+          into the rest of the Run's stored results is a capability nobody
+          granted it.
+
+        All five answer the same way, in the same words. A refusal that read
+        differently for a handle that exists would be a way to ask the Run
+        what it has stored."""
+        handle = arguments.get("handle")
+        return isinstance(handle, str) and handle in self._program_handles
+
+    def _inline_or_handle(self, name: str, shaped: Any, settled: ToolResult, size: int) -> Any:
+        """Hand the program the result, or a handle to it.
+
+        A program is the one consumer that should see a whole result, and
+        below the transfer ceiling it does. Above it, sending the bytes in
+        one frame is the thing the ceiling exists to prevent, and truncating
+        them is worse than either: a program that computes over a silently
+        shortened result returns a confident wrong answer, which is the one
+        outcome no caller can detect.
+
+        So an oversized result becomes a handle, and the program reads it in
+        bounded windows through ``read_tool_output`` -- on the host, against
+        the log, under the same budgets as any other binding call. The call
+        itself stays recorded exactly as it settled: it ran, it succeeded,
+        and the whole result is in the Run's log. Only the transfer changed.
+
+        When there is no handle the result was not preserved anywhere this
+        can page from, and that is said plainly rather than papered over
+        with a truncation."""
+        if size <= self._binding_result_ceiling:
+            return shaped
+        if name == READ_TOOL_OUTPUT:
+            # A window the program chose, and the one refusal it can fix by
+            # itself. Paging the answer to a read into *another* handle would
+            # be technically consistent and useless: the program asked for too
+            # much of something it is already reading, and what it needs to
+            # hear is "ask for less", not another reference to chase.
+            raise ProgramToolRefused(
+                "binding_result_too_large",
+                f"tool {name!r}",
+                f"that window is larger than the {self._binding_result_ceiling}-byte "
+                "transfer ceiling. Read the same result in smaller pieces: lower "
+                "`limit`, or narrow the search with `pattern`.",
+            )
+        if settled.result_handle is None:
+            raise ProgramToolRefused(
+                "binding_result_not_paged",
+                f"tool {name!r}",
+                f"it answered more than the {self._binding_result_ceiling}-byte "
+                "transfer ceiling and the result was not preserved under a handle, "
+                "so there is nothing to page. The call was made and is in the log. "
+                "Ask for less of it, or call it directly.",
+            )
+        self._program_handles.add(settled.result_handle)
+        return handle_descriptor(
+            tool=name,
+            handle=settled.result_handle,
+            size_bytes=size,
+            stored="blob" if settled.blob_key is not None else "log",
+        )
 
     def _binding_definitions(self, name: str) -> tuple[ToolDefinition, ...]:
         """The definition ``_gate`` needs to classify one binding call.
 
-        The selectors match on annotations, which live on the registered tool,
-        so this looks the one tool up rather than re-resolving the whole set:
-        a binding call is not a turn boundary and must not change what the
-        model was told it could do.
+        The approval selectors match on annotations, and this is where they
+        come from. Read from the bindings this turn resolved rather than from
+        the code registry: an HTTP, MCP or A2A tool has no registration, so a
+        registry lookup returned nothing for one, ``_gate`` saw no definition,
+        and ``approval_required`` was never consulted -- an approval-gated MCP
+        tool or HTTP POST called from inside a program ran with no approval at
+        all. The registry is still the fallback, for a code tool the turn's
+        resolution dropped.
+
+        Not a fresh resolution: a binding call is not a turn boundary and must
+        not change what the model was told it could do while it is acting on
+        it.
         """
+        bound = self._turn_bindings.by_name().get(name)
+        if bound is not None:
+            return (bound.definition,)
         registered = self._executor.registry.get(name)
         return (registered.definition(),) if registered is not None else ()
 
@@ -649,8 +1118,11 @@ class AgentLoop:
 
         self._delegations_this_turn = 0
         extra: list[ToolDefinition] = [*self._builtins, *read_tool_output_tools(state)]
-        if self._run_code_definition is not None:
-            extra.append(self._run_code_definition)
+        if self._code_offer is not None:
+            # A placeholder, replaced by `_build_run_code` once the catalogue
+            # for this turn is known. It is here so `run_code` goes through the
+            # same name-collision and failure-streak checks as everything else.
+            extra.append(run_code_definition(EffectiveBindings()))
         if self._delegate is not None:
             granted = [tool.name for tool in self._spec.tools]
             delegation = delegation_definition(self._spec.subagents, granted)
@@ -701,6 +1173,8 @@ class AgentLoop:
                     traceback=format_traceback(err),
                 ),
             )
+
+        resolved = self._build_run_code(resolved)
 
         await self._journal.append(type="turn_started", turn=turn_number)
         turn_attributes: SpanAttributes = {"psych.turn.number": turn_number}
@@ -1506,8 +1980,29 @@ class AgentLoop:
 
     async def _execute_and_record(
         self, call_id: ToolCallId, name: str, arguments: dict[str, Any]
-    ) -> None:
+    ) -> Any:
+        """Run one call, record it, and return what it actually produced.
+
+        The return value matters for exactly one caller: a program's binding.
+        Reading the result back off the record instead is wrong, and silently
+        so -- a large result is *elided for the model* (DESIGN.md §10.8), and an
+        offloaded one has ``result=None`` on the record by the ``ToolCallFinished``
+        validator's own rule, with the bytes in the BlobStore. The elision
+        exists to keep a 50 KB tool result out of the prompt; a program is not
+        the prompt, and it is the one consumer that should see the whole thing,
+        because filtering it down is the reason the program was written.
+
+        Every other caller ignores this and reads the log, which is right for
+        them: what the model sees is what the log says it sees.
+        """
         started = time.monotonic()
+        # Everything the program calls is recorded as a child of this call.
+        token = _ACTIVE_CODE_CALL.set(call_id) if name == RUN_CODE else None
+        if name == RUN_CODE:
+            # A handle belongs to the program that was given it. The next
+            # program starts with none, however many the last one collected.
+            self._program_handles = set()
+            self._program_produced_bytes = 0
         try:
             if name == DELEGATE_TOOL:
                 result: Any = await self._delegate_to_subagent(arguments)
@@ -1567,6 +2062,11 @@ class AgentLoop:
             )
         else:
             await self._record_success(call_id, result, time.monotonic() - started)
+            return result
+        finally:
+            if token is not None:
+                _ACTIVE_CODE_CALL.reset(token)
+        return None
 
     async def _delegate_to_subagent(self, arguments: dict[str, Any]) -> Any:
         """Run a child agent and return what it produced.

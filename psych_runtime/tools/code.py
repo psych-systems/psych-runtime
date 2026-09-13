@@ -54,8 +54,14 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol, runtime_checkable
 
-from psych_runtime.core.code_execution import OutputPreservation
+from psych_runtime.core.code_execution import (
+    DEFAULT_BINDING_BUDGET,
+    RUN_CODE_TOOL_NAME,
+    BindingBudget,
+    OutputPreservation,
+)
 from psych_runtime.core.messages import ToolDefinition
+from psych_runtime.tools.bindings import BindingCounter, EffectiveBindings, budgeted
 from psych_runtime.tools.guidance import sandbox_failure_guidance
 
 __all__ = [
@@ -65,6 +71,7 @@ __all__ = [
     "PendingAttachment",
     "SandboxLike",
     "attachment_handle",
+    "describe_bindings",
     "make_run_code",
     "preview_bytes",
     "run_code_definition",
@@ -98,8 +105,12 @@ class SandboxLike(Protocol):
     ) -> Any: ...
 
 
-TOOL_NAME: Final = "run_code"
-"""Matches the entry in ``psych_runtime.core.spec.RESERVED_TOOL_NAMES``."""
+TOOL_NAME: Final = RUN_CODE_TOOL_NAME
+"""Matches the entry in ``psych_runtime.core.spec.RESERVED_TOOL_NAMES``.
+
+Defined in ``psych_runtime.core.code_execution`` and re-exported here: the
+reducer has to recognise a program's calls while folding, and ``core``
+may not import from ``tools``."""
 
 DEFAULT_PREVIEW_BYTES: Final = 4_000
 """Per stream, when no ``OutputPolicy`` was given. Matches the Spec default."""
@@ -192,8 +203,67 @@ def attachment_handle(call_id: str, slot: str) -> str:
     return f"out_{call_id}_{slot}"
 
 
+_BINDING_LIST_BUDGET: Final = 1_200
+"""Characters of binding names this description will spend, at most.
+
+An agent connected to a large MCP server may have hundreds of callable tools.
+Naming them all here would put a catalogue in every prompt of every turn, which
+is the cost code execution exists to avoid -- the tool would pay for itself in
+schemas before the model wrote a line. Past this budget the names stop and the
+model is pointed at ``TOOLS`` inside the program, which costs nothing."""
+
+
+def describe_bindings(bindings: EffectiveBindings) -> str:
+    """The sentence naming what a program may call, inside a fixed budget.
+
+    Names the ones a program can write as plain calls, because that is what a
+    model copies. Everything else -- and everything past the budget -- is
+    reachable through ``call_tool`` and listed in ``TOOLS``, which the program
+    can read without any of it entering the prompt.
+    """
+    if not bindings.tools:
+        return " No host tools are available inside the program."
+
+    aliases = bindings.aliases
+    shown: list[str] = []
+    spent = 0
+    for name in aliases:
+        cost = len(name) + 8
+        if spent + cost > _BINDING_LIST_BUDGET:
+            break
+        shown.append(name)
+        spent += cost
+
+    total = len(bindings.tools)
+    text = (
+        f"\n\nInside the program, `await call_tool(name, {{...}})` calls any of the "
+        f"{total} tools you can call directly; `TOOLS` is the list of their names, and "
+        "a failed call raises `ToolError` with a `.kind`."
+    )
+    if shown:
+        listed = ", ".join(f"`{name}(...)`" for name in shown)
+        text += f" These can also be awaited by name: {listed}."
+    remaining = total - len(shown)
+    if remaining > 0:
+        text += (
+            f" {remaining} more are in `TOOLS`; use `list_tools`/`get_tool_info` for "
+            "arguments you do not know."
+        )
+    # One sentence, and it earns its place: without it a program written
+    # against a large result crashes on the first line that touches it, and the
+    # model's next move is usually to rewrite the program rather than to read
+    # the window it was offered.
+    text += (
+        " A result too large to send arrives as a handle instead: read it with "
+        "`await handle.read(offset=..., limit=...)` or search it with "
+        "`await handle.read(pattern=...)`, and use the value it returns rather "
+        "than the handle."
+    )
+    return text
+
+
 def run_code_definition(
-    binding_names: Sequence[str],
+    bindings: EffectiveBindings,
     *,
     network: bool = False,
     preview_bytes_budget: int = DEFAULT_PREVIEW_BYTES,
@@ -208,12 +278,14 @@ def run_code_definition(
     arguments. A model that is not told what it may call will either invent a
     name and get a ``NameError``, or use nothing and write a program that
     cannot do anything.
+
+    The guidance about *when* to write a program is here for the same reason
+    and kept to two lines. A model that reaches for a program to make one
+    lookup pays a sandbox for nothing; one that makes forty lookups one turn at
+    a time pays forty prompts for a number it could have computed in a loop.
+    Neither mistake is worth a second model call to decide, so the tool that is
+    already in the prompt says which is which.
     """
-    if binding_names:
-        available = ", ".join(f"`{name}(...)`" for name in sorted(binding_names))
-        bindings_text = f" Host functions you may `await` inside the program: {available}."
-    else:
-        bindings_text = " No host functions are available inside the program."
     network_text = "Network is available." if network else "No network."
     wall_text = f" Wall clock limit: {wall_seconds:g}s." if wall_seconds is not None else ""
 
@@ -223,14 +295,17 @@ def run_code_definition(
             "Run one Python program in an isolated sandbox. Top-level `await` and "
             "`return` are allowed; the returned value (JSON-shaped) is the result. Each "
             "call is a fresh process with an empty working directory: nothing carries "
-            f"over, so return what you need later. {network_text}{wall_text} Do loops, "
-            "filtering, joins and aggregation inside one program rather than across "
-            "several calls.\n\n"
-            f"Output beyond {preview_bytes_budget} bytes per stream is previewed head and "
-            "tail; read the rest with `read_tool_output` using the handle in the result. "
-            "Files written to the working directory come back as artifacts with handles.\n\n"
-            "If the program raises you get the traceback: fix the line rather than "
-            "rewriting." + bindings_text
+            f"over, so return what you need later. {network_text}{wall_text}\n\n"
+            "Use this for many calls at once, dependent sequences, filtering, joins, "
+            "aggregation, exact arithmetic, and pulling a small answer out of large "
+            "intermediate results -- the intermediates stay in the program. Call a tool "
+            "directly instead for a single lookup, for anything needing approval or a "
+            "person's input, and for a destructive action you want reviewed on its own."
+            f"\n\nOutput beyond {preview_bytes_budget} bytes per stream is previewed head "
+            "and tail; read the rest with `read_tool_output` using the handle in the "
+            "result. Files written to the working directory come back as artifacts with "
+            "handles.\n\nIf the program raises you get the traceback: fix the line rather "
+            "than rewriting." + describe_bindings(bindings)
         ),
         input_schema={
             "type": "object",
@@ -246,7 +321,9 @@ def make_run_code(
     sandbox: Any,
     host_call: HostCall | None = None,
     *,
-    binding_names: Sequence[str] = (),
+    bindings: EffectiveBindings | None = None,
+    budget: BindingBudget = DEFAULT_BINDING_BUDGET,
+    binding_counter: BindingCounter | None = None,
     limits: Any | None = None,
     network: bool = False,
     isolation: Any | None = None,
@@ -266,8 +343,18 @@ def make_run_code(
             ``refusal``.
         host_call: how a binding reaches a host tool. ``None`` means the program
             gets no bindings, which is right for a Run whose Spec grants no tools.
-        binding_names: which tools the program may call. Each becomes a function
-            in the program's namespace that routes back through ``host_call``.
+        bindings: which tools the program may call this turn, and which of the
+            ones its Spec named are not available. Each callable name becomes a
+            binding routed back through ``host_call``; the unavailable ones are
+            reported in the result rather than quietly dropped, because a model
+            that asked for ``billing__refund`` and got silence will assume it
+            ran (DESIGN.md §10.7).
+        budget: how many host tool calls this program may make and how many
+            bytes they may move. Applied per execution, which is what makes it
+            a bound: a counter built once per turn would be shared by two
+            programs in one assistant message.
+        binding_counter: the Run's running total, shared across executions, so
+            a model cannot buy a fresh allowance by writing a second program.
         limits: resource caps. ``None`` uses the adapter's defaults.
         network: whether the program may reach the network. Off by default, and
             granting it does not hand the program an HTTP client: anything it
@@ -287,7 +374,8 @@ def make_run_code(
         An async callable taking the tool's arguments and returning a
         ``CodeExecutionOutcome`` the agent loop records.
     """
-    bindings = _build_bindings(host_call, binding_names)
+    offered = bindings if bindings is not None else EffectiveBindings()
+    run_total = binding_counter if binding_counter is not None else BindingCounter()
 
     async def execute(arguments: Mapping[str, Any]) -> CodeExecutionOutcome:
         program = arguments.get("program")
@@ -324,7 +412,13 @@ def make_run_code(
                 preserve=preserve,
             )
 
-        options: dict[str, Any] = {"bindings": bindings, "limits": limits, "network": network}
+        # Built here, once per execution, so the call and byte budgets bound
+        # one program rather than one turn.
+        bound = _build_bindings(
+            None if host_call is None else budgeted(host_call, budget, run_total),
+            offered.names,
+        )
+        options: dict[str, Any] = {"bindings": bound, "limits": limits, "network": network}
         if not legacy_signature:
             options.update(isolation=isolation, capture=capture, cancel=cancel)
         result = await sandbox.run(program, **options)
@@ -334,6 +428,7 @@ def make_run_code(
             preserve=preserve,
             limits=limits,
             requested_isolation=isolation,
+            unavailable=offered.missing,
         )
 
     return execute
@@ -376,6 +471,7 @@ def _outcome(
     preserve: OutputPreservation,
     limits: Any | None = None,
     requested_isolation: Any | None = None,
+    unavailable: Sequence[str] = (),
 ) -> CodeExecutionOutcome:
     pending: list[PendingAttachment] = []
     must_keep = preserve is OutputPreservation.REQUIRED
@@ -404,6 +500,13 @@ def _outcome(
         payload["network_denied"] = False
     if getattr(result, "cancelled", False):
         payload["cancelled"] = True
+
+    if unavailable:
+        # Named, never substituted. A Spec that asked for a tool which is gone,
+        # renamed, denied or on a server that did not answer has to be told so:
+        # a program that finds no such binding and a model that is told nothing
+        # both end up reporting work that never happened (DESIGN.md §10.7).
+        payload["unavailable_bindings"] = list(unavailable)
 
     _artifacts_section(result, must_keep, payload, pending)
     if result.failure is not None:

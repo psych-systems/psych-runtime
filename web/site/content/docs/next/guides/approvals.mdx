@@ -120,6 +120,28 @@ next fold cheap; use `status()` unless you are extending the runtime.
 arriving after that raises `SuspensionExpired`, and the Run is settled
 `ABANDONED` **first**, so a stale approval never executes.
 
+## Approvals and code execution
+
+An approval suspends the Run and resumes into a **turn**. There is no turn
+inside a running subprocess and nothing can resume into one, so a program that
+calls a tool the selectors would gate is refused **before the tool runs** —
+the only refusal that prevents anything — with:
+
+```
+ToolError.kind == "approval_required_in_program"
+```
+
+The refusal is recorded as a failed tool call under its parent `run_code`, so a
+report shows the attempt rather than a gap. The model is told to call the tool
+directly, and the tool is still in its tool list to call: a gated tool is not
+withdrawn, it is only unreachable from inside a program.
+
+This applies to **every** origin. Before this, `_gate` looked a binding's
+annotations up in the code-tool registry, found nothing for an HTTP, MCP or
+A2A tool, and let it through ungated — an approval-gated HTTP POST was callable
+from a program with no approval at all. The annotations now come from the
+turn's resolved tool set, which is where every origin's annotations live.
+
 ## Gotchas
 
 - **Approval is per call, not per turn.** A turn asking for three destructive

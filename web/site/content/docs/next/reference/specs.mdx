@@ -267,9 +267,29 @@ Attributes:
     network: whether the program may open its own sockets. Denied by
         default, and grantable only where the profile permits it.
     limits: requested caps. Narrowed against the profile's hard limits.
-    bindings: which of this Spec's own tools the program may call as host
-        functions. ``None`` means every tool the Spec grants. A tuple
-        narrows to a subset and is validated against ``tools`` at publish.
+    bindings: which of this agent's tools a program may call as host
+        functions.
+
+        ``None`` -- the default -- means **every tool this agent can
+        currently call**, after every narrowing plane: registered code
+        tools, HTTP tools, and the tools each granted MCP server and A2A
+        peer offers this tenant right now. Not a copy of anything: the set
+        is recomputed at each turn boundary from that turn's live
+        catalogue, so a tool a tenant policy withdraws stops being callable
+        from a program in the same turn it stops being callable directly.
+
+        A tuple narrows to a subset and can never widen one. Static names
+        are validated against ``tools`` at publish; a server-qualified name
+        (``github__search_issues``) is validated only as far as offline
+        validation honestly can -- that the server is one this agent
+        connects to -- because whether that server still offers that tool
+        is not a fact about this Spec. A named binding that does not
+        resolve at run time is reported to the model as unavailable and is
+        never quietly replaced with another tool.
+
+        What a program may *never* call, whatever this says: anything that
+        would suspend the Run, and the Psych built-ins listed in
+        ``psych_runtime.core.code_execution.EXCLUDED_BUILTINS``.
     workspace: what happens to the working directory between executions.
     output: how much output the model sees and what happens to the rest.
     artifacts: whether files the program writes are collected.

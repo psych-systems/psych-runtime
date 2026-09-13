@@ -37,12 +37,14 @@ from pydantic import (
 )
 
 from psych_runtime.core.code_execution import (
+    BINDABLE_BUILTINS,
     ArtifactCollection,
     IsolationLevel,
     NetworkAccess,
     OutputPreservation,
     WorkspacePolicy,
 )
+from psych_runtime.core.tool_names import qualified_owner
 
 __all__ = [
     "MIN_SPAWN_DELIVERABLE",
@@ -970,9 +972,29 @@ class CodeExecution(_SpecModel):
         network: whether the program may open its own sockets. Denied by
             default, and grantable only where the profile permits it.
         limits: requested caps. Narrowed against the profile's hard limits.
-        bindings: which of this Spec's own tools the program may call as host
-            functions. ``None`` means every tool the Spec grants. A tuple
-            narrows to a subset and is validated against ``tools`` at publish.
+        bindings: which of this agent's tools a program may call as host
+            functions.
+
+            ``None`` -- the default -- means **every tool this agent can
+            currently call**, after every narrowing plane: registered code
+            tools, HTTP tools, and the tools each granted MCP server and A2A
+            peer offers this tenant right now. Not a copy of anything: the set
+            is recomputed at each turn boundary from that turn's live
+            catalogue, so a tool a tenant policy withdraws stops being callable
+            from a program in the same turn it stops being callable directly.
+
+            A tuple narrows to a subset and can never widen one. Static names
+            are validated against ``tools`` at publish; a server-qualified name
+            (``github__search_issues``) is validated only as far as offline
+            validation honestly can -- that the server is one this agent
+            connects to -- because whether that server still offers that tool
+            is not a fact about this Spec. A named binding that does not
+            resolve at run time is reported to the model as unavailable and is
+            never quietly replaced with another tool.
+
+            What a program may *never* call, whatever this says: anything that
+            would suspend the Run, and the Psych built-ins listed in
+            ``psych_runtime.core.code_execution.EXCLUDED_BUILTINS``.
         workspace: what happens to the working directory between executions.
         output: how much output the model sees and what happens to the rest.
         artifacts: whether files the program writes are collected.
@@ -1147,18 +1169,50 @@ class AgentSpec(_SpecModel):
     def _bindings_are_granted_tools(self) -> Self:
         """A program may only call tools this Spec already grants.
 
-        Access narrows and never widens (DESIGN.md §10.5): the binding list is
-        a subset of ``tools``, checked at construction so a Spec naming a
-        binding it does not hold never reaches publication.
+        Access narrows and never widens (DESIGN.md §10.5). What can be checked
+        *here* is bounded by what a Spec knows about itself, and that boundary
+        is the point:
+
+        - A **static** name -- a registered code tool, an ``HttpTool``, or one
+          of the two built-ins a program may call -- is checked in full. A typo
+          in one is an author's mistake and belongs at publish, not in front of
+          a customer.
+        - A **dynamic** name -- a tool an MCP server or an A2A peer offers --
+          cannot be. Whether ``github__search_issues`` exists is a fact about a
+          running server, and publication that contacted one would make
+          publishing depend on somebody else's uptime and would mint a
+          different answer on Tuesday. So the check here is only that the name
+          is *addressed to something this Spec connects to*: the part before
+          the separator has to be a granted server or peer. Whether that server
+          still offers it is settled at the turn boundary, and a name that no
+          longer resolves comes back to the model as an unavailable binding
+          rather than as another tool
+          (``psych_runtime.tools.bindings.effective_bindings``).
+
+        This is the one place a binding list is compared against the Spec, so
+        it must not start rejecting the dynamic case: a Spec that named an MCP
+        tool used to be unpublishable, which is why MCP tools could not be
+        bound at all.
         """
-        if self.code_execution is None or self.code_execution.bindings is None:
+        config = self.code_execution
+        if config is None or config.bindings is None:
             return self
-        granted = {tool.name for tool in self.tools}
-        unknown = sorted(set(self.code_execution.bindings) - granted)
+        callable_here = {tool.name for tool in self.tools} | BINDABLE_BUILTINS
+        owners = {server.name for server in self.mcp_servers} | {
+            peer.name for peer in self.a2a_peers
+        }
+        unknown = sorted(
+            name
+            for name in config.bindings
+            if name not in callable_here and qualified_owner(name, owners) is None
+        )
         if unknown:
+            known_owners = ", ".join(sorted(owners)) or "none"
             raise ValueError(
-                f"code_execution.bindings names {unknown}, which this agent does not "
-                "grant in `tools`. A program may only call tools the agent itself holds."
+                f"code_execution.bindings names {unknown}, which this agent neither "
+                "grants in `tools` nor addresses to a connected system. A program may "
+                "only call tools the agent itself holds. For a tool from an MCP server "
+                f"or an A2A peer, use its server-qualified name (connected: {known_owners})."
             )
         return self
 

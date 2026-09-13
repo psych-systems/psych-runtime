@@ -65,6 +65,7 @@ from psych_runtime.builder.workflow import WorkflowBuilder, workflow
 from psych_runtime.core.answer import AnswerView, ToolCallView, WorkTurn
 from psych_runtime.core.code_execution import (
     ArtifactCollection,
+    BindingBudget,
     Enforcement,
     IsolationLevel,
     NetworkAccess,
@@ -238,6 +239,7 @@ __all__ = [
     "ArtifactPolicy",
     "AskedQuestion",
     "AttemptId",
+    "BindingBudget",
     "BlobKey",
     "BlobStore",
     "BuilderError",

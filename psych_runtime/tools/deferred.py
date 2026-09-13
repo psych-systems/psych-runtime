@@ -69,7 +69,7 @@ from psych_runtime.core.errors import AccessDenied
 from psych_runtime.core.messages import ToolDefinition
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.spec import AgentSpec, McpServer
-from psych_runtime.tools.mcp_names import mcp_tool_name
+from psych_runtime.core.tool_names import mcp_tool_name
 
 __all__ = [
     "CALL_TOOL",

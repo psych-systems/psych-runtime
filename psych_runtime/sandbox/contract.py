@@ -49,7 +49,7 @@ from typing import Any
 
 import pytest
 
-from psych_runtime.core.code_execution import Enforcement, IsolationLevel
+from psych_runtime.core.code_execution import Enforcement, IsolationLevel, ResultHandle
 from psych_runtime.sandbox.port import (
     OutputCapture,
     Sandbox,
@@ -580,6 +580,257 @@ class SandboxContractSuite:
         )
         assert result.ok, result.failure
         assert result.value == [2000, 1999]
+
+    async def test_a_name_that_is_not_an_identifier_is_reachable_through_call_tool(
+        self, sandbox: Sandbox
+    ) -> None:
+        """The reason ``call_tool`` exists at all.
+
+        An MCP server may legitimately offer ``list-repos``, ``2fa`` or
+        ``class``. None of those can be written as a call, so without one way
+        to reach a tool by name they would be unbindable -- and the alternative,
+        mangling them into identifiers, would make ``list-repos`` and
+        ``list_repos`` the same name on a server that offers both.
+        """
+
+        async def hyphenated(arguments: Mapping[str, Any]) -> Any:
+            return {"got": arguments.get("owner")}
+
+        result = await sandbox.run(
+            "return await call_tool('docs__list-repos', {'owner': 'psych'})",
+            bindings={"docs__list-repos": hyphenated},
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == {"got": "psych"}
+
+    async def test_an_identifier_name_gets_an_alias_and_a_hyphenated_one_does_not(
+        self, sandbox: Sandbox
+    ) -> None:
+        async def anything(_arguments: Mapping[str, Any]) -> Any:
+            return "ok"
+
+        result = await sandbox.run(
+            "return {'tools': sorted(TOOLS), 'alias': 'search' in globals(),"
+            " 'mangled': 'list_repos' in globals()}",
+            bindings={"search": anything, "docs__list-repos": anything},
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == {
+            "tools": ["docs__list-repos", "search"],
+            "alias": True,
+            "mangled": False,
+        }
+
+    async def test_an_unknown_name_is_a_catchable_error_not_a_dead_execution(
+        self, sandbox: Sandbox
+    ) -> None:
+        """A typo must not end the program.
+
+        Sending an unoffered name over the channel is a protocol violation and
+        ends the execution, correctly -- that check is what stops a program
+        naming its way to a tool it was not given. So the child refuses the
+        name itself, before any frame is written, and the program catches it.
+        """
+
+        async def lookup(_arguments: Mapping[str, Any]) -> Any:
+            return "ok"
+
+        result = await sandbox.run(
+            "try:\n"
+            "    await call_tool('nope', {})\n"
+            "except ToolError as err:\n"
+            "    return {'kind': err.kind, 'tool': err.tool}\n"
+            "return 'no error'",
+            bindings={"lookup": lookup},
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == {"kind": "binding_not_available", "tool": "nope"}
+
+    async def test_a_failed_call_carries_the_hosts_own_kind(self, sandbox: Sandbox) -> None:
+        """A program must be able to tell a refusal from an outage.
+
+        Both arrive as one sentence otherwise, and the right next move differs:
+        one is "call it directly", the other is "try again later". The kind is
+        the host's own classification, carried across the boundary.
+        """
+
+        class Refused(RuntimeError):
+            kind = "approval_required_in_program"
+
+        async def gated(_arguments: Mapping[str, Any]) -> Any:
+            raise Refused("a human would have to approve this")
+
+        async def down(_arguments: Mapping[str, Any]) -> Any:
+            raise RuntimeError("connection refused")
+
+        result = await sandbox.run(
+            "kinds = {}\n"
+            "for name in ('gated', 'down'):\n"
+            "    try:\n"
+            "        await call_tool(name, {})\n"
+            "    except ToolError as err:\n"
+            "        kinds[name] = err.kind\n"
+            "return kinds",
+            bindings={"gated": gated, "down": down},
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == {
+            "gated": "approval_required_in_program",
+            "down": "RuntimeError",
+        }
+
+    async def test_many_bindings_are_offered_without_a_command_line(self, sandbox: Sandbox) -> None:
+        """An agent on a large MCP server has hundreds of callable tools.
+
+        They travel in the run frame rather than in the child's argv, because
+        every operating system caps a command line somewhere different and
+        the cap would turn "this agent has many tools" into "the sandbox will
+        not start" -- on one platform, at some unpredictable size.
+        """
+
+        async def answer(_arguments: Mapping[str, Any]) -> Any:
+            return "ok"
+
+        names = [f"records__tool_{index:04d}_with_a_fairly_long_name" for index in range(400)]
+        result = await sandbox.run(
+            "return [len(TOOLS), await call_tool(sorted(TOOLS)[-1], {})]",
+            bindings=dict.fromkeys(names, answer),
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == [400, "ok"]
+
+    async def test_fan_out_from_one_program_is_answered_one_call_at_a_time(
+        self, sandbox: Sandbox
+    ) -> None:
+        """`asyncio.gather` in a program does not become concurrency on the host.
+
+        This is the backpressure, and it is structural rather than a semaphore
+        somebody remembered to add: the protocol answers a call only when its
+        id is exactly the next one expected, so the host holds one call at a
+        time however many the program has in flight. A program that fans out
+        over a hundred records therefore queues a hundred calls, and the host
+        works through them in order without a hundred concurrent MCP requests
+        leaving the machine.
+
+        What the program gets is still the speed-up it wanted: one round trip
+        instead of a hundred model turns.
+        """
+        live = 0
+        peak = 0
+
+        async def slow(arguments: Mapping[str, Any]) -> Any:
+            nonlocal live, peak
+            live += 1
+            peak = max(peak, live)
+            try:
+                await asyncio.sleep(0.01)
+                return arguments["n"]
+            finally:
+                live -= 1
+
+        result = await sandbox.run(
+            "import asyncio\n"
+            "values = await asyncio.gather(*(slow(n=i) for i in range(20)))\n"
+            "return sorted(values)",
+            bindings={"slow": slow},
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == list(range(20))
+        assert peak == 1, f"the host ran {peak} bindings at once"
+
+    async def test_a_result_too_large_to_send_arrives_as_a_readable_handle(
+        self, sandbox: Sandbox
+    ) -> None:
+        """Every backend, not only the local child.
+
+        The host answers an oversized call with a descriptor instead of the
+        bytes, and the child turns that into an object that can be read in
+        windows and cannot be mistaken for the data. Both halves cross the
+        wire, so a backend that framed either differently -- a remote service
+        relaying JSON, a container over a socket -- would fail here rather
+        than in one adapter's own tests.
+        """
+        pages: list[dict[str, Any]] = []
+
+        async def export(_arguments: Mapping[str, Any]) -> Any:
+            return ResultHandle(
+                handle="res_contract_1", tool="export", size_bytes=90_000, stored="blob"
+            )
+
+        async def read_tool_output(arguments: Mapping[str, Any]) -> Any:
+            pages.append(dict(arguments))
+            offset = int(arguments["offset"])
+            limit = int(arguments["limit"])
+            lines = [f"row-{index}" for index in range(offset, min(offset + limit, 25))]
+            return {"content": "\n".join(lines), "total_lines": 25, "truncated": False}
+
+        result = await sandbox.run(
+            "handle = await export()\n"
+            "kind = type(handle).__name__\n"
+            "first = await handle.read(offset=0, limit=10)\n"
+            "second = await handle.read(offset=10, limit=10)\n"
+            "try:\n"
+            "    len(handle)\n"
+            "    refused = None\n"
+            "except ToolError as err:\n"
+            "    refused = err.kind\n"
+            "return {'kind': kind, 'handle': handle.handle, 'size': handle.size_bytes,\n"
+            "        'lines': first['content'].count('row-') + second['content'].count('row-'),\n"
+            "        'refused': refused}",
+            bindings={"export": export, "read_tool_output": read_tool_output},
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == {
+            "kind": "ToolResultHandle",
+            "handle": "res_contract_1",
+            "size": 90_000,
+            "lines": 20,
+            "refused": "result_not_inline",
+        }
+        assert [page["offset"] for page in pages] == [0, 10]
+        assert all(page["handle"] == "res_contract_1" for page in pages)
+
+    async def test_an_ordinary_result_cannot_dress_itself_up_as_a_handle(
+        self, sandbox: Sandbox
+    ) -> None:
+        """A tool's own result is data, whatever it happens to contain.
+
+        There is no key a tool can return that turns its result into a paging
+        object, because the host does not decide by looking inside the value:
+        the reply frame says which of the two it is. A dictionary that looks
+        exactly like a descriptor -- down to the field name an earlier version
+        of this used as its marker -- arrives as that dictionary and nothing
+        more, and a program can read it as data without the type changing
+        under it.
+        """
+
+        async def lookup(_arguments: Mapping[str, Any]) -> Any:
+            return {"__psych_result_handle__": "customer-data", "value": 42}
+
+        result = await sandbox.run(
+            "row = await lookup()\n"
+            "return {'kind': type(row).__name__, 'row': row, 'value': row['value'],\n"
+            "        'keys': sorted(row.keys()), 'length': len(row),\n"
+            "        'pageable': hasattr(row, 'read')}",
+            bindings={"lookup": lookup},
+            limits=_TINY_LIMITS,
+        )
+        assert result.ok, result.failure
+        assert result.value == {
+            "kind": "dict",
+            "row": {"__psych_result_handle__": "customer-data", "value": 42},
+            "value": 42,
+            "keys": ["__psych_result_handle__", "value"],
+            "length": 2,
+            "pageable": False,
+        }
 
     async def test_a_binding_that_was_not_offered_cannot_be_called(self, sandbox: Sandbox) -> None:
         async def lookup(_arguments: Mapping[str, Any]) -> Any:

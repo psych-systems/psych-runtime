@@ -54,6 +54,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { DetailRow, TechnicalDetails } from "@/components/ui/page";
 import { CheckList } from "@/components/agents/check-list";
+import { buildBindingGroups } from "@/components/agents/bindable-tools";
 import { ConnectionsField, type ConnectionChoice } from "@/components/agents/connections-field";
 import { LimitsFields } from "@/components/agents/limits-fields";
 import { CompactionFields } from "@/components/agents/compaction-fields";
@@ -346,6 +347,26 @@ export function CreateAgentForm() {
   const nameValid = trimmedName === "" || NAME_PATTERN.test(trimmedName);
   const model = (modelOverride ?? config?.model ?? "").trim();
   const presets = useMemo(() => settings?.mcp_servers ?? [], [settings]);
+
+  // What a program this agent writes could call, grouped by origin. Built
+  // here because every input already lives here: the tools it grants, the
+  // HTTP tools it defines, the connections it selected, and what each of
+  // those servers last offered. MCP tools are discovered rather than
+  // declared, so the picker shows the last known set and says so, and
+  // "every tool it is authorized to call" stays the default.
+  const bindingGroups = useMemo(
+    () =>
+      buildBindingGroups({
+        selectedTools,
+        catalogue: tools ?? [],
+        httpTools,
+        connections,
+        presets,
+        approvalSelectors:
+          approvalMode === "custom" ? approvalClasses.map(selectorLabel) : [],
+      }),
+    [selectedTools, tools, httpTools, connections, presets, approvalMode, approvalClasses],
+  );
   const peerPresets = useMemo(() => settings?.a2a_peers ?? [], [settings]);
   const limitErrors = useMemo(() => validateLimits(limits), [limits]);
   // Only when it is on: numbers behind a closed section must not be able to
@@ -910,7 +931,7 @@ export function CreateAgentForm() {
               value={codeExecution}
               onChange={setCodeExecution}
               fieldErrors={fieldErrors}
-              tools={selectedTools}
+              toolGroups={bindingGroups}
               profiles={settings?.runtime.sandbox_profile_names ?? ["default"]}
               runtime={settings?.runtime ?? null}
             />

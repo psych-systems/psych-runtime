@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Final
 
+from psych_runtime.core.code_execution import RUN_CODE_TOOL_NAME
 from psych_runtime.core.components import Component
 from psych_runtime.core.corruption import CorruptionReason, CorruptLog
 from psych_runtime.core.ids import AttemptId, RunId, StepId, ToolCallId, VersionHash
@@ -407,6 +408,46 @@ class RunStateView:
     """Large-result handles this Run issued, so a handle from another Run is
     visibly invalid rather than silently readable."""
 
+    program_call_ids: set[ToolCallId] = field(default_factory=set)
+    """Every ``run_code`` call this Run has started.
+
+    What makes ``program_tool_calls`` countable from the log alone: a
+    binding call is recognised by its ``parent_call_id`` naming one of
+    these, and an incremental fold that began after the program started
+    would otherwise have no way to know whose child a call is."""
+
+    program_binding_call_ids: set[ToolCallId] = field(default_factory=set)
+    """Program calls still awaiting a result.
+
+    What lets a finish record be attributed to the program that made the
+    call, since a ``ToolCallFinished`` carries no parent of its own.
+    Discarded as each one settles, so this stays the size of what is open."""
+
+    program_preserved_bytes: int = 0
+    """Bytes this Run's programs have left stored in the log or BlobStore.
+
+    The quantity a storage ceiling is actually about, and deliberately not
+    the same as the bytes a program received: a result too large to send is
+    preserved *before* the program is told it exists, so a transfer that was
+    then refused still costs storage. Summed from each call's own
+    ``result_bytes`` and never decremented, so a Run cannot spend a storage
+    allowance twice by crashing between the two."""
+
+    program_tool_calls: int = 0
+    """Tool calls sandboxed programs have started in this Run.
+
+    The per-Run binding allowance is spent here, and it is spent durably:
+    a Worker that dies mid-program and a Worker that reclaims the Attempt
+    fold the same log and arrive at the same number, so a crash does not
+    hand the Run a fresh allowance. Counted at *start*, because the host
+    accepted the call at that point -- a call that then failed, was
+    refused, was aborted or is still dangling spent the allowance just as
+    much as one that answered. Never decremented, for the same reason.
+
+    A call with no ``parent_call_id`` is a direct model call and is not
+    counted, which is also what every record written before programs could
+    call tools looks like."""
+
     @property
     def has_dangling_tool_calls(self) -> bool:
         """True when the log ends with calls started and unanswered.
@@ -663,6 +704,16 @@ def reduce(  # noqa: PLR0912, PLR0915
                         "unable to tell the results apart.",
                     )
                 started_call_ids.add(record.call_id)
+                if record.tool == RUN_CODE_TOOL_NAME:
+                    state.program_call_ids.add(record.call_id)
+                elif (
+                    record.parent_call_id is not None
+                    and record.parent_call_id in state.program_call_ids
+                ):
+                    # A program's own call. Counted here rather than where it
+                    # is made, so the number survives the process that made it.
+                    state.program_tool_calls += 1
+                    state.program_binding_call_ids.add(record.call_id)
                 _check_deferred_handle(state, record, resolved_run_id)
                 state.open_tool_calls[record.call_id] = OpenToolCall(
                     call_id=record.call_id,
@@ -690,6 +741,14 @@ def reduce(  # noqa: PLR0912, PLR0915
                         f"a result arrived for tool call {record.call_id} but {reason}.",
                     )
                 settled_call_ids.add(record.call_id)
+                from_program = record.call_id in state.program_binding_call_ids
+                state.program_binding_call_ids.discard(record.call_id)
+                if from_program and record.result_handle is not None:
+                    # Preserved, and by a program: those bytes are in the log or
+                    # the BlobStore and stay there for the life of the Run. A
+                    # result small enough to sit inline costs no storage worth
+                    # bounding, and is not counted.
+                    state.program_preserved_bytes += record.result_bytes
                 if record.result_handle is not None:
                     state.result_handles[record.result_handle] = record.call_id
                 for attachment in record.attachments:
@@ -1084,6 +1143,8 @@ def _continue_from(prior: RunStateView) -> RunStateView:
         repeat_counts=dict(prior.repeat_counts),
         compaction_summaries=list(prior.compaction_summaries),
         result_handles=dict(prior.result_handles),
+        program_call_ids=set(prior.program_call_ids),
+        program_binding_call_ids=set(prior.program_binding_call_ids),
         children=dict(prior.children),
         resume_payloads=dict(prior.resume_payloads),
         run_input=dict(prior.run_input),
@@ -1177,9 +1238,22 @@ def _check_deferred_handle(state: RunStateView, record: ToolCallStarted, run_id:
     that never existed. A handle that resolved across Runs would be a
     cross-tenant read dressed up as a tool call, which is why this is
     corruption rather than a not-found.
+
+    A call a *program* made is exempt, and the exemption is the point rather
+    than a hole in it. This rule is about what the model may name: a model
+    that asks for a handle this Run never issued is a writer bug, because the
+    only handles it has ever seen came from this Run's own elided results.
+    A program is different. It can compute a string, and the runtime answers
+    an unowned one by refusing the call and recording that refusal -- which is
+    a call that was made and denied, an ordinary and truthful thing for a log
+    to hold. Folding it as corruption instead would mean the log could not
+    record the refusal at all, and the choice would be between an unrecorded
+    read and an unreadable Run.
     """
     handle = record.arguments.get("handle")
     if record.tool != "read_tool_output" or not isinstance(handle, str):
+        return
+    if record.parent_call_id is not None:
         return
     if handle not in state.result_handles:
         raise CorruptLog(

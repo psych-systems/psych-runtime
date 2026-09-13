@@ -225,6 +225,18 @@ class FailureKind(StrEnum):
     while a subprocess waits on a socket, so the call is refused with the one
     thing that does work: call it directly."""
 
+    BINDING_HANDLE_NOT_YOURS = "binding_handle_not_yours"
+    """``AgentLoop.call_as_binding``: a program asked to read a stored result
+    by a handle its own calls did not produce -- one it invented, one from
+    another Run or tenant, one the model earned with a direct call, or one an
+    earlier program in this Run earned. The attempt is recorded rather than
+    dropped, because a read a program was not entitled to make is a thing
+    that happened and belongs in the log under the program that tried it.
+
+    Every variety is refused in the same words on purpose: two of them name a
+    result this Run really holds, and a refusal that read differently for
+    those would turn the reader into a way of enumerating the Run's store."""
+
     SUSPENSION_EXPIRED = "suspension_expired"
     """``psych_runtime.runtime.dispatch.resume``: a decision arrived after the
     suspension's own expiry (DESIGN.md §11). The Run is settled ``ABANDONED``
@@ -495,6 +507,14 @@ def _known_failure_text(kind: FailureKind, message: str) -> str:  # noqa: PLR091
                 "Do not try to call it from a program again; it will be refused the "
                 "same way. Call the tool directly, as its own tool call, so the "
                 "approval can be asked for."
+            )
+        case FailureKind.BINDING_HANDLE_NOT_YOURS:
+            text = (
+                f"{message}\n\n"
+                "A program may page back only the results its own calls produced, so "
+                "do not try the same handle from another program -- it will be "
+                "refused the same way. Call `read_tool_output` directly, as its own "
+                "tool call, with a handle you were given."
             )
         case FailureKind.SUSPENSION_EXPIRED:
             text = (

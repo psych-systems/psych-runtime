@@ -36,6 +36,21 @@
       "value": 2197.0,
       "unit": "bytes/turn",
       "higher_is_better": false
+    },
+    "mcp_code_execution_definition_ratio": {
+      "value": 0.140385,
+      "unit": "program definition bytes / tool definition bytes",
+      "higher_is_better": false
+    },
+    "mcp_code_execution_model_calls": {
+      "value": 2.0,
+      "unit": "model calls",
+      "higher_is_better": false
+    },
+    "mcp_code_execution_prompt_ratio": {
+      "value": 0.031813,
+      "unit": "program bytes / tool bytes",
+      "higher_is_better": false
     }
   }
 }

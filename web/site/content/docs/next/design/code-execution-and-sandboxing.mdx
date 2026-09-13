@@ -22,6 +22,16 @@ host-provided functions as ordinary calls, and those calls go back through the s
 policy, egress and recording every other tool call goes through. There is no
 privileged shortcut and no fast path for any binding, however the program uses it.
 
+**A binding is any tool the agent can currently call.** Registered Python
+tools, HTTP tools, and every tool a granted MCP server or A2A peer offers this
+tenant right now. Not a copy of a catalogue: the set is resolved at each turn
+boundary from the same live catalogue the model's own tool list comes from, so
+a tool withdrawn between turns stops being callable from a program in the turn
+it stops being callable directly. Deriving the set from the Spec instead —
+which is what this replaced — meant an MCP tool could never be bound at all,
+because MCP tools are not in the Spec to enumerate; and pinning it once per
+attempt would have kept access the tenant had taken away.
+
 **Failures are data.** A traceback comes back as a field on the result so the model
 can read it and fix the program. It is not an exception that kills the turn. The
 result's error carries a kind from a closed set, which names both what the program
@@ -70,6 +80,19 @@ The frame vocabulary is small:
 | child to host | call | one host-binding invocation |
 | host to child | reply | answers exactly one call, by id |
 | child to host | done | the final value or error, ending the run |
+
+The `run` frame also carries the names of the tools this execution may call.
+In the frame rather than on the child's command line, because an agent
+connected to a large MCP server may hold hundreds of them and every operating
+system caps a command line somewhere different — a limit that would have turned
+"this agent has many tools" into "the sandbox will not start", on one platform,
+at an unpredictable size.
+
+A `reply` that carries a failure carries a **kind** as well as a message. A
+program handed one sentence can only tell a refusal from an outage by matching
+on prose; a program handed a kind can branch. "A human would have to approve
+this", "the server is unreachable", "the tool ran and returned an error" and
+"this program has spent its call budget" are four different next moves.
 
 Stdout and stderr are not frames. They are the child's own streams, read and
 capped separately, so a program printing megabytes never competes with the
@@ -246,6 +269,121 @@ survive that. A deployment maps the name to an implementation. A name nothing
 is registered under is a deployment error and stops the attempt loudly; a
 backend that cannot meet a request is a refusal returned to the model as data,
 so an agent whose sandbox is unavailable keeps working with its other tools.
+
+### What a program is given
+
+Three names and one function per tool:
+
+- `call_tool(name, arguments)` reaches every offered tool by its model-facing
+  name. It has to exist, because a tool name is not a Python identifier: MCP
+  servers legitimately offer `list-repos`, `2fa` and `class`. The target name
+  travels as the frame's own `name` field, so the protocol's check that a call
+  names a tool actually offered to this execution still applies to it.
+- a direct alias for each name that *is* a usable identifier, because
+  `await search(query=...)` is what a model writes without being told twice.
+  Deliberately never a mangled alias: two servers can offer `list-repos` and
+  `list_repos`, and mangling would make one silently answer for the other.
+- `TOOLS`, the names, so a program can look before it calls, and `ToolError`,
+  carrying the host's `kind`.
+
+### What a program may not call
+
+The rule is capability, not origin. A tool is bindable when it takes a
+JSON-shaped request, completes with a JSON-shaped result, runs inside the
+execution's own limits, and **never suspends the Run**. The last one decides
+everything interesting: a suspension is a Run stopping and later resuming into
+a *turn*, there is no turn inside a subprocess, and nothing can resume into
+one. So a call that would suspend is refused before it runs — the only refusal
+that prevents anything — and the model is told to make it directly.
+
+That excludes `ask_question`, an MCP elicitation, and any approval-gated tool.
+It also excludes the Psych built-ins that are not questions of capability at
+all: `delegate` and the composed-subagent tools start Runs that outlive the
+execution, `remember`, `forget`, `update_tasks`, `load_skill` and
+`show_component` act on the model's own context or on the person in the
+conversation. `list_tools`, `get_tool_info` and `read_tool_output` are allowed:
+the first two are bounded read-only catalogue lookups and the only way to learn
+a deferred server's argument shapes, and the third is how a program reads a
+result too large to hand it in one piece (below). `read_tool_output` was
+previously excluded as redundant — "a program already holds its own bytes" —
+which was true in every case except the one that matters, the case where the
+bytes were too large to give it.
+
+### A program's work is budgeted too
+
+A program compresses model turns. It must not also compress the host's work:
+one `run_code` call could otherwise issue a million MCP calls, or assemble a
+gigabyte of arguments, without the model paying a turn for any of it. So every
+binding call is counted and measured — calls per execution and per Run,
+argument bytes per call, result bytes per call, total bytes per execution —
+against a budget the **deployment** owns on the profile.
+
+The per-Run count is read from the Run's folded log, not accumulated in the
+process. A Worker can die holding a lease and another can reclaim the same
+Attempt; an allowance kept in memory would reset exactly there, so a Run that
+crashed its way through ten programs would get ten fresh allowances and the
+per-Run cap would bound nothing. The fold counts a call at its
+`tool_call_started` — the point where the host accepted it — so a call that
+then failed, was refused, was aborted, or was left dangling by the crash has
+spent the allowance just the same, and nothing is given back on recovery.
+
+### A result too large to send, and the three honest answers
+
+The per-call result ceiling raises a question of its own: what a program gets
+when the tool it called returned more than that. Truncation is the one answer
+that cannot be allowed — a program that computes over a silently shortened
+result returns a confident wrong number, and nothing downstream can tell. So
+there are three answers and they are kept apart:
+
+- **Under the ceiling**: the whole result, as before.
+- **Over it, and preserved under a handle**: an opaque descriptor naming the
+  stored result, which the program reads in bounded windows or searches by
+  pattern through `read_tool_output` — on the host, against the Run's own log
+  or `BlobStore`, under the same call and byte budgets as any other binding
+  call, and recorded under the same parent `run_code`. Nothing about the
+  storage crosses the boundary: no key, path, URL, client or credential, only
+  a handle that is meaningless outside the Run that minted it. The handle is
+  scoped tighter still — a program may read only what its *own* calls
+  produced, so a handle from a direct model call, from an earlier program, or
+  from another Run is refused even though the first of those would resolve.
+- **Over it, and not preserved**: refused with `binding_result_not_paged`,
+  which says exactly that rather than pretending to an answer.
+
+The distinction between a result and a handle is carried **on the reply
+frame**, never by a key inside the value. A tool may legitimately return a
+dictionary containing any field name at all, including whichever one a
+marker-based scheme picked; a host that decided what a value *was* by
+looking inside it would hand that program a paging object instead of its
+data, silently, and only for the results whose contents happened to
+collide. The host returns a `ResultHandle` — a type nothing a tool returns
+can be — and the protocol says which of the two the frame carries.
+
+In the child the descriptor becomes a `ToolResultHandle` that refuses to be
+indexed, iterated, measured or `.get()`-ed. `len(rows)` on a reference is the
+shape of the mistake this is guarding against, and raising there is what turns
+a silent wrong answer into a failure the program can catch and act on.
+
+The deployment rather than the Spec, deliberately. A denial-of-service question
+about somebody's host is not an agent author's to answer, and a Spec field
+would put the answer inside the Version hash, where changing it means
+republishing every agent. A tenant policy may narrow it further; nothing can
+raise it.
+
+The budget is enforced host-side, around the callback every backend reaches its
+bindings through, rather than inside the framed wire protocol. A counter in the
+protocol would be a counter the remote backend does not have, because that one
+speaks NDJSON over HTTP and never runs that code.
+
+### What the program sees that the model does not
+
+A large tool result is elided for the model, and above a threshold moved to the
+`BlobStore`, so it does not fill a prompt. A program receives it **whole**:
+reducing it is the reason the program was written, and handing it the elided
+view would make it filter nothing and return a confident wrong answer. This is
+the asymmetry the whole feature is for, and it is the reason a binding's return
+value comes from what the executor produced rather than from the record written
+beside it — an offloaded record's `result` field is empty by that record's own
+rule.
 
 ## What each platform can actually do
 

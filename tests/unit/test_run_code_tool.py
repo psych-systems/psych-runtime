@@ -18,6 +18,7 @@ from psych_runtime.core.code_execution import (
     IsolationLevel,
     OutputPreservation,
 )
+from psych_runtime.core.messages import ToolDefinition
 from psych_runtime.sandbox.port import (
     SandboxArtifact,
     SandboxFailure,
@@ -25,6 +26,7 @@ from psych_runtime.sandbox.port import (
     SandboxLimit,
     SandboxResult,
 )
+from psych_runtime.tools.bindings import BindableTool, EffectiveBindings
 from psych_runtime.tools.code import (
     SLOT_PLACEHOLDER,
     CodeExecutionOutcome,
@@ -73,18 +75,46 @@ async def _run(result: SandboxResult, **options: Any) -> CodeExecutionOutcome:
     return await executor({"program": "return 1"})
 
 
+def _bindings(*names: str) -> EffectiveBindings:
+    """The shape the runtime hands in: definitions, already narrowed."""
+    return EffectiveBindings(
+        tools=tuple(
+            BindableTool(definition=ToolDefinition(name=name), origin="code")
+            for name in sorted(names)
+        )
+    )
+
+
 class TestTheDefinition:
     def test_it_is_compact_and_names_the_bindings(self) -> None:
-        definition = run_code_definition(["refund", "lookup"], wall_seconds=30.0)
+        definition = run_code_definition(_bindings("refund", "lookup"), wall_seconds=30.0)
         assert definition.name == "run_code"
         assert "`lookup(...)`, `refund(...)`" in definition.description
         assert "30s" in definition.description
         assert "No network" in definition.description
-        assert len(definition.description) < 1_200
+        assert len(definition.description) < 1_600
         assert definition.input_schema["required"] == ["program"]
 
     def test_it_says_when_network_is_available(self) -> None:
-        assert "Network is available" in run_code_definition([], network=True).description
+        description = run_code_definition(EffectiveBindings(), network=True).description
+        assert "Network is available" in description
+
+    def test_a_name_that_is_not_an_identifier_is_only_reachable_through_call_tool(self) -> None:
+        definition = run_code_definition(_bindings("docs__list-repos", "search"))
+        assert "`search(...)`" in definition.description
+        # No alias, and no mangled one either: `list_repos` would answer for a
+        # different tool if some server also offered that name.
+        assert "list-repos(...)" not in definition.description
+        assert "list_repos" not in definition.description
+        assert "call_tool" in definition.description
+
+    def test_a_large_catalogue_does_not_become_the_prompt(self) -> None:
+        names = [f"records__tool_{index:03d}" for index in range(400)]
+        definition = run_code_definition(_bindings(*names))
+        listed_whole = sum(len(name) + 8 for name in names)
+        assert len(definition.description) < listed_whole // 3
+        assert "400 tools" in definition.description
+        assert "more are in `TOOLS`" in definition.description
 
 
 class TestThePayload:
@@ -241,7 +271,7 @@ class TestRefusalsAndArguments:
         executor = make_run_code(
             sandbox,
             host_call,
-            binding_names=["lookup"],
+            bindings=_bindings("lookup"),
             limits="LIMITS",
             network=True,
             isolation=IsolationLevel.PROCESS,
@@ -259,7 +289,7 @@ class TestRefusalsAndArguments:
 
     async def test_without_a_host_call_no_bindings_are_built(self) -> None:
         sandbox = _Sandbox(_result(value=1))
-        await make_run_code(sandbox, binding_names=["lookup"])({"program": "return 1"})
+        await make_run_code(sandbox, bindings=_bindings("lookup"))({"program": "return 1"})
         assert sandbox.calls[0]["bindings"] == {}
 
     async def test_a_legacy_sandbox_gets_only_the_three_original_options(self) -> None:

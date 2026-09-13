@@ -495,6 +495,17 @@ class ToolCallStarted(_RecordBase):
     """Whether a later Attempt may re-execute this call after a crash rather than
     recording an unknown outcome. Defaults False: assuming a side effect is
     repeatable is how double refunds happen."""
+    parent_call_id: ToolCallId | None = None
+    """The ``run_code`` call whose program made this one, when a program did.
+
+    ``None`` for everything the model called itself, which is every call
+    written before this field existed, so an old log reads exactly as it did.
+
+    A program that loops over forty orders produces forty of these records. The
+    model's own context holds one ``run_code`` result -- that is the point of
+    code execution -- so without this a report and a trace would show forty
+    calls with no visible cause and one call with no visible effect. It is a
+    tree, and this is the edge."""
 
 
 class ToolCallFinished(_RecordBase):

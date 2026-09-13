@@ -1115,3 +1115,66 @@ class TestHowAnAttemptBegan:
         reclaim on the attempt after that, so the flag has to clear."""
         state = reduce(LogBuilder().admitted().attempt().suspended().resumed().attempt().records)
         assert state.resumed_since_attempt is False
+
+
+class TestCountingAProgramsToolCalls:
+    """``program_tool_calls`` is the per-Run binding allowance, and it is here
+    rather than in a Worker's memory so a crash cannot refill it.
+
+    Counted at the *start* of a call, because that is where the host accepted
+    it: what happened afterwards -- an answer, a failure, a refusal, an abort,
+    or nothing at all because the Worker died -- does not give the allowance
+    back.
+    """
+
+    def _log(self, *, finish: bool) -> list[Record]:
+        builder = (
+            LogBuilder()
+            .admitted()
+            .attempt()
+            .turn()
+            .model_started()
+            .model_finished()
+            .tool_started("call-code", "run_code")
+            .tool_started("call-a", "lookup", parent_call_id="call-code")
+            .tool_started("call-b", "lookup", parent_call_id="call-code")
+            # A direct call the model made: no parent, not a program's.
+            .tool_started("call-direct", "lookup")
+        )
+        if finish:
+            builder = (
+                builder.tool_finished("call-a")
+                .tool_finished("call-b")
+                .tool_finished("call-direct")
+                .tool_finished("call-code")
+            )
+        return builder.records
+
+    def test_only_a_programs_own_calls_are_counted(self) -> None:
+        state = reduce(self._log(finish=True))
+        assert state.program_tool_calls == 2
+        assert "call-code" in state.program_call_ids
+
+    def test_a_dangling_call_still_spent_the_allowance(self) -> None:
+        """Nothing settled: the Worker died holding the lease. The Run has
+        still made those calls, and the reclaiming Attempt is told so."""
+        state = reduce(self._log(finish=False))
+        assert state.program_tool_calls == 2
+
+    def test_a_log_with_no_programs_counts_nothing(self) -> None:
+        assert reduce(valid_run()).program_tool_calls == 0
+
+    def test_folding_in_two_halves_reaches_the_same_number(self) -> None:
+        """The property recovery depends on: a Worker folds the log it finds
+        and then keeps appending, and a continued fold must agree with a whole
+        one. Splitting between the program's start and its calls is the case
+        that would fail if the parent ids were fold-local."""
+        log = self._log(finish=True)
+        whole = reduce(log)
+        cut = next(
+            index
+            for index, record in enumerate(log)
+            if getattr(record, "call_id", None) == "call-a"
+        )
+        continued = reduce(log[cut:], prior=reduce(log[:cut]))
+        assert continued.program_tool_calls == whole.program_tool_calls == 2

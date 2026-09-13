@@ -13,6 +13,7 @@ __all__ = [
     "AccessDenied",
     "DeadlineExceeded",
     "LeaseLost",
+    "ProgramToolRefused",
     "PsychError",
     "RunAborted",
     "RunAlreadySettled",
@@ -252,6 +253,58 @@ class AccessDenied(PsychError):
         self.subject = subject
         self.reason = reason
         super().__init__(f"access to {subject} denied: {reason}")
+
+
+class ProgramToolRefused(AccessDenied):
+    """A tool call a sandboxed program made, refused before it ran.
+
+    An ``AccessDenied`` so every existing handler still catches it, with a
+    stable ``kind`` added because a program needs to tell these apart and a
+    sentence of prose is not something a program can branch on. The kind
+    crosses the sandbox boundary on the reply frame and arrives in the program
+    as ``ToolError.kind`` (DESIGN.md §18).
+
+    The kinds, and what each one means to whoever reads it:
+
+    - ``approval_required_in_program``: a human would have to approve this
+        call, and nothing can ask a person while a subprocess waits. Call the
+        tool directly instead.
+    - ``input_required_in_program``: the call reached something that wants more
+        input before it can finish. Same remedy.
+    - ``binding_not_available``: no tool of that name is callable by this Run
+        right now, including a built-in programs are never offered.
+    - ``binding_calls_exhausted`` / ``binding_calls_exhausted_for_run`` /
+        ``binding_arguments_too_large`` / ``binding_traffic_exhausted``: a
+        budget ran out (``psych_runtime.tools.bindings.BindingBudget``). The
+        per-Run one is counted from the Run's log, so a crash does not refill
+        it.
+    - ``binding_result_too_large``: a ``read_tool_output`` window was wider
+        than the per-call transfer ceiling. The one budget refusal a program
+        can fix by itself: ask for fewer lines, or narrow with a pattern.
+    - ``binding_result_not_paged``: the result was over that ceiling and was
+        not preserved under a handle, so there is nothing to page from. The
+        call was made and is in the log; it is the transfer that failed.
+    - ``binding_handle_not_yours``: a ``read_tool_output`` for a handle this
+        program's own calls did not produce -- forged, from another Run or
+        tenant, from a direct call the model made, or from an earlier
+        program in this same Run. Two of those name something that really
+        exists and are refused anyway; all of them are refused in the same
+        words, because a refusal that varied would answer questions about
+        what the Run has stored. The attempt is recorded as its own tool
+        call under the program that made it.
+    - ``binding_produced_bytes_exhausted``: the tools this program has
+        called have produced more than the execution's allowance. Counted
+        whether or not the program received the bytes: a result replaced by
+        a handle was still fetched, parsed and stored.
+    - ``binding_preserved_bytes_exhausted_for_run``: this Run's programs
+        have left more in the log and the BlobStore than the deployment
+        allows. Read from the log, so a Worker replacement does not refill
+        it.
+    """
+
+    def __init__(self, kind: str, subject: str, reason: str) -> None:
+        self.kind = kind
+        super().__init__(subject, reason)
 
 
 class TransientError(PsychError):

@@ -69,7 +69,7 @@ const ENTRIES: TraceEntry[] = [
     label: "list_accounts", summary: "42 accounts returned",
     status: "ok", willRetry: false, startedAt: "2026-09-11T06:58:07.800Z", finishedAt: "2026-09-11T06:58:12.600Z",
     timed: true, offsetSeconds: 7.8, durationSeconds: 4.8, ongoing: false,
-    data: { call_id: "list-accounts", tool: "list_accounts", turn: 1, step_id: null, arguments: { status: "active" }, outcome: "ok", result: { count: 42, reviewed: 42 }, failure: null, duration_seconds: 4.8, result_handle: null, attachments: [], preview: "42 accounts", result_bytes: 1840, started_at: "2026-09-11T06:58:07.800Z", finished_at: "2026-09-11T06:58:12.600Z", interruptible: true, safe_to_retry: true },
+    data: { call_id: "list-accounts", tool: "list_accounts", turn: 1, step_id: null, arguments: { status: "active" }, outcome: "ok", result: { count: 42, reviewed: 42 }, failure: null, duration_seconds: 4.8, result_handle: null, attachments: [], preview: "42 accounts", result_bytes: 1840, started_at: "2026-09-11T06:58:07.800Z", finished_at: "2026-09-11T06:58:12.600Z", interruptible: true, safe_to_retry: true, parent_call_id: null },
   },
   {
     key: "message-2", kind: "message", turn: 1, stepId: null,
@@ -83,7 +83,7 @@ const ENTRIES: TraceEntry[] = [
     label: "read_permissions", summary: "Compared roles and last activity",
     status: "ok", willRetry: false, startedAt: "2026-09-11T06:58:18.100Z", finishedAt: "2026-09-11T06:58:24.000Z",
     timed: true, offsetSeconds: 18.1, durationSeconds: 5.9, ongoing: false,
-    data: { call_id: "read-permissions", tool: "read_permissions", turn: 2, step_id: null, arguments: { account_ids: ["acct-17", "acct-31"] }, outcome: "ok", result: { flagged: 2, reasons: ["unused administrator role", "inactive service identity"] }, failure: null, duration_seconds: 5.9, result_handle: null, attachments: [], preview: "2 accounts flagged", result_bytes: 2260, started_at: "2026-09-11T06:58:18.100Z", finished_at: "2026-09-11T06:58:24.000Z", interruptible: true, safe_to_retry: true },
+    data: { call_id: "read-permissions", tool: "read_permissions", turn: 2, step_id: null, arguments: { account_ids: ["acct-17", "acct-31"] }, outcome: "ok", result: { flagged: 2, reasons: ["unused administrator role", "inactive service identity"] }, failure: null, duration_seconds: 5.9, result_handle: null, attachments: [], preview: "2 accounts flagged", result_bytes: 2260, started_at: "2026-09-11T06:58:18.100Z", finished_at: "2026-09-11T06:58:24.000Z", interruptible: true, safe_to_retry: true, parent_call_id: null },
   },
   {
     key: "message-3", kind: "message", turn: 1, stepId: null,

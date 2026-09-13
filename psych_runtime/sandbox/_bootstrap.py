@@ -44,6 +44,27 @@ Only the handful of lines below ``# --- model program below this line ---``.
 Everything above it is bootstrap machinery this project wrote and reviewed;
 none of it is reachable from inside the model's program except through the
 bindings explicitly handed to it.
+
+## What a program is given
+
+Three names, and one function per tool it may call:
+
+- ``call_tool(name, arguments)`` reaches **every** tool offered to this
+  execution, by its model-facing name. It exists because a name is not a
+  Python identifier: an MCP server may legitimately offer ``list-repos``,
+  ``2fa`` or ``class``, and none of those can be written as a call.
+- a direct alias per tool whose name *is* a usable identifier, because
+  ``await search(query="x")`` is what a model writes without being told twice.
+  Never a mangled one -- two servers can offer ``list-repos`` and
+  ``list_repos``, and a mangling would make one answer for the other.
+- ``TOOLS``, the sorted names, so a program can look before it calls.
+- ``ToolError``, raised when a call does not produce a result, carrying the
+  host's own ``kind`` so the program can tell a refusal from a server being
+  down without matching on prose.
+
+The names come in the ``run`` frame rather than on the command line: an agent
+connected to a large server may be offered hundreds of tools, and every
+operating system caps a command line somewhere different.
 """
 
 from __future__ import annotations
@@ -62,6 +83,7 @@ import ast
 import asyncio
 import errno
 import json
+import keyword
 import os
 import socket
 import sys
@@ -156,9 +178,85 @@ def _describe_failure(exc):
     }
 
 
+class ToolError(RuntimeError):
+    \"\"\"A host tool call that did not produce a result.
+
+    ``kind`` is a stable token the program can branch on -- the host's own
+    classification of what went wrong -- rather than a sentence it would have
+    to match on. ``tool`` is the name that was called.
+    \"\"\"
+
+    def __init__(self, kind, tool, message):
+        self.kind = kind
+        self.tool = tool
+        self.message = message
+        super().__init__(message)
+
+
+class ToolResultHandle:
+    \"\"\"A reference to a tool result too large to send in one piece.
+
+    The call succeeded and the whole result is in the Run's log; what did not
+    happen is moving all of it into this process. Read it in windows with
+    ``await handle.read(offset=..., limit=...)`` or search it with
+    ``await handle.read(pattern=...)``.
+
+    Every other way of touching it raises, deliberately. A truncated result
+    that still behaves like a result is the one failure nobody can see: a
+    program that does ``len(rows)`` or ``rows.get("total", 0)`` on a partial
+    answer returns a confident wrong number. So this refuses to be indexed,
+    iterated, measured or unpacked, and says what to do instead.
+    \"\"\"
+
+    __slots__ = ("handle", "tool", "size_bytes", "stored", "_read")
+
+    def __init__(self, descriptor, read):
+        self.handle = descriptor.get("handle")
+        self.tool = descriptor.get("tool")
+        self.size_bytes = descriptor.get("size_bytes")
+        self.stored = descriptor.get("stored")
+        self._read = read
+
+    async def read(self, offset=0, limit=200, pattern=None):
+        \"\"\"One bounded window of the result, or the lines matching a pattern.
+
+        Returns the reader's own answer: ``content`` (or ``matches``) plus
+        ``total_lines``, ``total_matches`` and ``truncated``, so a program can
+        tell "there is no more" from "there is more past here".
+        \"\"\"
+        arguments = {"handle": self.handle, "offset": offset, "limit": limit}
+        if pattern is not None:
+            arguments["pattern"] = pattern
+        return await self._read(arguments)
+
+    def __repr__(self):
+        return "<ToolResultHandle tool=%r size_bytes=%r>" % (self.tool, self.size_bytes)
+
+    def _refuse(self, *_args, **_kwargs):
+        raise ToolError(
+            "result_not_inline",
+            self.tool,
+            "this result was too large to send into the program in one piece, so "
+            "it is a handle rather than the value. Read it with "
+            "await handle.read(offset=..., limit=...) or search it with "
+            "await handle.read(pattern=...). It is "
+            + repr(self.size_bytes)
+            + " bytes.",
+        )
+
+    __getitem__ = _refuse
+    __iter__ = _refuse
+    __len__ = _refuse
+    __contains__ = _refuse
+    __getattr__ = _refuse
+    get = _refuse
+    keys = _refuse
+    items = _refuse
+    values = _refuse
+
+
 async def _amain():
     spec = sys.argv[1]
-    binding_names = sys.argv[2:]
     sock = _connect(spec)
     sock.setblocking(False)
     loop = asyncio.get_running_loop()
@@ -205,6 +303,10 @@ async def _amain():
     if first_frame.get("type") != "run":
         raise RuntimeError("psych sandbox: expected a run frame first")
     program = first_frame["program"]
+    # In the frame rather than in argv: an agent connected to a large MCP
+    # server may be offered hundreds of tools, and a command line has a length
+    # every operating system enforces differently.
+    binding_names = [name for name in first_frame.get("bindings") or [] if isinstance(name, str)]
 
     pending = {}
     next_call_id = 0
@@ -219,14 +321,21 @@ async def _amain():
             frame = json.loads(line)
             if frame.get("type") != "reply":
                 continue
-            future = pending.pop(frame.get("id"), None)
-            if future is None or future.done():
+            entry = pending.pop(frame.get("id"), None)
+            if entry is None or entry[0].done():
                 continue
+            future, called = entry
             if frame.get("ok"):
-                future.set_result(frame.get("value"))
+                # The frame says which kind of answer this is. Read from the
+                # envelope, never from the value, so no tool result can make
+                # itself look like a handle by what it contains.
+                future.set_result((frame.get("value"), frame.get("result") == "handle"))
             else:
-                message = frame.get("message") or "host binding failed"
-                future.set_exception(RuntimeError(message))
+                message = frame.get("message") or "host tool call failed"
+                kind = frame.get("kind")
+                future.set_exception(
+                    ToolError(kind if isinstance(kind, str) else "tool_failed", called, message)
+                )
 
     reader_task = asyncio.ensure_future(_reader_loop())
 
@@ -238,9 +347,35 @@ async def _amain():
             await _write_frame(
                 {"type": "call", "id": call_id, "name": name, "arguments": arguments}
             )
-            pending[call_id] = future
+            pending[call_id] = (future, name)
             next_call_id = call_id + 1
-        return await future
+        answer, is_handle = await future
+        # The *frame* said which of the two this is. Nothing inside the
+        # value decides it, so a tool whose own result happens to contain
+        # any particular key is still just a tool that returned a dict.
+        if is_handle:
+            return ToolResultHandle(answer, _read_handle)
+        return answer
+
+    async def _read_handle(arguments):
+        return await _dispatch("read_tool_output", arguments)
+
+    offered = set(binding_names)
+
+    async def call_tool(name, arguments=None):
+        # The one way to reach every tool, including the many whose names are
+        # not usable as Python names: an MCP server may offer "list-repos",
+        # "2fa" or "class". Checked here rather than at the host so a typo is
+        # an exception the program can catch, not a protocol violation that
+        # ends the execution; the host checks the name again regardless.
+        if name not in offered:
+            raise ToolError(
+                "binding_not_available",
+                name,
+                "no tool named " + repr(name) + " is available to this program. "
+                "Available: " + (", ".join(sorted(offered)) or "none"),
+            )
+        return await _dispatch(name, dict(arguments or {}))
 
     def _make_binding(binding_name):
         async def _binding(**kwargs):
@@ -249,7 +384,24 @@ async def _amain():
         _binding.__name__ = binding_name
         return _binding
 
-    namespace = {name: _make_binding(name) for name in binding_names}
+    reserved = ("call_tool", "ToolError", "ToolResultHandle", "TOOLS")
+    namespace = {
+        "call_tool": call_tool,
+        "ToolError": ToolError,
+        "ToolResultHandle": ToolResultHandle,
+        "TOOLS": tuple(sorted(offered)),
+    }
+    # An alias only where the name is one a program can actually write. No
+    # mangling: two servers can offer "list-repos" and "list_repos", and a
+    # mangled alias would silently answer for the wrong one. A tool whose name
+    # would shadow the universal API keeps its place in `call_tool` and loses
+    # only the shorthand.
+    for name in binding_names:
+        if name in reserved or name.startswith("__"):
+            continue
+        if not name.isidentifier() or keyword.iskeyword(name) or keyword.issoftkeyword(name):
+            continue
+        namespace[name] = _make_binding(name)
 
     # --- model program below this line ---
     value = None

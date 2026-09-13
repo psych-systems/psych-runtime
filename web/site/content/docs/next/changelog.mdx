@@ -11,6 +11,91 @@ and breaking changes are expected until the design survives a second consumer.
 
 ### Added
 
+- A sandboxed program can call **every tool its agent is currently authorized
+  to call**, MCP tools included. `CodeExecution.bindings=None` — the default —
+  now means every registered `CodeTool`, `HttpTool`, granted MCP tool and A2A
+  peer skill that survives narrowing this turn, rather than only the names in
+  `AgentSpec.tools`. An explicit tuple still narrows and can never widen.
+
+  This is a behaviour change for a Spec already published with `bindings=None`:
+  it reaches more tools than before, without its Version hash changing, because
+  which tools exist is a runtime fact and was never in the hash. A Spec that
+  wants the old set names it.
+
+  The set is resolved at every turn boundary from that turn's live catalogue
+  (`ResolvedTools.bindable`), so a tool a server removed or a tenant policy
+  withdrew stops being callable from a program in the same turn it stops being
+  callable directly. A server whose catalogue is deferred out of the prompt is
+  still bindable, which is the case code execution is best at.
+- Inside a program: `call_tool(name, arguments)` reaches any tool by its
+  model-facing name — MCP names are not Python identifiers — plus a direct
+  alias for each name that is one, `TOOLS`, and `ToolError` carrying a stable
+  `.kind` so a program can tell a refusal from an outage without matching on
+  prose.
+- `BindingBudget` on `SandboxProfile` bounds what one program may spend on host
+  calls: calls per execution and per Run, argument and result bytes per call,
+  total *transferred* bytes per execution, total bytes *produced* by host
+  tools per execution, and total bytes *preserved* in the log or BlobStore
+  per Run. Produced and preserved are metered separately from transfer
+  because a result replaced by a handle crosses into the sandbox as a
+  hundred bytes while costing the host everything it took to fetch and store
+  it; the preserved ceiling is read from the Run's log, so a Worker
+  replacement does not refill it. Owned by the deployment, narrowable by a
+  `CodeExecutionPolicy`, and not in the Spec or the Version hash.
+- A binding result too large to send into the sandbox in one piece now
+  arrives as a **handle** rather than failing. The program reads it in
+  bounded windows (`await handle.read(offset=…, limit=…)`) or searches it
+  (`pattern=…`) through `read_tool_output`, which runs on the host against
+  the Run's own log or `BlobStore`, spends the same call and byte budgets as
+  any other binding call, and is recorded under the same parent `run_code`.
+  Nothing about the storage crosses the boundary — no key, path, URL, client
+  or credential — and a program may read only handles its own calls
+  produced, so one from a direct call, an earlier program or another Run is
+  refused (`binding_handle_not_yours`), and every rejected read is recorded
+  as its own tool call under the program that attempted it. A result over
+  the ceiling that was
+  not preserved is refused explicitly (`binding_result_not_paged`) rather
+  than truncated, and in the child a handle raises `ToolError` on any
+  attempt to index, iterate, measure or `.get()` it, because a program
+  computing over a silently shortened result is the one wrong answer nobody
+  downstream can detect. `read_tool_output` is bindable for this reason; it
+  was previously excluded as redundant.
+- `ToolCallStarted.parent_call_id` and `ToolCallReport.parent_call_id`: a call a
+  program made points at the `run_code` that made it, so a report and a trace
+  can nest forty MCP calls under the one tool call the model actually issued.
+- `code_execution.bindings` may name a server-qualified MCP or A2A tool at
+  publish time. It is checked as far as offline validation honestly can — that
+  the name is addressed to a system this agent connects to — because whether
+  that server still offers it is not a fact about the Spec and publication must
+  not depend on somebody else's uptime. A name that does not resolve at run
+  time comes back as `unavailable_bindings` in the `run_code` result and is
+  never replaced with a different tool.
+
+### Fixed
+
+- An approval-gated **HTTP, MCP or A2A** tool was callable from inside a
+  program with no approval. The approval selectors match on a tool's
+  annotations, and the agent loop looked those up in the code-tool registry,
+  which holds no registration for any of those three: no definition was found,
+  `approval_required` was never consulted, and the call went through. The
+  annotations now come from the turn's resolved tool set. A gated call from a
+  program is refused before the tool runs, with kind
+  `approval_required_in_program`, and the model is told to call it directly.
+- A binding whose result was large enough to offload reached the program as
+  `None`. The value was read back off the record, and an offloaded record
+  carries its payload in the `BlobStore` with `result` empty by that record's
+  own rule. The elision exists for the model's context; a program is the one
+  consumer that must see the whole result, since reducing it is why the program
+  was written.
+- The per-Run binding allowance (`BindingBudget.max_calls_per_run`) was counted
+  in memory, so a Worker that died holding a lease handed the reclaiming
+  Attempt a fresh allowance and the per-Run cap bounded nothing across a crash.
+  It is now derived from the Run's own folded log: a call is spent when its
+  `tool_call_started` record is written, whether it then succeeded, failed, was
+  refused, was aborted, or was left dangling, and recovery gives none of it
+  back. Calls the model made directly, and the `run_code` calls themselves, are
+  not counted.
+
 - An agent decides whether it may run programs, in its own Spec:
   `AgentSpec.code_execution` names a sandbox profile, the isolation level it
   needs, its network policy, its limits, which of its tools a program may call,

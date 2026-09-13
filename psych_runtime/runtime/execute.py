@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, runtime_checkable
 
 from psych_runtime.core.answer import split_answer
+from psych_runtime.core.code_execution import DEFAULT_BINDING_BUDGET
 from psych_runtime.core.errors import AccessDenied, VersionNotFound
 from psych_runtime.core.ids import RunId, ToolCallId, WorkerId
 from psych_runtime.core.messages import ToolDefinition
@@ -35,7 +36,12 @@ from psych_runtime.core.version import publish as make_version
 from psych_runtime.model.port import ModelClient
 from psych_runtime.model.pricing import CostPolicy, PriceResolver
 from psych_runtime.runtime.abort import AbortReason, AbortSignal
-from psych_runtime.runtime.agent import DEFAULT_OFFLOAD_BYTES, AgentLoop, ToolExecutor
+from psych_runtime.runtime.agent import (
+    DEFAULT_OFFLOAD_BYTES,
+    AgentLoop,
+    RunCodeOffer,
+    ToolExecutor,
+)
 from psych_runtime.runtime.dispatch import dispatch, send
 from psych_runtime.runtime.journal import Journal
 from psych_runtime.runtime.notify import notify_parent
@@ -60,8 +66,9 @@ from psych_runtime.telemetry.port import (
     TelemetrySpan,
 )
 from psych_runtime.tools.a2a import A2ATools
+from psych_runtime.tools.bindings import BindingCounter, EffectiveBindings
 from psych_runtime.tools.builtins import MemoryPort, register_builtins
-from psych_runtime.tools.code import make_run_code, run_code_definition
+from psych_runtime.tools.code import HostCall, make_run_code, run_code_definition
 from psych_runtime.tools.deferred import DEFAULT_CATALOGUE_BUDGET_CHARS, DeferredDiscovery
 from psych_runtime.tools.guidance import failure_guidance
 from psych_runtime.tools.mcp import McpTools
@@ -575,51 +582,82 @@ class Runtime:
         """
         config = spec.code_execution
         assert config is not None  # checked by the caller
-        granted = [tool.name for tool in spec.tools]
         resolved = await resolve_execution(
             config,
-            granted,
             self._profiles,
             scope=journal.scope,
             policy=self.code_execution_policy,
         )
         if isinstance(resolved, ExecutionRefusal):
+            refusal = (resolved.kind, resolved.message)
+
+            def build_refusal(
+                bindings: EffectiveBindings, host_call: HostCall, counter: BindingCounter
+            ) -> tuple[ToolDefinition, Any]:
+                # The bindings are still resolved and still named in the
+                # description: an agent whose deployment cannot run programs
+                # should read one refusal, not discover that its tools also
+                # vanished.
+                _ = host_call, counter
+                return (
+                    run_code_definition(bindings, preview_bytes_budget=config.output.preview_bytes),
+                    make_run_code(None, refusal=refusal, preserve=config.output.preserve),
+                )
+
             loop.offer_run_code(
-                run_code_definition(granted, preview_bytes_budget=config.output.preview_bytes),
-                make_run_code(
-                    None,
-                    refusal=(resolved.kind, resolved.message),
-                    preserve=config.output.preserve,
-                ),
+                RunCodeOffer(
+                    filter=None if config.bindings is None else frozenset(config.bindings),
+                    budget=DEFAULT_BINDING_BUDGET,
+                    build=build_refusal,
+                )
             )
             return
-        sandbox = resolved.profile.sandbox
-        loop.offer_run_code(
-            run_code_definition(
-                resolved.bindings,
-                network=resolved.network,
-                preview_bytes_budget=config.output.preview_bytes,
-                wall_seconds=resolved.limits.wall_seconds,
-            ),
-            make_run_code(
-                sandbox,
-                # A binding routes back through the loop, not the executor:
-                # that is what makes Policy, the approval selectors, the
-                # repetition and failure-streak guards and the record log
-                # apply to a call a program makes exactly as they apply to
-                # one the model makes directly. §18: no back door.
-                host_call=loop.call_as_binding,
-                binding_names=resolved.bindings,
-                limits=resolved.limits,
-                network=resolved.network,
-                isolation=resolved.isolation,
-                capture=resolved.capture,
-                preview_bytes_budget=config.output.preview_bytes,
-                preserve=config.output.preserve,
-                cancel=abort,
-                legacy_signature=not _accepts_execution_options(sandbox),
-            ),
-        )
+
+        plan = resolved
+        sandbox = plan.profile.sandbox
+        legacy = not _accepts_execution_options(sandbox)
+
+        def build(
+            bindings: EffectiveBindings, host_call: HostCall, counter: BindingCounter
+        ) -> tuple[ToolDefinition, Any]:
+            """One turn's ``run_code``, from that turn's own tool set.
+
+            Called at every turn boundary rather than once per Attempt, because
+            which tools exist is a runtime fact: an MCP catalogue changes, a
+            tenant policy is edited, an optional server stops answering. The
+            plan above fixes the *terms* -- the sandbox, the limits, the
+            isolation, the filter -- and this fixes the tools.
+            """
+            return (
+                run_code_definition(
+                    bindings,
+                    network=plan.network,
+                    preview_bytes_budget=config.output.preview_bytes,
+                    wall_seconds=plan.limits.wall_seconds,
+                ),
+                make_run_code(
+                    sandbox,
+                    # A binding routes back through the loop, not the executor:
+                    # that is what makes Policy, the approval selectors, the
+                    # repetition and failure-streak guards and the record log
+                    # apply to a call a program makes exactly as they apply to
+                    # one the model makes directly. §18: no back door.
+                    host_call=host_call,
+                    bindings=bindings,
+                    budget=plan.budget,
+                    binding_counter=counter,
+                    limits=plan.limits,
+                    network=plan.network,
+                    isolation=plan.isolation,
+                    capture=plan.capture,
+                    preview_bytes_budget=config.output.preview_bytes,
+                    preserve=config.output.preserve,
+                    cancel=abort,
+                    legacy_signature=legacy,
+                ),
+            )
+
+        loop.offer_run_code(RunCodeOffer(filter=plan.bindings, budget=plan.budget, build=build))
 
     def _end_user_id(self, journal: Journal) -> str | None:
         """Whose durable facts this Run may read and write.

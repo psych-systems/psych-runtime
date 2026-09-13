@@ -287,9 +287,7 @@ class NamespaceSandbox:
         try:
             server, connected, accepted = await _listen(socket_path)
             try:
-                argv = self._argv(
-                    bound, ipc_dir=ipc_dir, workdir=workdir, network=network, canary=canary
-                )
+                argv = self._argv(ipc_dir=ipc_dir, workdir=workdir, network=network, canary=canary)
                 env = self._build_env(canary)
                 try:
                     proc = await asyncio.create_subprocess_exec(
@@ -326,7 +324,6 @@ class NamespaceSandbox:
 
     def _argv(
         self,
-        bound: Mapping[str, HostBinding],
         *,
         ipc_dir: Path,
         workdir: Path,
@@ -406,7 +403,6 @@ class NamespaceSandbox:
             "-c",
             BOOTSTRAP_SOURCE,
             f"unix:{_IPC_DIR}/ipc.sock",
-            *bound.keys(),
         ]
         return argv
 

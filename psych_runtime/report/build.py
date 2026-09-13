@@ -290,6 +290,7 @@ def _tool_calls(records: Sequence[Record]) -> tuple[ToolCallReport, ...]:
                     "finished_at": None,
                     "interruptible": record.interruptible,
                     "safe_to_retry": record.safe_to_retry,
+                    "parent_call_id": record.parent_call_id,
                 }
             )
 

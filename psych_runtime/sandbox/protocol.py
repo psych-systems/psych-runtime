@@ -38,11 +38,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Any
 
+from psych_runtime.core.code_execution import ResultHandle
 from psych_runtime.core.errors import PsychError
 from psych_runtime.sandbox.port import HostBinding
 
@@ -51,6 +52,7 @@ __all__ = [
     "DoneFrame",
     "ReadyFrame",
     "SandboxProtocolError",
+    "binding_failure_kind",
     "build_abort_frame",
     "build_reply_frame",
     "build_run_frame",
@@ -120,10 +122,18 @@ async def write_frame(writer: asyncio.StreamWriter, frame: Mapping[str, Any]) ->
         ) from err
 
 
-def build_run_frame(program: str) -> dict[str, Any]:
+def build_run_frame(program: str, bindings: Sequence[str] = ()) -> dict[str, Any]:
     """The frame that starts an execution, sent only once the host has read
-    the child's ``ready`` report and accepted the terms it describes."""
-    return {"type": "run", "program": program}
+    the child's ``ready`` report and accepted the terms it describes.
+
+    Carries the names of the host tools this execution may call. In the frame
+    rather than on the child's command line because an agent connected to a
+    large MCP server may be offered hundreds of them, and every operating
+    system caps a command line somewhere different -- a limit that would
+    silently turn "your agent has many tools" into "the sandbox will not
+    start".
+    """
+    return {"type": "run", "program": program, "bindings": list(bindings)}
 
 
 def build_abort_frame(reason: str) -> dict[str, Any]:
@@ -194,17 +204,65 @@ def parse_ready_frame(raw: Mapping[str, Any]) -> ReadyFrame:
 
 
 def build_reply_frame(
-    call_id: int, *, ok: bool, value: Any = None, message: str | None = None
+    call_id: int,
+    *,
+    ok: bool,
+    value: Any = None,
+    message: str | None = None,
+    kind: str | None = None,
 ) -> dict[str, Any]:
-    """The host's answer to one ``call`` frame, by id."""
+    """The host's answer to one ``call`` frame, by id.
+
+    An ``ok`` reply also says what *kind* of answer it is: an ordinary JSON
+    value, or a handle naming a result too large to send whole
+    (``result: "handle"``). That distinction is a field on the frame and
+    never a key inside ``value``, because a tool's own result may legally
+    contain any key at all.
+
+    A failure carries a ``kind`` as well as a message, and the two are not the
+    same thing. "The tool refused because a human would have to approve it",
+    "the server is unreachable", "the tool itself returned an error" and "this
+    program has spent its call budget" call for four different next moves, and
+    a program handed one sentence can only tell them apart by matching on
+    prose. The kind arrives in the program as ``ToolError.kind``.
+    """
     if ok:
+        if isinstance(value, ResultHandle):
+            # Out of band, on the frame. A program is told what it was given
+            # by the protocol rather than by anything inside the value, so a
+            # tool that returns a dict shaped like a handle is still just a
+            # tool that returned a dict.
+            return {
+                "type": "reply",
+                "id": call_id,
+                "ok": True,
+                "result": "handle",
+                "value": value.as_wire(),
+            }
         return {"type": "reply", "id": call_id, "ok": True, "value": value}
     return {
         "type": "reply",
         "id": call_id,
         "ok": False,
-        "message": message or "host binding failed",
+        "message": message or "host tool call failed",
+        "kind": kind or "tool_failed",
     }
+
+
+def binding_failure_kind(err: BaseException) -> str:
+    """The stable token a program sees for one failed binding call.
+
+    A refusal Psych raised deliberately says what it is
+    (``psych_runtime.core.errors.ProgramToolRefused.kind``). Everything else is
+    named by its exception type, which is already the distinction that matters:
+    ``McpToolError`` is a tool that ran and said no, ``McpServerUnreachable``
+    is a server that is down, ``ValidationError`` is arguments that do not fit
+    the schema. Read by ``getattr`` rather than by importing those types
+    because this module sits under ``psych_runtime.sandbox`` and may not import
+    ``psych_runtime.tools``, where most of them live (DESIGN.md §21).
+    """
+    kind = getattr(err, "kind", None)
+    return kind if isinstance(kind, str) and kind else type(err).__name__
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,7 +398,7 @@ async def run_protocol(
     if refusal is not None:
         await write_frame(writer, build_abort_frame(refusal))
         return ready, None
-    await write_frame(writer, build_run_frame(program))
+    await write_frame(writer, build_run_frame(program, sorted(bindings)))
 
     known = bindings.keys()
     expected_id = 0
@@ -356,15 +414,29 @@ async def run_protocol(
         try:
             value = await binding(parsed.arguments)
         except Exception as err:  # a binding's failure is data, relayed to the child, never raised
-            await write_frame(writer, build_reply_frame(parsed.id, ok=False, message=str(err)))
+            await write_frame(
+                writer,
+                build_reply_frame(
+                    parsed.id, ok=False, message=str(err), kind=binding_failure_kind(err)
+                ),
+            )
             continue
+        # A handle is checked as the dict it will actually become: the
+        # dataclass itself is not JSON, and checking it as one would reject
+        # every handle as unserialisable.
+        serialisable = value.as_wire() if isinstance(value, ResultHandle) else value
         try:
-            json.dumps(value)
+            json.dumps(serialisable)
         except TypeError as err:
             message = (
                 f"host binding {parsed.name!r} returned a value that is not "
                 f"JSON-serialisable: {err}"
             )
-            await write_frame(writer, build_reply_frame(parsed.id, ok=False, message=message))
+            await write_frame(
+                writer,
+                build_reply_frame(
+                    parsed.id, ok=False, message=message, kind="result_not_serialisable"
+                ),
+            )
         else:
             await write_frame(writer, build_reply_frame(parsed.id, ok=True, value=value))

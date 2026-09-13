@@ -483,7 +483,7 @@ shape and a set would imply a possibility that cannot happen.
 *class*
 
 ```python
-class SandboxProfile(name: 'str', sandbox: 'Sandbox', hard_limits: 'SandboxLimits' = <factory>, allow_network: 'bool' = False, description: 'SandboxDescription | None' = None)
+class SandboxProfile(name: 'str', sandbox: 'Sandbox', hard_limits: 'SandboxLimits' = <factory>, allow_network: 'bool' = False, binding_budget: 'BindingBudget' = BindingBudget(max_calls=1000, max_calls_per_run=10000, max_argument_bytes=1048576, max_result_bytes=8388608, max_total_bytes=67108864, max_produced_bytes=268435456, max_preserved_bytes_per_run=536870912), description: 'SandboxDescription | None' = None)
 ```
 
 One logical sandbox a deployment offers, by name.
@@ -496,6 +496,11 @@ Attributes:
     allow_network: whether an agent may be granted raw network access
         through this profile. Off by default; on is a deliberate choice
         because it bypasses the egress seam for that program.
+    binding_budget: how many host tool calls a program running here may
+        make and how many bytes those calls may move. The deployment's
+        answer to "a program can compress model turns while still
+        generating unbounded host work", and the only ceiling on it: a
+        Spec cannot raise this, and nothing below can either.
     description: what ``sandbox.describe()`` last said, filled by
         ``SandboxProfiles.verify`` or on first use. ``None`` until then.
 
@@ -694,7 +699,7 @@ of them needs to know which they have.
 *class*
 
 ```python
-class CodeExecutionGrant(limits: 'SandboxLimits', network: 'bool' = False, bindings: 'frozenset[str] | None' = None, isolation: 'IsolationLevel' = <IsolationLevel.PROCESS: 'process'>, artifacts: 'bool' = True)
+class CodeExecutionGrant(limits: 'SandboxLimits', network: 'bool' = False, bindings: 'frozenset[str] | None' = None, isolation: 'IsolationLevel' = <IsolationLevel.PROCESS: 'process'>, artifacts: 'bool' = True, budget: 'BindingBudget' = BindingBudget(max_calls=1000, max_calls_per_run=10000, max_argument_bytes=1048576, max_result_bytes=8388608, max_total_bytes=67108864, max_produced_bytes=268435456, max_preserved_bytes_per_run=536870912))
 ```
 
 What one party allows an execution: limits, network, bindings, level.
@@ -708,10 +713,65 @@ Attributes:
     limits: resource caps.
     network: whether raw network access may be granted at all.
     bindings: which tool names a program may call. ``None`` means "no
-        opinion" (every tool the Spec grants); a frozenset restricts.
+        opinion": every tool this Run may call, whatever its origin,
+        resolved fresh at each turn boundary
+        (``psych_runtime.tools.bindings.effective_bindings``). A frozenset
+        restricts to those names and can never introduce one.
     isolation: the minimum level required. Intersecting takes the
         stronger requirement.
     artifacts: whether workspace files may be collected.
+    budget: what a program may spend calling those tools.
+
+### `BindingBudget`
+
+*class*
+
+```python
+class BindingBudget(max_calls: 'int' = 1000, max_calls_per_run: 'int' = 10000, max_argument_bytes: 'int' = 1048576, max_result_bytes: 'int' = 8388608, max_total_bytes: 'int' = 67108864, max_produced_bytes: 'int' = 268435456, max_preserved_bytes_per_run: 'int' = 536870912)
+```
+
+What one program may spend calling the host's tools.
+
+A program compresses model turns; it does not get to compress the host's
+work. One ``run_code`` call could otherwise issue a million MCP calls, or
+assemble a gigabyte of arguments, without the model paying a turn for any
+of it, so every binding call is counted and measured against this.
+
+The **deployment** owns these numbers, not the Spec
+(``psych_runtime.sandbox.profiles.SandboxProfile.binding_budget``), and a
+``CodeExecutionPolicy`` may narrow them per tenant. An agent's author is
+the wrong party to answer a denial-of-service question about the host they
+are running on, and a Spec field would put the answer inside the Version
+hash where changing it means republishing every agent.
+
+Here in ``psych_runtime.core`` because both sides need it and neither may
+import the other: ``psych_runtime.sandbox`` carries it on a profile and
+``psych_runtime.tools.bindings`` enforces it (DESIGN.md §21).
+
+Attributes:
+    max_calls: binding calls in one execution.
+    max_calls_per_run: binding calls across every execution of one Run, so
+        a model cannot buy a fresh allowance by writing a second program.
+    max_argument_bytes: the serialised arguments of one call.
+    max_result_bytes: the serialised result of one call, before it is sent
+        back into the program. A larger result is refused rather than
+        truncated: a program silently handed half a JSON document computes
+        a wrong answer confidently.
+    max_total_bytes: arguments plus results across one execution. This is
+        *transfer*: bytes that actually crossed into the sandbox.
+    max_produced_bytes: bytes the host's tools produced for one execution,
+        whether or not the program received them. A result replaced by a
+        handle was still fetched, parsed and held by the host, and a
+        budget that counted only what crossed the boundary would price
+        that at the size of the handle.
+    max_preserved_bytes_per_run: bytes one Run's programs may leave stored
+        in the log or the BlobStore. The ceiling that actually bounds
+        somebody's storage bill, and the reason it is separate from
+        ``max_produced_bytes``: a result over the transfer ceiling is
+        preserved before the program is told about it, so a refused
+        transfer still costs storage, while a small inline result costs
+        none. Per Run and counted from the log, so a Worker that dies
+        does not hand the next Attempt a fresh allowance.
 
 ### `HostBinding`
 

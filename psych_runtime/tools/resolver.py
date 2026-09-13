@@ -34,12 +34,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from psych_runtime.core.errors import AccessDenied
 from psych_runtime.core.messages import ToolDefinition
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.spec import A2APeer, AgentSpec, HttpTool, McpServer, WorkflowSpec
+from psych_runtime.core.tool_names import mcp_tool_name
+from psych_runtime.tools.bindings import BindableTool, bindable_from_definitions
 from psych_runtime.tools.deferred import (
     DEFAULT_CATALOGUE_BUDGET_CHARS,
     ServerSummary,
@@ -49,7 +51,6 @@ from psych_runtime.tools.deferred import (
     summarise_description,
 )
 from psych_runtime.tools.failure_streak import advisory_message, assess
-from psych_runtime.tools.mcp_names import mcp_tool_name
 from psych_runtime.tools.narrowing import narrow
 from psych_runtime.tools.registry import ToolRegistry
 
@@ -162,6 +163,18 @@ class ResolvedTools:
     through ``list_tools``/``get_tool_info``/``call_tool`` instead
     (``psych_runtime.tools.deferred``). Named here so a report can say which, and so
     the executor knows which servers those three tools may address."""
+    bindable: tuple[BindableTool, ...] = ()
+    """Every tool this Run may call right now, whether or not the model was
+    shown it, and whatever the model would have to call it through.
+
+    Deliberately not ``names``, and the difference is the whole point. A
+    deferred server's catalogue is absent from ``definitions`` because 351
+    schemas do not belong in a prompt -- but a program pays nothing for a
+    schema it never reads, so those tools are exactly the ones code execution
+    is for. They are here and not there. Everything here has already been
+    through every narrowing plane and the failure-streak guard, so a consumer
+    of this field narrows further or not at all
+    (``psych_runtime.tools.bindings.effective_bindings``)."""
 
 
 class ToolResolver:
@@ -230,17 +243,26 @@ class ToolResolver:
         unavailable: list[str] = []
 
         local = await self._local_tools(spec, scope)
-        mcp, unavailable, mcp_advisories, servers = await self._mcp_tools(spec, scope)
+        mcp, unavailable, mcp_advisories, servers, mcp_bindable = await self._mcp_tools(spec, scope)
         advisories.extend(mcp_advisories)
-        peers, peer_unavailable, peer_advisories = await self._a2a_tools(spec, scope)
+        peers, peer_unavailable, peer_advisories, peer_bindable = await self._a2a_tools(spec, scope)
         unavailable.extend(peer_unavailable)
         advisories.extend(peer_advisories)
         deferred_servers = [server for server in servers if server.deferred]
         extra = (*extra, *deferred_definitions([server.name for server in deferred_servers]))
         advisories.extend(servers_advisory(servers))
 
+        # Built by origin rather than from the definitions above, because a
+        # deferred server contributes nothing to those and everything to this.
+        bindable = [
+            *local,
+            *mcp_bindable,
+            *peer_bindable,
+            *bindable_from_definitions(extra, "builtin"),
+        ]
+
         seen: set[str] = set()
-        for definition in [*local, *mcp, *peers, *extra]:
+        for definition in [*(tool.definition for tool in local), *mcp, *peers, *extra]:
             if definition.name in seen:
                 raise AccessDenied(
                     f"tool catalogue name {definition.name!r}",
@@ -259,6 +281,22 @@ class ToolResolver:
                 continue
             definitions.append(definition)
 
+        # A deferred server's tools are never in the loop above, so their
+        # streaks are assessed here instead. A tool that keeps failing is
+        # withheld from a program for the reason it is withheld from the
+        # model: the next call is not going to be the one that works.
+        for tool in bindable:
+            if tool.name in seen or tool.name in withheld:
+                continue
+            verdict = assess(
+                tool.name,
+                streaks.get(tool.name, 0),
+                threshold=spec.limits.failure_streak_threshold,
+                hard_stop=spec.limits.failure_streak_hard_stop,
+            )
+            if verdict.withhold:
+                withheld.add(tool.name)
+
         return ResolvedTools(
             definitions=tuple(definitions),
             advisories=tuple(advisories),
@@ -266,11 +304,12 @@ class ToolResolver:
             unavailable_servers=tuple(unavailable),
             names=frozenset(definition.name for definition in definitions),
             deferred_servers=tuple(server.name for server in deferred_servers),
+            bindable=tuple(tool for tool in bindable if tool.name not in withheld),
         )
 
     async def _local_tools(
         self, spec: AgentSpec | WorkflowSpec, scope: Scope
-    ) -> list[ToolDefinition]:
+    ) -> list[BindableTool]:
         """Code and HTTP tools: the Spec grants them and the tenant may narrow them.
 
         Code tools resolve through the registry so the model sees the schema
@@ -279,6 +318,7 @@ class ToolResolver:
         runtime and there is nothing registered to look up.
         """
         by_name: dict[str, ToolDefinition] = {}
+        origins: dict[str, Literal["code", "http"]] = {}
         for tool in spec.tools:
             if isinstance(tool, HttpTool):
                 by_name[tool.name] = ToolDefinition(
@@ -287,6 +327,7 @@ class ToolResolver:
                     input_schema=tool.input_schema,
                     annotations=_http_annotations(tool),
                 )
+                origins[tool.name] = "http"
             else:
                 registered = self._registry.get(tool.name)
                 if registered is None:
@@ -297,28 +338,32 @@ class ToolResolver:
                     # visible in the resolved set.
                     continue
                 by_name[tool.name] = registered.definition()
+                origins[tool.name] = "code"
 
         permitted = await self._tenant_allows(scope, server=None)
         allowed = narrow(list(by_name), permitted, [])
-        return [by_name[name] for name in allowed]
+        return [BindableTool(definition=by_name[name], origin=origins[name]) for name in allowed]
 
     async def _mcp_tools(
         self, spec: AgentSpec | WorkflowSpec, scope: Scope
-    ) -> tuple[list[ToolDefinition], list[str], list[str], list[ServerSummary]]:
+    ) -> tuple[list[ToolDefinition], list[str], list[str], list[ServerSummary], list[BindableTool]]:
         """MCP tools, narrowed per server through the one narrowing function.
 
         Returns the definitions to offer, the optional servers that did not
-        answer, the advisories to add to the prompt, and one summary per server
-        that answered: its name, what this Run may reach on it, what it is for
-        and whether its catalogue was deferred.
+        answer, the advisories to add to the prompt, one summary per server
+        that answered (its name, what this Run may reach on it, what it is for
+        and whether its catalogue was deferred), and every tool this Run may
+        call on any of them -- deferred or not, because deferral is a decision
+        about the prompt and a program does not read the prompt.
         """
         if self._catalog is None or not spec.mcp_servers:
-            return [], [], [], []
+            return [], [], [], [], []
 
         collected: list[ToolDefinition] = []
         unavailable: list[str] = []
         advisories: list[str] = []
         summaries: list[ServerSummary] = []
+        bindable: list[BindableTool] = []
 
         for server in spec.mcp_servers:
             try:
@@ -348,6 +393,13 @@ class ToolResolver:
             # server costs six tools' worth of prompt, so it should not be
             # deferred for the size of a catalogue it cannot reach.
             visible = [by_name[name] for name in allowed]
+            # A model tool call carries a name and arguments, but no MCP
+            # server. Keep the owner explicit through execution and replay.
+            qualified = [
+                definition.model_copy(update={"name": mcp_tool_name(server.name, definition.name)})
+                for definition in visible
+            ]
+            bindable.extend(bindable_from_definitions(qualified, "mcp", server.name))
             deferred = is_deferred(server, visible, budget_chars=self._catalogue_budget_chars)
             summaries.append(
                 ServerSummary(
@@ -363,18 +415,13 @@ class ToolResolver:
                 # difference between a tool it can discover and one that
                 # silently is not there (DESIGN.md §10.7).
                 continue
-            # A model tool call carries a name and arguments, but no MCP
-            # server. Keep the owner explicit through execution and replay.
-            collected.extend(
-                definition.model_copy(update={"name": mcp_tool_name(server.name, definition.name)})
-                for definition in visible
-            )
+            collected.extend(qualified)
 
-        return collected, unavailable, advisories, summaries
+        return collected, unavailable, advisories, summaries, bindable
 
     async def _a2a_tools(
         self, spec: AgentSpec | WorkflowSpec, scope: Scope
-    ) -> tuple[list[ToolDefinition], list[str], list[str]]:
+    ) -> tuple[list[ToolDefinition], list[str], list[str], list[BindableTool]]:
         """Peer skills, narrowed through the one narrowing function.
 
         A ``WorkflowSpec`` grants no peers -- delegation to another
@@ -390,11 +437,12 @@ class ToolResolver:
         """
         peers = spec.a2a_peers if isinstance(spec, AgentSpec) else ()
         if self._peers is None or not peers:
-            return [], [], []
+            return [], [], [], []
 
         collected: list[ToolDefinition] = []
         unavailable: list[str] = []
         advisories: list[str] = []
+        bindable: list[BindableTool] = []
 
         for peer in peers:
             try:
@@ -416,8 +464,9 @@ class ToolResolver:
                 )
                 continue
             collected.extend(offered)
+            bindable.extend(bindable_from_definitions(offered, "a2a", peer.name))
 
-        return collected, unavailable, advisories
+        return collected, unavailable, advisories, bindable
 
     async def _describe(self, scope: Scope, server: McpServer) -> str | None:
         """The catalog's description of one server, never fatal.

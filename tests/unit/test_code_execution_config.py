@@ -89,7 +89,7 @@ class TestTheSpecField:
         assert config.artifacts.collection == "collect"
 
     def test_bindings_must_be_tools_the_spec_grants(self) -> None:
-        with pytest.raises(ValidationError, match="does not grant"):
+        with pytest.raises(ValidationError, match="neither grants"):
             agent(code_execution=CodeExecution(bindings=("lookup", "nope")))
 
     def test_bindings_are_a_sorted_set(self) -> None:
@@ -224,9 +224,7 @@ class TestResolution:
     async def test_a_missing_profile_is_a_setup_error(self) -> None:
         profiles = SandboxProfiles([SandboxProfile("default", _scripted(IsolationLevel.ISOLATED))])
         with pytest.raises(SandboxSetupError, match="strict"):
-            await resolve_execution(
-                CodeExecution(profile="strict"), ["lookup"], profiles, scope=SCOPE
-            )
+            await resolve_execution(CodeExecution(profile="strict"), profiles, scope=SCOPE)
 
     async def test_the_plan_is_the_intersection(self) -> None:
         profile = SandboxProfile(
@@ -239,11 +237,11 @@ class TestResolution:
             limits=CodeExecutionLimits(wall_seconds=60.0, cpu_seconds=1.0),
             bindings=("lookup",),
         )
-        plan = await resolve_execution(config, ["lookup", "refund"], profiles, scope=SCOPE)
+        plan = await resolve_execution(config, profiles, scope=SCOPE)
         assert isinstance(plan, ExecutionPlan)
         assert plan.limits.wall_seconds == 20.0
         assert plan.limits.cpu_seconds == 1.0
-        assert plan.bindings == ("lookup",)
+        assert plan.bindings == frozenset({"lookup"})
         assert plan.network is False
         assert plan.isolation is IsolationLevel.ISOLATED
         assert plan.capture.collect_artifacts is True
@@ -251,7 +249,7 @@ class TestResolution:
 
     async def test_a_backend_below_the_requested_level_is_refused(self) -> None:
         profiles = SandboxProfiles([SandboxProfile("default", _scripted(IsolationLevel.PROCESS))])
-        refusal = await resolve_execution(CodeExecution(), ["lookup"], profiles, scope=SCOPE)
+        refusal = await resolve_execution(CodeExecution(), profiles, scope=SCOPE)
         assert isinstance(refusal, ExecutionRefusal)
         assert refusal.kind == "isolation_unavailable"
         assert "'isolated'" in refusal.message
@@ -260,7 +258,7 @@ class TestResolution:
     async def test_trusted_code_may_ask_for_the_process_level(self) -> None:
         profiles = SandboxProfiles([SandboxProfile("default", _scripted(IsolationLevel.PROCESS))])
         plan = await resolve_execution(
-            CodeExecution(isolation=IsolationLevel.PROCESS), ["lookup"], profiles, scope=SCOPE
+            CodeExecution(isolation=IsolationLevel.PROCESS), profiles, scope=SCOPE
         )
         assert isinstance(plan, ExecutionPlan)
 
@@ -268,11 +266,11 @@ class TestResolution:
         sandbox = _scripted(IsolationLevel.ISOLATED)
         config = CodeExecution(network=NetworkAccess.UNRESTRICTED)
         denied = SandboxProfiles([SandboxProfile("default", sandbox)])
-        refusal = await resolve_execution(config, ["lookup"], denied, scope=SCOPE)
+        refusal = await resolve_execution(config, denied, scope=SCOPE)
         assert isinstance(refusal, ExecutionRefusal)
         assert refusal.kind == "network_not_allowed"
         allowed = SandboxProfiles([SandboxProfile("default", sandbox, allow_network=True)])
-        plan = await resolve_execution(config, ["lookup"], allowed, scope=SCOPE)
+        plan = await resolve_execution(config, allowed, scope=SCOPE)
         assert isinstance(plan, ExecutionPlan)
         assert plan.network is True
 
@@ -292,7 +290,7 @@ class TestResolution:
                 raise AssertionError("never reached")
 
         profiles = SandboxProfiles([SandboxProfile("default", Broken())])
-        refusal = await resolve_execution(CodeExecution(), [], profiles, scope=SCOPE)
+        refusal = await resolve_execution(CodeExecution(), profiles, scope=SCOPE)
         assert isinstance(refusal, ExecutionRefusal)
         assert refusal.kind == "backend_not_ready"
         assert "the image is missing" in refusal.message
@@ -311,7 +309,6 @@ class TestResolution:
 
         plan = await resolve_execution(
             CodeExecution(bindings=("lookup",)),
-            ["lookup", "refund"],
             profiles,
             scope=SCOPE,
             policy=Widen(),
@@ -319,7 +316,7 @@ class TestResolution:
         assert isinstance(plan, ExecutionPlan)
         assert plan.limits.wall_seconds == 30.0
         assert plan.network is False
-        assert plan.bindings == ("lookup",)
+        assert plan.bindings == frozenset({"lookup"})
         assert plan.isolation is IsolationLevel.ISOLATED
 
         class Narrow:
@@ -329,20 +326,16 @@ class TestResolution:
                     bindings=frozenset({"refund"}),
                 )
 
-        plan = await resolve_execution(
-            CodeExecution(), ["lookup", "refund"], profiles, scope=SCOPE, policy=Narrow()
-        )
+        plan = await resolve_execution(CodeExecution(), profiles, scope=SCOPE, policy=Narrow())
         assert isinstance(plan, ExecutionPlan)
         assert plan.limits.cpu_seconds == 1.0
-        assert plan.bindings == ("refund",)
+        assert plan.bindings == frozenset({"refund"})
 
         class Raises:
             async def narrow(self, scope: Scope, grant: CodeExecutionGrant) -> CodeExecutionGrant:
                 raise RuntimeError("policy service down")
 
-        refusal = await resolve_execution(
-            CodeExecution(), ["lookup"], profiles, scope=SCOPE, policy=Raises()
-        )
+        refusal = await resolve_execution(CodeExecution(), profiles, scope=SCOPE, policy=Raises())
         assert isinstance(refusal, ExecutionRefusal)
         assert refusal.kind == "policy_refused"
 

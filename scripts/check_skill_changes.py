@@ -23,7 +23,7 @@ RULES = (
     Rule(
         (
             "psych_runtime/tools/mcp.py",
-            "psych_runtime/tools/mcp_names.py",
+            "psych_runtime/core/tool_names.py",
             "psych_runtime/tools/deferred.py",
         ),
         ".agents/skills/psych-mcp/SKILL.md",

@@ -93,6 +93,39 @@ client or a credential, and the terms of one execution are the intersection of
 what the backend can do, what the tenant's Policy allows, what the Spec asks
 for and what the profile caps. Each stage narrows and none widens.
 
+A profile also caps what a program may spend on **host tool calls**, which is a
+separate question from what it may spend on CPU. A program can compress forty
+model turns into one; it must not also be able to compress forty thousand MCP
+calls into one:
+
+```python
+psych_runtime.SandboxProfile(
+    "default",
+    local_sandbox(),
+    binding_budget=psych_runtime.BindingBudget(
+        max_calls=200,  # in one program
+        max_calls_per_run=2_000,  # across every program of one Run
+        max_total_bytes=8 << 20,  # arguments plus results, per program
+    ),
+)
+```
+
+These belong to the deployment rather than to the Spec on purpose. An agent's
+author is the wrong party to answer a denial-of-service question about your
+host, and a Spec field would put the answer inside the Version hash, where
+raising it means republishing every agent. A `CodeExecutionPolicy` can narrow
+them per tenant; nothing can raise them. A program that exhausts one is told so
+as data, with a kind it can act on, and keeps whatever it had already computed.
+
+What a program may *call* is the same intersection as everything else: every
+tool the agent can currently call, MCP and A2A included, after the deployment,
+the tenant policy, the server's allow rules, the Spec's grants and the
+failure-streak guard have each had their say. It is recomputed at every turn
+boundary rather than pinned when the Attempt started, so revoking access takes
+effect on the next turn for programs exactly as it does for the model. No
+credential, token, transport object or authenticated URL crosses into a
+sandbox: a program sends a tool name and JSON arguments and receives a result.
+
 What a host can offer is discoverable before the first request, with
 `psych_runtime.sandbox.local.detect_local_backends()`:
 

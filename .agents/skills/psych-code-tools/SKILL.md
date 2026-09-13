@@ -130,6 +130,27 @@ standard rather than relaxing:
 `ValidationContext(registered_tools=...)` wants. `registry.get(name)` returns
 the `RegisteredTool` or `None`.
 
+## Registered tools inside `run_code`
+
+Every tool an agent is granted is callable from a program it writes, including
+these. The call routes through the same executor, Policy, guards and record
+log — a binding is the same tool reached a different way — and the program
+calls it by its own name:
+
+```python
+total = sum((await lookup_order(order_id=oid))["qty"] for oid in ids)
+```
+
+Two things about a registered tool matter more inside a program than outside:
+
+- **`safe_to_retry` still governs crash recovery.** A Worker that dies with a
+  binding call in flight records `UNKNOWN` and does not re-run it unless the
+  registration said it was safe. Nothing about a program makes a side effect
+  repeatable.
+- **Annotations still decide approvals.** A tool registered `destructive` is
+  refused inside a program with `approval_required_in_program` rather than
+  approved silently, and the model is told to call it directly.
+
 ## Gotchas
 
 - **A name colliding with a Psych built-in is refused at Spec validation.**

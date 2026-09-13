@@ -47,7 +47,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Final, Protocol, runtime_checkable
 
-from psych_runtime.core.code_execution import IsolationLevel, NetworkAccess
+from psych_runtime.core.code_execution import (
+    DEFAULT_BINDING_BUDGET,
+    BindingBudget,
+    IsolationLevel,
+    NetworkAccess,
+)
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.spec import CodeExecution, CodeExecutionLimits
 from psych_runtime.sandbox.port import (
@@ -137,10 +142,14 @@ class CodeExecutionGrant:
         limits: resource caps.
         network: whether raw network access may be granted at all.
         bindings: which tool names a program may call. ``None`` means "no
-            opinion" (every tool the Spec grants); a frozenset restricts.
+            opinion": every tool this Run may call, whatever its origin,
+            resolved fresh at each turn boundary
+            (``psych_runtime.tools.bindings.effective_bindings``). A frozenset
+            restricts to those names and can never introduce one.
         isolation: the minimum level required. Intersecting takes the
             stronger requirement.
         artifacts: whether workspace files may be collected.
+        budget: what a program may spend calling those tools.
     """
 
     limits: SandboxLimits
@@ -148,6 +157,7 @@ class CodeExecutionGrant:
     bindings: frozenset[str] | None = None
     isolation: IsolationLevel = IsolationLevel.PROCESS
     artifacts: bool = True
+    budget: BindingBudget = DEFAULT_BINDING_BUDGET
 
 
 def intersect_grants(a: CodeExecutionGrant, b: CodeExecutionGrant) -> CodeExecutionGrant:
@@ -165,6 +175,7 @@ def intersect_grants(a: CodeExecutionGrant, b: CodeExecutionGrant) -> CodeExecut
         bindings=bindings,
         isolation=isolation,
         artifacts=a.artifacts and b.artifacts,
+        budget=a.budget.narrow(b.budget),
     )
 
 
@@ -196,6 +207,11 @@ class SandboxProfile:
         allow_network: whether an agent may be granted raw network access
             through this profile. Off by default; on is a deliberate choice
             because it bypasses the egress seam for that program.
+        binding_budget: how many host tool calls a program running here may
+            make and how many bytes those calls may move. The deployment's
+            answer to "a program can compress model turns while still
+            generating unbounded host work", and the only ceiling on it: a
+            Spec cannot raise this, and nothing below can either.
         description: what ``sandbox.describe()`` last said, filled by
             ``SandboxProfiles.verify`` or on first use. ``None`` until then.
     """
@@ -204,6 +220,7 @@ class SandboxProfile:
     sandbox: Sandbox
     hard_limits: SandboxLimits = field(default_factory=lambda: DEFAULT_HARD_LIMITS)
     allow_network: bool = False
+    binding_budget: BindingBudget = DEFAULT_BINDING_BUDGET
     description: SandboxDescription | None = None
 
     async def describe(self) -> SandboxDescription:
@@ -310,8 +327,17 @@ class ExecutionPlan:
         limits: the effective caps, after every narrowing.
         network: whether the program gets raw network access.
         isolation: the minimum level the execution must achieve.
-        bindings: the tool names the program may call, sorted.
+        bindings: the *filter* on what a program may call, not the answer.
+            ``None`` means every tool this Run can call; a frozenset narrows
+            to those names. The answer itself cannot be computed here and must
+            not be: an MCP catalogue is a runtime fact that changes between
+            turns, so the concrete set is resolved at each turn boundary from
+            that turn's ``ResolvedTools.bindable`` and intersected with this
+            (``psych_runtime.tools.bindings.effective_bindings``). A plan that
+            pinned names at the start of an Attempt would keep a program's
+            access to a tool the tenant had since withdrawn.
         capture: how much output and workspace the backend keeps.
+        budget: what a program may spend on host tool calls.
         config: the Spec's own request, for output budgets and preservation.
     """
 
@@ -319,14 +345,14 @@ class ExecutionPlan:
     limits: SandboxLimits
     network: bool
     isolation: IsolationLevel
-    bindings: tuple[str, ...]
+    bindings: frozenset[str] | None
     capture: OutputCapture
+    budget: BindingBudget
     config: CodeExecution
 
 
 async def resolve_execution(
     config: CodeExecution,
-    granted_tools: Iterable[str],
     profiles: SandboxProfiles,
     *,
     scope: Scope,
@@ -336,8 +362,6 @@ async def resolve_execution(
 
     Args:
         config: the Spec's ``code_execution``.
-        granted_tools: the names in the Spec's ``tools``, which bound what a
-            program may call.
         profiles: the deployment's registry.
         scope: whose Run this is, for the policy.
         policy: the optional tenant narrowing.
@@ -345,23 +369,25 @@ async def resolve_execution(
     Returns:
         A plan, or a refusal naming the clause the profile cannot meet.
 
+        The plan carries a binding *filter*, never a binding list. Which tools
+        exist for this Run is settled per turn against the live catalogue, and
+        deciding it once here would have meant either freezing a stale MCP
+        catalogue into the Attempt or leaving MCP out of code execution
+        entirely.
+
     Raises:
         SandboxSetupError: ``config.profile`` names no registered profile.
     """
     profile = profiles.require(config.profile)
     description = await profile.describe()
 
-    spec_bindings = (
-        frozenset(granted_tools)
-        if config.bindings is None
-        else frozenset(config.bindings) & frozenset(granted_tools)
-    )
     grant = CodeExecutionGrant(
         limits=narrow_limits(profile.hard_limits, config.limits),
         network=profile.allow_network and config.network is NetworkAccess.UNRESTRICTED,
-        bindings=spec_bindings,
+        bindings=None if config.bindings is None else frozenset(config.bindings),
         isolation=config.isolation,
         artifacts=config.artifacts.collection == "collect",
+        budget=profile.binding_budget,
     )
     if description.limit_ceiling is not None:
         grant = CodeExecutionGrant(
@@ -370,6 +396,7 @@ async def resolve_execution(
             bindings=grant.bindings,
             isolation=grant.isolation,
             artifacts=grant.artifacts,
+            budget=grant.budget,
         )
     if policy is not None:
         try:
@@ -423,13 +450,13 @@ async def resolve_execution(
         artifact_count=config.artifacts.max_count,
         artifact_bytes=config.artifacts.max_total_bytes,
     )
-    bindings = tuple(sorted(grant.bindings or ()))
     return ExecutionPlan(
         profile=profile,
         limits=grant.limits,
         network=grant.network,
         isolation=grant.isolation,
-        bindings=bindings,
+        bindings=grant.bindings,
         capture=capture,
+        budget=grant.budget,
         config=config,
     )

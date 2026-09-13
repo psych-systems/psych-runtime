@@ -511,7 +511,7 @@ class SubprocessSandbox:
             os.set_inheritable(child_sock.fileno(), True)
             child_fd = child_sock.fileno()
 
-            argv = self._argv(child_fd, bound, workdir=workdir, canary=canary, network=network)
+            argv = self._argv(child_fd, workdir=workdir, canary=canary, network=network)
             env = self._build_env(workdir, canary)
             preexec = _make_preexec(active_limits, network=network, run_as=self._run_as)
 
@@ -595,14 +595,14 @@ class SubprocessSandbox:
     def _argv(
         self,
         child_fd: int,
-        bound: Mapping[str, HostBinding],
         *,
         workdir: Path,
         canary: Canary,
         network: bool,
     ) -> list[str]:
+        # The binding names travel in the run frame, not here: a command
+        # line has a length limit and a tool catalogue does not.
         python = [self._python_bin, "-I", "-B", "-u", "-c", BOOTSTRAP_SOURCE, f"fd:{child_fd}"]
-        python.extend(bound.keys())
         if self._seatbelt_bin is None:
             return python
         profile = _seatbelt_profile(workdir, canary.path.parent, network=network)

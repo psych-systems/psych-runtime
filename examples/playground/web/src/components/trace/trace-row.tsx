@@ -20,9 +20,19 @@ export function TraceRow({ entry, selected, onSelect }: {
         "grid min-h-9 w-full grid-cols-[minmax(12rem,2fr)_6rem_5.5rem_6rem_6rem_minmax(12rem,3fr)] items-center border-b border-border/60 text-left text-caption transition-colors hover:bg-muted/50",
         selected && "bg-accent/65 hover:bg-accent/65",
       )}>
-      <span className="flex min-w-0 items-center gap-2 px-3">
+      <span
+        className={cn(
+          "flex min-w-0 items-center gap-2 px-3",
+          entry.parentKey && "pl-7",
+        )}
+      >
         <kind.icon className={cn("size-3.5 shrink-0", kind.text)} />
         <span className="truncate font-technical font-medium">{entry.label}</span>
+        {entry.parentKey && (
+          <span className="shrink-0 text-muted-foreground" title="Called by a program">
+            in program
+          </span>
+        )}
         {flagged && <AlertTriangleIcon className="size-3 shrink-0 text-status-failed" aria-label="Needs attention" />}
         {promptChanged && <GitCompareArrowsIcon className="size-3 shrink-0 text-status-waiting" aria-label="Prompt changed" />}
       </span>

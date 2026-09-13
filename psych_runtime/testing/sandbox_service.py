@@ -43,7 +43,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from psych_runtime.core.code_execution import Enforcement, IsolationLevel
+from psych_runtime.core.code_execution import Enforcement, IsolationLevel, ResultHandle
 from psych_runtime.sandbox.port import (
     HostBinding,
     OutputCapture,
@@ -425,6 +425,18 @@ class SandboxService:
         await send({"type": "done", "result": result.model_dump(mode="json")})
 
 
+class _RelayedBindingFailure(RuntimeError):
+    """A binding failure the client answered with, on its way to the program.
+
+    Carries the client's ``kind`` so ``binding_failure_kind`` reads it back
+    unchanged rather than replacing it with this class's own name.
+    """
+
+    def __init__(self, kind: str, message: str) -> None:
+        self.kind = kind
+        super().__init__(message)
+
+
 class _Execution:
     """One running execution's reply futures."""
 
@@ -443,8 +455,30 @@ class _Execution:
             await send({"type": "call", "id": call_id, "name": name, "arguments": dict(arguments)})
             reply = await future
             if reply.get("ok"):
-                return reply.get("value")
-            raise RuntimeError(str(reply.get("message") or "host binding failed"))
+                value = reply.get("value")
+                if reply.get("result") == "handle" and isinstance(value, Mapping):
+                    # Rebuilt, for the same reason the failure kind is: this is
+                    # the last hop, and whatever it hands the child is what the
+                    # child's protocol will re-encode. Returning the bare dict
+                    # would drop the distinction here and nowhere else, so a
+                    # program behind a remote sandbox would be the only one
+                    # handed a dictionary where every other backend gives it a
+                    # readable handle.
+                    return ResultHandle(
+                        handle=str(value.get("handle", "")),
+                        tool=str(value.get("tool", "")),
+                        size_bytes=int(value.get("size_bytes", 0)),
+                        stored=str(value.get("stored", "log")),
+                    )
+                return value
+            kind = reply.get("kind")
+            # The kind travels the last hop too, or a program behind a remote
+            # sandbox would be the only one that cannot tell a refusal from an
+            # outage.
+            raise _RelayedBindingFailure(
+                kind if isinstance(kind, str) else "tool_failed",
+                str(reply.get("message") or "host tool call failed"),
+            )
 
         return call
 

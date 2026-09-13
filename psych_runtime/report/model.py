@@ -130,6 +130,13 @@ class ToolCallReport(BaseModel):
     finished_at: datetime | None
     interruptible: bool
     safe_to_retry: bool
+    parent_call_id: ToolCallId | None = None
+    """The ``run_code`` call whose program made this one, or ``None``.
+
+    A program that loops over forty records produces forty rows here and one
+    ``run_code`` row. Without the edge between them a report shows forty calls
+    nobody asked for and one call that appears to have done nothing -- which is
+    exactly backwards, since the program is the reason all forty happened."""
 
 
 class StepReport(BaseModel):

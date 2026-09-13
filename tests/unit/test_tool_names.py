@@ -1,4 +1,4 @@
-from psych_runtime.tools.mcp_names import mcp_tool_name
+from psych_runtime.core.tool_names import mcp_tool_name
 
 
 def test_ordinary_mcp_tool_name_keeps_server_and_tool() -> None:

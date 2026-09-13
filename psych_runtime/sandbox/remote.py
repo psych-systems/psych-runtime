@@ -97,7 +97,7 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
-from psych_runtime.core.code_execution import IsolationLevel
+from psych_runtime.core.code_execution import IsolationLevel, ResultHandle
 from psych_runtime.core.scope import Scope
 from psych_runtime.sandbox._local import DEFAULT_CAPTURE, withhold_if_weaker
 from psych_runtime.sandbox.port import (
@@ -112,6 +112,7 @@ from psych_runtime.sandbox.port import (
 from psych_runtime.sandbox.protocol import (
     CallFrame,
     SandboxProtocolError,
+    binding_failure_kind,
     build_reply_frame,
     parse_call_or_done_frame,
     parse_ready_frame,
@@ -663,9 +664,13 @@ class _Session:
         binding = self._bindings[call.name]
         try:
             value = await binding(call.arguments)
-            json.dumps(value)
+            # As in ``run_protocol``: a handle is checked as the dict it
+            # becomes on the wire, not as the dataclass it is here.
+            json.dumps(value.as_wire() if isinstance(value, ResultHandle) else value)
         except Exception as err:  # a binding's failure is data for the program
-            reply = build_reply_frame(call.id, ok=False, message=str(err))
+            reply = build_reply_frame(
+                call.id, ok=False, message=str(err), kind=binding_failure_kind(err)
+            )
         else:
             reply = build_reply_frame(call.id, ok=True, value=value)
         response = await self._owner._transport.request(

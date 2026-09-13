@@ -1322,6 +1322,11 @@ export interface ToolCallReport {
   finished_at: string | null;
   interruptible: boolean;
   safe_to_retry: boolean;
+  /** The `run_code` call whose program made this one, or null when the model
+   *  made it itself. A program that loops over forty records produces forty
+   *  of these and one `run_code`; without the edge a trace shows forty calls
+   *  with no cause and one call with no effect. */
+  parent_call_id: string | null;
 }
 
 export interface StepReport {

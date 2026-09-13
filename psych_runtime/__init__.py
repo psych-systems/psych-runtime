@@ -204,7 +204,7 @@ from psych_runtime.tools.sse_events import (
     set_max_sse_event_bytes,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 """A library does not decide where its own log lines go.

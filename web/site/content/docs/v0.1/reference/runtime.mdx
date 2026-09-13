@@ -9,7 +9,7 @@ description: "What executes a Run, and what you hand it."
 *class*
 
 ```python
-class Runtime(store: 'Store', model: 'ModelClient', registry: 'ToolRegistry', resolver: 'ToolResolver | None' = None, executor: 'ToolExecutor | None' = None, prices: 'PriceResolver | None' = None, cost_policy: 'CostPolicy' = 'prefer_provider', memories: 'Sequence[str]' = <factory>, policy: 'Policy | None' = None, approval_selectors: 'Sequence[str]' = <factory>, telemetry: 'Telemetry | None' = None, sandbox: 'Sandbox | None' = None, memory: 'MemoryPort | None' = None, end_user_id: 'str | None' = None, mcp: 'McpTools | None' = None, a2a: 'A2ATools | None' = None, blob: 'BlobStore | None' = None, catalogue_budget_chars: 'int' = 20000, blob_offload_bytes: 'int' = 300000, http: 'HttpCaller | None' = None)
+class Runtime(store: 'Store', model: 'ModelClient', registry: 'ToolRegistry', resolver: 'ToolResolver | None' = None, executor: 'ToolExecutor | None' = None, prices: 'PriceResolver | None' = None, cost_policy: 'CostPolicy' = 'prefer_provider', memories: 'Sequence[str]' = <factory>, policy: 'Policy | None' = None, approval_selectors: 'Sequence[str]' = <factory>, telemetry: 'Telemetry | None' = None, sandbox: 'Sandbox | None' = None, sandboxes: 'SandboxProfiles | Sequence[SandboxProfile] | None' = None, code_execution_policy: 'CodeExecutionPolicy | None' = None, memory: 'MemoryPort | None' = None, end_user_id: 'str | None' = None, mcp: 'McpTools | None' = None, a2a: 'A2ATools | None' = None, blob: 'BlobStore | None' = None, catalogue_budget_chars: 'int' = 20000, blob_offload_bytes: 'int' = 300000, http: 'HttpCaller | None' = None)
 ```
 
 Everything a Worker needs to execute a Run.
@@ -331,24 +331,25 @@ Resource caps for one execution.
 Defaults and rationale live on the adapters that apply them
 (``psych_runtime.sandbox.subprocess``, ``psych_runtime.sandbox.container``), because a
 number with no story behind it is a number nobody can safely change
-later. This model only fixes the shape both adapters share, so the
-contract suite (``psych_runtime.sandbox.contract``) can drive both with the same
-values and prove they mean the same thing on both backends.
+later. This model only fixes the shape every adapter shares, so the
+contract suite (``psych_runtime.sandbox.contract``) can drive them with the same
+values and prove they mean the same thing on every backend.
 
 Attributes:
     cpu_seconds: CPU time actually consumed, not wall-clock time. A
         program blocked waiting on a host binding's reply burns no CPU
         budget while it waits.
-    address_space_bytes: the virtual address space the process may map.
-        Exceeding it surfaces to the program as an ordinary
-        ``MemoryError``, not a killed process, because CPython's
-        allocator checks malloc's return value rather than trusting it.
+    address_space_bytes: the memory the process may use. A process
+        backend applies it as the virtual address space (exceeding it
+        surfaces to the program as an ordinary ``MemoryError``, because
+        CPython's allocator checks malloc's return value rather than
+        trusting it); a container applies it as a cgroup memory limit; a
+        Windows job object applies it as a per-process commit limit.
     file_size_bytes: the largest file the process may write, counting
         every file it opens, not a total across files.
     process_count: how many processes (Linux counts threads too) the
-        executing user may hold at once, across everything else running
-        as that user. See ``psych_runtime.sandbox.subprocess`` for why this is a
-        per-user limit rather than a per-execution one and what that
+        execution may hold at once. See ``psych_runtime.sandbox.subprocess`` for
+        why that is a per-user limit on a process backend and what that
         implies for concurrent runs.
     wall_seconds: real time from spawn to teardown. This is the only cap
         here that is not a resource limit on the process; it is enforced
@@ -367,13 +368,15 @@ Attributes:
 *model*
 
 ```python
-class SandboxResult(*, stdout: str = '', stderr: str = '', value: Any = None, failure: psych_runtime.sandbox.port.SandboxFailure | None = None, duration_seconds: Annotated[float, Ge(ge=0)], limit_hit: psych_runtime.sandbox.port.SandboxLimit | None = None, network_denied: bool = False, stdout_truncated: bool = False, stderr_truncated: bool = False)
+class SandboxResult(*, stdout: str = '', stderr: str = '', value: Any = None, failure: psych_runtime.sandbox.port.SandboxFailure | None = None, duration_seconds: Annotated[float, Ge(ge=0)], limit_hit: psych_runtime.sandbox.port.SandboxLimit | None = None, network_denied: bool = False, stdout_truncated: bool = False, stderr_truncated: bool = False, stdout_data: bytes = b'', stderr_data: bytes = b'', stdout_size: Annotated[int, Ge(ge=0)] = 0, stderr_size: Annotated[int, Ge(ge=0)] = 0, isolation: psych_runtime.core.code_execution.IsolationLevel | None = None, guarantees: psych_runtime.sandbox.port.SandboxGuarantees = <factory>, artifacts: tuple[psych_runtime.sandbox.port.SandboxArtifact, ...] = (), artifacts_omitted: Annotated[int, Ge(ge=0)] = 0, cancelled: bool = False)
 ```
 
 What one execution produced, success or failure.
 
 Attributes:
-    stdout: everything the program printed to standard output.
+    stdout: everything the program printed to standard output, decoded
+        with replacement for the model's benefit. ``stdout_data`` is the
+        same capture as raw bytes.
     stderr: everything it printed to standard error.
     value: what the program's top-level code evaluated to, JSON-shaped.
         ``None`` both when the program returned nothing and when it
@@ -388,12 +391,24 @@ Attributes:
     network_denied: ``True`` only when this execution actively verified
         that it has no route to the network, ``False`` when it did not
         (network was granted, or denial was requested but the host could
-        not establish it). See the adapter docstrings for exactly what
-        "verified" means on that backend and what it does not guarantee;
-        this field reports the adapter's own honest self-check, never an
-        assumption.
-    stdout_truncated: the program printed more than the adapter buffers.
+        not establish it). The same fact as ``guarantees.network`` being
+        ``ENFORCED``, kept as a boolean for the callers that predate the
+        fuller report.
+    stdout_truncated: the program printed more than the capture cap.
     stderr_truncated: same, for standard error.
+    stdout_data: the captured standard output, raw. Empty when a backend
+        predates raw capture; ``stdout`` is then the only copy.
+    stderr_data: same, for standard error.
+    stdout_size: how many bytes the program actually wrote, which exceeds
+        ``len(stdout_data)`` when the capture was truncated.
+    stderr_size: same, for standard error.
+    isolation: the level this execution achieved, from ``achieved_level``
+        over ``guarantees``. ``None`` when the backend could not grade
+        itself or predates the report.
+    guarantees: how each guarantee held on this execution.
+    artifacts: regular files the program wrote, when collection was on.
+    artifacts_omitted: how many files were left behind past the count cap.
+    cancelled: the caller's cancellation ended this execution.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -406,6 +421,15 @@ Attributes:
 | `network_denied` | `bool` |  |
 | `stdout_truncated` | `bool` |  |
 | `stderr_truncated` | `bool` |  |
+| `stdout_data` | `bytes` |  |
+| `stderr_data` | `bytes` |  |
+| `stdout_size` | `int` |  |
+| `stderr_size` | `int` |  |
+| `isolation` | `code_execution.IsolationLevel | None` |  |
+| `guarantees` | `SandboxGuarantees` |  |
+| `artifacts` | `tuple` |  |
+| `artifacts_omitted` | `int` |  |
+| `cancelled` | `bool` |  |
 
 ### `SandboxFailure`
 
@@ -453,6 +477,301 @@ shape and a set would imply a possibility that cannot happen.
 | `FILE_SIZE_BYTES` | `file_size_bytes` |
 | `PROCESS_COUNT` | `process_count` |
 | `WALL_SECONDS` | `wall_seconds` |
+
+### `SandboxProfile`
+
+*class*
+
+```python
+class SandboxProfile(name: 'str', sandbox: 'Sandbox', hard_limits: 'SandboxLimits' = <factory>, allow_network: 'bool' = False, binding_budget: 'BindingBudget' = BindingBudget(max_calls=1000, max_calls_per_run=10000, max_argument_bytes=1048576, max_result_bytes=8388608, max_total_bytes=67108864, max_produced_bytes=268435456, max_preserved_bytes_per_run=536870912), description: 'SandboxDescription | None' = None)
+```
+
+One logical sandbox a deployment offers, by name.
+
+Attributes:
+    name: what a Spec's ``code_execution.profile`` names.
+    sandbox: the implementation. Any object satisfying ``Sandbox``,
+        including one written against the earlier port.
+    hard_limits: the ceiling no agent using this profile can exceed.
+    allow_network: whether an agent may be granted raw network access
+        through this profile. Off by default; on is a deliberate choice
+        because it bypasses the egress seam for that program.
+    binding_budget: how many host tool calls a program running here may
+        make and how many bytes those calls may move. The deployment's
+        answer to "a program can compress model turns while still
+        generating unbounded host work", and the only ceiling on it: a
+        Spec cannot raise this, and nothing below can either.
+    description: what ``sandbox.describe()`` last said, filled by
+        ``SandboxProfiles.verify`` or on first use. ``None`` until then.
+
+### `SandboxProfiles`
+
+*class*
+
+```python
+class SandboxProfiles(profiles: 'Iterable[SandboxProfile]' = ()) -> 'None'
+```
+
+The deployment's profile registry: names to implementations.
+
+### `SandboxDescription`
+
+*model*
+
+```python
+class SandboxDescription(*, backend: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], platform: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], isolation: psych_runtime.core.code_execution.IsolationLevel | None, guarantees: psych_runtime.sandbox.port.SandboxGuarantees, mechanisms: tuple[str, ...] = (), network_grant_supported: bool = False, artifacts_supported: bool = False, languages: tuple[str, ...] = ('python',), limit_ceiling: psych_runtime.sandbox.port.SandboxLimits | None = None, ready: bool = True, problems: tuple[str, ...] = (), notes: tuple[str, ...] = ())
+```
+
+What a backend can promise, learned before any program runs.
+
+``Sandbox.describe()`` returns one. A deployment reads it at startup to
+refuse an agent whose ``code_execution.isolation`` this backend cannot
+meet, and a console reads it to show a person what "isolated" means on
+this host. Nothing here is a guess: a backend that has not probed a
+mechanism reports it ``UNVERIFIED``, and ``ready=False`` with a reason
+beats a green light that fails on first use.
+
+Attributes:
+    backend: a short stable identifier: ``subprocess``, ``windows-job``,
+        ``bubblewrap``, ``container``, ``remote``, or ``custom``.
+    platform: where programs run, as ``sys.platform`` spells it, or what
+        a remote provider reports.
+    isolation: the strongest level this backend can deliver here, from
+        ``achieved_level`` over ``guarantees``. ``None`` when it cannot
+        reach even ``PROCESS``.
+    guarantees: what each dimension is worth on this backend.
+    mechanisms: the named controls in use, for a person reading a
+        settings screen: ``rlimit``, ``setsid``, ``netns``, ``job_object``,
+        ``cgroups``, ``user_namespace``, ``seatbelt``, and so on.
+    network_grant_supported: whether ``network=True`` can be honoured.
+    artifacts_supported: whether workspace files can be collected.
+    languages: what the backend can run. Python only, today.
+    limit_ceiling: caps this backend will not exceed whatever it is asked,
+        or ``None`` when it has none of its own.
+    ready: whether an execution would be attempted right now.
+    problems: why not, when ``ready`` is false, in plain words.
+    notes: facts a person configuring this backend should know that fit no
+        other field: a deprecated interface in use, a shared per-user
+        limit, an image that must be pulled first.
+
+| Field | Type | Notes |
+|---|---|---|
+| `backend` | `str` |  |
+| `platform` | `str` |  |
+| `isolation` | `code_execution.IsolationLevel | None` |  |
+| `guarantees` | `SandboxGuarantees` |  |
+| `mechanisms` | `tuple` |  |
+| `network_grant_supported` | `bool` |  |
+| `artifacts_supported` | `bool` |  |
+| `languages` | `tuple` |  |
+| `limit_ceiling` | `psych_runtime.sandbox.port.SandboxLimits | None` |  |
+| `ready` | `bool` |  |
+| `problems` | `tuple` |  |
+| `notes` | `tuple` |  |
+
+### `SandboxGuarantees`
+
+*model*
+
+```python
+class SandboxGuarantees(*, filesystem: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, network: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, process_tree: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, identity: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, cpu: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, memory: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, file_size: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, process_count: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, wall_clock: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>, environment: psych_runtime.core.code_execution.Enforcement = <Enforcement.UNAVAILABLE: 'unavailable'>)
+```
+
+How each guarantee held, on one execution or for one backend.
+
+One ``Enforcement`` per dimension a consumer might rely on. Every backend
+fills this from what it actually did and, where the child can check
+itself, from what the child reported: the network probe, the filesystem
+canary and the identity check all run *inside* the execution, so
+``ENFORCED`` there is an observation and not a promise.
+
+Attributes:
+    filesystem: the host's filesystem is hidden from the program. Verified
+        by the child failing to read a canary file the host placed
+        outside the workspace.
+    network: the program has no route out. Verified by a routing probe
+        inside the child that never sends a packet.
+    process_tree: every process the program starts ends with the
+        execution, by the host killing the group, job or container.
+    identity: the program runs as an account distinct from the worker's.
+        Reported from the child's own effective uid where there is one.
+    cpu: CPU time is capped by the kernel (rlimit, cgroup quota or job).
+    memory: memory is capped by the kernel.
+    file_size: the size of any one file is capped.
+    process_count: the number of processes is capped.
+    wall_clock: the host ends the execution at the wall-clock cap.
+    environment: the child's environment was built from the allowlist
+        alone, never from this process's own environment.
+
+| Field | Type | Notes |
+|---|---|---|
+| `filesystem` | `Enforcement` |  |
+| `network` | `Enforcement` |  |
+| `process_tree` | `Enforcement` |  |
+| `identity` | `Enforcement` |  |
+| `cpu` | `Enforcement` |  |
+| `memory` | `Enforcement` |  |
+| `file_size` | `Enforcement` |  |
+| `process_count` | `Enforcement` |  |
+| `wall_clock` | `Enforcement` |  |
+| `environment` | `Enforcement` |  |
+
+### `SandboxArtifact`
+
+*model*
+
+```python
+class SandboxArtifact(*, path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=512)], size_bytes: Annotated[int, Ge(ge=0)], data: bytes, content_type: str = 'application/octet-stream', truncated: bool = False)
+```
+
+One regular file the program wrote to its workspace.
+
+Attributes:
+    path: relative to the workspace, ``/``-separated, never a host path.
+    size_bytes: the file's size on disk.
+    data: the bytes collected, up to the artifact budget. Shorter than
+        ``size_bytes`` when ``truncated``.
+    content_type: guessed from the name, ``application/octet-stream``
+        when nothing better is known.
+    truncated: the artifact budget cut this file short.
+
+| Field | Type | Notes |
+|---|---|---|
+| `path` | `str` |  |
+| `size_bytes` | `int` |  |
+| `data` | `bytes` |  |
+| `content_type` | `str` |  |
+| `truncated` | `bool` |  |
+
+### `OutputCapture`
+
+*model*
+
+```python
+class OutputCapture(*, stream_bytes: Annotated[int, Ge(ge=4096)] = 1048576, collect_artifacts: bool = False, artifact_count: Annotated[int, Ge(ge=0)] = 16, artifact_bytes: Annotated[int, Ge(ge=0)] = 16777216)
+```
+
+How much of a program's output and workspace a backend keeps.
+
+The bound on *this process's* memory, distinct from the caps in
+``SandboxLimits`` that bound the child: a program may print a gigabyte and
+the host must not hold it. Every backend reads each stream until this many
+bytes, then discards the rest while still counting it, so
+``SandboxResult.stdout_size`` reports what the program actually produced
+and ``stdout_truncated`` says the capture stopped short of it.
+
+Attributes:
+    stream_bytes: the most bytes captured per stream (stdout, stderr).
+    collect_artifacts: whether regular files written under the workspace
+        are read back into ``SandboxResult.artifacts``.
+    artifact_count: the most files collected.
+    artifact_bytes: the most bytes collected across every file.
+
+| Field | Type | Notes |
+|---|---|---|
+| `stream_bytes` | `int` |  |
+| `collect_artifacts` | `bool` |  |
+| `artifact_count` | `int` |  |
+| `artifact_bytes` | `int` |  |
+
+### `Enforcement`
+
+*enum*
+
+```python
+class Enforcement(*values)
+```
+
+How much one guarantee is worth, on one execution or one backend.
+
+A single word per guarantee rather than a boolean, because "we tried"
+and "we know it held" are different facts and a consumer relying on one
+of them needs to know which they have.
+
+| Member | Value |
+|---|---|
+| `ENFORCED` | `enforced` |
+| `UNVERIFIED` | `unverified` |
+| `UNAVAILABLE` | `unavailable` |
+
+### `CodeExecutionGrant`
+
+*class*
+
+```python
+class CodeExecutionGrant(limits: 'SandboxLimits', network: 'bool' = False, bindings: 'frozenset[str] | None' = None, isolation: 'IsolationLevel' = <IsolationLevel.PROCESS: 'process'>, artifacts: 'bool' = True, budget: 'BindingBudget' = BindingBudget(max_calls=1000, max_calls_per_run=10000, max_argument_bytes=1048576, max_result_bytes=8388608, max_total_bytes=67108864, max_produced_bytes=268435456, max_preserved_bytes_per_run=536870912))
+```
+
+What one party allows an execution: limits, network, bindings, level.
+
+The unit ``intersect_grants`` operates on. A ``CodeExecutionPolicy``
+returns one of these for a Scope, and the runtime intersects it with the
+grant it derived from the profile and the Spec, so a policy can only take
+away.
+
+Attributes:
+    limits: resource caps.
+    network: whether raw network access may be granted at all.
+    bindings: which tool names a program may call. ``None`` means "no
+        opinion": every tool this Run may call, whatever its origin,
+        resolved fresh at each turn boundary
+        (``psych_runtime.tools.bindings.effective_bindings``). A frozenset
+        restricts to those names and can never introduce one.
+    isolation: the minimum level required. Intersecting takes the
+        stronger requirement.
+    artifacts: whether workspace files may be collected.
+    budget: what a program may spend calling those tools.
+
+### `BindingBudget`
+
+*class*
+
+```python
+class BindingBudget(max_calls: 'int' = 1000, max_calls_per_run: 'int' = 10000, max_argument_bytes: 'int' = 1048576, max_result_bytes: 'int' = 8388608, max_total_bytes: 'int' = 67108864, max_produced_bytes: 'int' = 268435456, max_preserved_bytes_per_run: 'int' = 536870912)
+```
+
+What one program may spend calling the host's tools.
+
+A program compresses model turns; it does not get to compress the host's
+work. One ``run_code`` call could otherwise issue a million MCP calls, or
+assemble a gigabyte of arguments, without the model paying a turn for any
+of it, so every binding call is counted and measured against this.
+
+The **deployment** owns these numbers, not the Spec
+(``psych_runtime.sandbox.profiles.SandboxProfile.binding_budget``), and a
+``CodeExecutionPolicy`` may narrow them per tenant. An agent's author is
+the wrong party to answer a denial-of-service question about the host they
+are running on, and a Spec field would put the answer inside the Version
+hash where changing it means republishing every agent.
+
+Here in ``psych_runtime.core`` because both sides need it and neither may
+import the other: ``psych_runtime.sandbox`` carries it on a profile and
+``psych_runtime.tools.bindings`` enforces it (DESIGN.md §21).
+
+Attributes:
+    max_calls: binding calls in one execution.
+    max_calls_per_run: binding calls across every execution of one Run, so
+        a model cannot buy a fresh allowance by writing a second program.
+    max_argument_bytes: the serialised arguments of one call.
+    max_result_bytes: the serialised result of one call, before it is sent
+        back into the program. A larger result is refused rather than
+        truncated: a program silently handed half a JSON document computes
+        a wrong answer confidently.
+    max_total_bytes: arguments plus results across one execution. This is
+        *transfer*: bytes that actually crossed into the sandbox.
+    max_produced_bytes: bytes the host's tools produced for one execution,
+        whether or not the program received them. A result replaced by a
+        handle was still fetched, parsed and held by the host, and a
+        budget that counted only what crossed the boundary would price
+        that at the size of the handle.
+    max_preserved_bytes_per_run: bytes one Run's programs may leave stored
+        in the log or the BlobStore. The ceiling that actually bounds
+        somebody's storage bill, and the reason it is separate from
+        ``max_produced_bytes``: a result over the transfer ceiling is
+        preserved before the program is told about it, so a refused
+        transfer still costs storage, while a small inline result costs
+        none. Per Run and counted from the log, so a Worker that dies
+        does not hand the next Attempt a fresh allowance.
 
 ### `HostBinding`
 
@@ -707,6 +1026,12 @@ exists because providers version model ids by suffix
 (``gpt-4o-2024-08-06``), and a table that only matched exactly would go
 stale silently every time a provider dated a release. A prefix match is
 still a real match against a rate someone entered, never a guess.
+
+### `DEFAULT_PRICE_CATALOG_VERSION`
+
+*value*
+
+The snapshot date of the bundled default price catalog, in YYYY-MM-DD format.
 
 ### `ModelPrice`
 

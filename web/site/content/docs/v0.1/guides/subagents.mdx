@@ -149,5 +149,10 @@ exists.
   independent jobs, wrong for anything a person is watching.
 - **`tools` and `models` are sorted sets.** Two authors writing the same
   envelope in a different order have written the same agent.
+- **Inline children are settled by their parent.** An inline `delegate`
+  admits its child `NESTED` so no Worker can claim a Run the parent is already
+  executing, and settles it with `Store.settle_inline` when it finishes.
+  Anything else that drives a Run it dispatched owes the same call: without it
+  the header stays `NESTED` for good and disagrees with its own log.
 - **A workflow's `AgentStep` is a third thing.** It runs a nested agent as a
   deterministic step; see `psych-workflows`.

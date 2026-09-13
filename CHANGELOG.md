@@ -3,7 +3,7 @@
 Written at commit time rather than reconstructed later. The public API is `0.x`
 and breaking changes are expected until the design survives a second consumer.
 
-## Unreleased
+## 0.1.2
 
 ### Added
 

@@ -126,7 +126,7 @@ One Run's current state, as a UI would render it.
 *class*
 
 ```python
-class RunStateView(run_id: 'RunId', scope: 'Scope', version_hash: 'VersionHash', head_seq: 'int' = 0, admitted: 'bool' = False, settled: 'bool' = False, terminal_state: 'TerminalState | None' = None, output: 'dict[str, Any] | None' = None, failure: 'ToolFailure | None' = None, deadline_at: 'datetime | None' = None, parent_run_id: 'RunId | None' = None, delegation_depth: 'int' = 0, continues_run_id: 'RunId | None' = None, idempotency_key: 'str | None' = None, run_input: 'dict[str, Any]' = <factory>, attempt_count: 'int' = 0, current_attempt: 'AttemptId | None' = None, turn: 'int' = 0, turn_open: 'bool' = False, model_call_open: 'bool' = False, abort_seq: 'int | None' = None, suspended: 'bool' = False, suspend_reason: 'SuspendReason | None' = None, suspend_expires_at: 'datetime | None' = None, suspended_at: 'datetime | None' = None, pending_approval_call_id: 'ToolCallId | None' = None, suspend_question: 'str | None' = None, suspend_questions: 'tuple[AskedQuestion, ...]' = (), resumed_since_attempt: 'bool' = False, suspended_seconds: 'float' = 0.0, resume_payloads: 'dict[ToolCallId, dict[str, Any]]' = <factory>, approval_decisions: 'dict[ToolCallId, bool]' = <factory>, open_tool_calls: 'dict[ToolCallId, OpenToolCall]' = <factory>, tool_results: 'list[ToolResult]' = <factory>, steps: 'dict[StepId, StepRecord]' = <factory>, pending_steer: 'list[PendingQueueEntry]' = <factory>, pending_follow_up: 'list[PendingQueueEntry]' = <factory>, pending_next_run: 'list[PendingQueueEntry]' = <factory>, tasks: 'tuple[Task, ...]' = (), components: 'tuple[Component, ...]' = (), usage: 'Usage' = <factory>, cost: 'Cost | None' = None, unpriced_model_calls: 'int' = 0, provider_reported_costs: 'int' = 0, model_calls: 'int' = 0, failed_model_calls: 'int' = 0, transient_retries_used: 'int' = 0, last_prompt_tokens: 'int' = 0, failure_streaks: 'dict[str, int]' = <factory>, repeat_counts: 'dict[str, RepeatTally]' = <factory>, compaction_boundary_seq: 'int' = 0, compaction_summaries: 'list[str]' = <factory>, compaction_calls: 'int' = 0, children: 'dict[RunId, ChildRun]' = <factory>, result_handles: 'dict[str, ToolCallId]' = <factory>)
+class RunStateView(run_id: 'RunId', scope: 'Scope', version_hash: 'VersionHash', head_seq: 'int' = 0, admitted: 'bool' = False, settled: 'bool' = False, terminal_state: 'TerminalState | None' = None, output: 'dict[str, Any] | None' = None, failure: 'ToolFailure | None' = None, deadline_at: 'datetime | None' = None, parent_run_id: 'RunId | None' = None, delegation_depth: 'int' = 0, continues_run_id: 'RunId | None' = None, idempotency_key: 'str | None' = None, run_input: 'dict[str, Any]' = <factory>, attempt_count: 'int' = 0, current_attempt: 'AttemptId | None' = None, turn: 'int' = 0, turn_open: 'bool' = False, model_call_open: 'bool' = False, abort_seq: 'int | None' = None, suspended: 'bool' = False, suspend_reason: 'SuspendReason | None' = None, suspend_expires_at: 'datetime | None' = None, suspended_at: 'datetime | None' = None, pending_approval_call_id: 'ToolCallId | None' = None, suspend_question: 'str | None' = None, suspend_questions: 'tuple[AskedQuestion, ...]' = (), resumed_since_attempt: 'bool' = False, suspended_seconds: 'float' = 0.0, resume_payloads: 'dict[ToolCallId, dict[str, Any]]' = <factory>, approval_decisions: 'dict[ToolCallId, bool]' = <factory>, open_tool_calls: 'dict[ToolCallId, OpenToolCall]' = <factory>, tool_results: 'list[ToolResult]' = <factory>, steps: 'dict[StepId, StepRecord]' = <factory>, pending_steer: 'list[PendingQueueEntry]' = <factory>, pending_follow_up: 'list[PendingQueueEntry]' = <factory>, pending_next_run: 'list[PendingQueueEntry]' = <factory>, tasks: 'tuple[Task, ...]' = (), components: 'tuple[Component, ...]' = (), usage: 'Usage' = <factory>, unreported_usage_calls: 'int' = 0, cost: 'Cost | None' = None, unpriced_model_calls: 'int' = 0, provider_reported_costs: 'int' = 0, model_calls: 'int' = 0, failed_model_calls: 'int' = 0, transient_retries_used: 'int' = 0, last_prompt_tokens: 'int' = 0, failure_streaks: 'dict[str, int]' = <factory>, repeat_counts: 'dict[str, RepeatTally]' = <factory>, compaction_boundary_seq: 'int' = 0, compaction_summaries: 'list[str]' = <factory>, compaction_calls: 'int' = 0, children: 'dict[RunId, ChildRun]' = <factory>, result_handles: 'dict[str, ToolCallId]' = <factory>, program_call_ids: 'set[ToolCallId]' = <factory>, program_binding_call_ids: 'set[ToolCallId]' = <factory>, program_preserved_bytes: 'int' = 0, program_tool_calls: 'int' = 0)
 ```
 
 Everything derivable from a Run's log.
@@ -233,7 +233,7 @@ One tool call, as a reader opening the work section sees it.
 *model*
 
 ```python
-class TotalsReport(*, usage: psych_runtime.core.usage.Usage, cost: psych_runtime.core.usage.Cost | None, unpriced_model_calls: int, cost_is_incomplete: bool, provider_reported_costs: int = 0, model_calls: int, failed_model_calls: int, tool_calls: int, latency: psych_runtime.report.model.LatencyReport, compaction_calls: int = 0)
+class TotalsReport(*, usage: psych_runtime.core.usage.Usage, usage_source: Literal['provider', 'partial', 'unknown'] = 'provider', unreported_usage_calls: int = 0, cost: psych_runtime.core.usage.Cost | None, unpriced_model_calls: int, cost_is_incomplete: bool, provider_reported_costs: int = 0, model_calls: int, failed_model_calls: int, tool_calls: int, latency: psych_runtime.report.model.LatencyReport, compaction_calls: int = 0)
 ```
 
 Run-wide totals. DESIGN.md §13.4: "totals for tokens, cost and duration".
@@ -258,6 +258,8 @@ Attributes:
 | Field | Type | Notes |
 |---|---|---|
 | `usage` | `Usage` |  |
+| `usage_source` | `Literal` |  |
+| `unreported_usage_calls` | `int` |  |
 | `cost` | `usage.Cost | None` |  |
 | `unpriced_model_calls` | `int` |  |
 | `cost_is_incomplete` | `bool` |  |
@@ -317,7 +319,7 @@ Attributes:
 *model*
 
 ```python
-class SubtreeTotals(*, usage: psych_runtime.core.usage.Usage, cost: psych_runtime.core.usage.Cost | None, unpriced_model_calls: int, cost_is_incomplete: bool, runs: int, complete: bool)
+class SubtreeTotals(*, usage: psych_runtime.core.usage.Usage, unreported_usage_calls: int = 0, cost: psych_runtime.core.usage.Cost | None, unpriced_model_calls: int, cost_is_incomplete: bool, runs: int, complete: bool)
 ```
 
 One Run plus every descendant it spawned, added up.
@@ -338,6 +340,7 @@ Attributes:
 | Field | Type | Notes |
 |---|---|---|
 | `usage` | `Usage` |  |
+| `unreported_usage_calls` | `int` |  |
 | `cost` | `usage.Cost | None` |  |
 | `unpriced_model_calls` | `int` |  |
 | `cost_is_incomplete` | `bool` |  |
@@ -349,7 +352,7 @@ Attributes:
 *model*
 
 ```python
-class SubagentReport(*, name: str, child_run_id: psych_runtime.core.ids.RunId, call_id: psych_runtime.core.ids.ToolCallId, child_version_hash: psych_runtime.core.ids.VersionHash, purpose: str, task: str, deliverable: str, tools: tuple[str, ...], model: str, delegation_depth: int, background: bool, spawned_at: datetime.datetime, finished_at: datetime.datetime | None, terminal_state: psych_runtime.core.records.TerminalState | None, output: dict[str, typing.Any] | None, failure: psych_runtime.core.records.ToolFailure | None, messages_sent: int, usage: psych_runtime.core.usage.Usage, cost: psych_runtime.core.usage.Cost | None, unpriced_model_calls: int, report: psych_runtime.report.model.RunReport | None = None, subtree: psych_runtime.report.model.SubtreeTotals | None = None)
+class SubagentReport(*, name: str, child_run_id: psych_runtime.core.ids.RunId, call_id: psych_runtime.core.ids.ToolCallId, child_version_hash: psych_runtime.core.ids.VersionHash, purpose: str, task: str, deliverable: str, tools: tuple[str, ...], model: str, delegation_depth: int, background: bool, spawned_at: datetime.datetime, finished_at: datetime.datetime | None, terminal_state: psych_runtime.core.records.TerminalState | None, output: dict[str, typing.Any] | None, failure: psych_runtime.core.records.ToolFailure | None, messages_sent: int, usage: psych_runtime.core.usage.Usage, unreported_usage_calls: int = 0, cost: psych_runtime.core.usage.Cost | None, unpriced_model_calls: int, report: psych_runtime.report.model.RunReport | None = None, subtree: psych_runtime.report.model.SubtreeTotals | None = None)
 ```
 
 One subagent a Run composed and started (DESIGN.md §17).
@@ -393,6 +396,7 @@ Attributes:
 | `failure` | `records.ToolFailure | None` |  |
 | `messages_sent` | `int` |  |
 | `usage` | `Usage` |  |
+| `unreported_usage_calls` | `int` |  |
 | `cost` | `usage.Cost | None` |  |
 | `unpriced_model_calls` | `int` |  |
 | `report` | `psych_runtime.report.model.RunReport | None` |  |
@@ -446,7 +450,7 @@ Attributes:
 *model*
 
 ```python
-class ToolCallReport(*, call_id: psych_runtime.core.ids.ToolCallId, tool: str, turn: int, step_id: Optional[psych_runtime.core.ids.StepId], arguments: dict[str, typing.Any], outcome: psych_runtime.core.records.ToolOutcome | None, result: Any, failure: psych_runtime.core.records.ToolFailure | None, duration_seconds: float | None, result_handle: str | None, preview: str | None, result_bytes: int, started_at: datetime.datetime, finished_at: datetime.datetime | None, interruptible: bool, safe_to_retry: bool)
+class ToolCallReport(*, call_id: psych_runtime.core.ids.ToolCallId, tool: str, turn: int, step_id: Optional[psych_runtime.core.ids.StepId], arguments: dict[str, typing.Any], outcome: psych_runtime.core.records.ToolOutcome | None, result: Any, failure: psych_runtime.core.records.ToolFailure | None, duration_seconds: float | None, result_handle: str | None, preview: str | None, result_bytes: int, attachments: tuple[psych_runtime.core.records.ResultAttachment, ...] = (), started_at: datetime.datetime, finished_at: datetime.datetime | None, interruptible: bool, safe_to_retry: bool, parent_call_id: Optional[psych_runtime.core.ids.ToolCallId] = None)
 ```
 
 One tool call: what it was asked to do, and how it ended.
@@ -474,17 +478,78 @@ Attributes:
 | `result_handle` | `str | None` |  |
 | `preview` | `str | None` |  |
 | `result_bytes` | `int` |  |
+| `attachments` | `tuple` |  |
 | `started_at` | `datetime` |  |
 | `finished_at` | `datetime.datetime | None` |  |
 | `interruptible` | `bool` |  |
 | `safe_to_retry` | `bool` |  |
+| `parent_call_id` | `Optional` |  |
+
+### `ResultAttachment`
+
+*model*
+
+```python
+class ResultAttachment(*, name: Annotated[str, MinLen(min_length=1), MaxLen(max_length=512)], handle: Annotated[str, MinLen(min_length=1), MaxLen(max_length=256)], content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=128)], size_bytes: Annotated[int, Ge(ge=0)], observed_bytes: Annotated[int, Ge(ge=0)], truncated: bool = False, data: bytes | None = None, stored: Literal['inline', 'blob', 'preview_only'] = 'inline', sha256: Annotated[str | None, MinLen(min_length=64), MaxLen(max_length=64)] = None, readable: bool = True)
+```
+
+One named stream or file a tool call produced beside its result.
+
+A ``run_code`` call produces several things at once: what the program
+printed, what it printed to stderr, what it returned, and the files it
+wrote. The model is shown a compact preview of each; the full bytes are
+kept here, inline when small enough and in the Runtime's ``BlobStore`` when
+not (DESIGN.md §10.8, the same offload rule a plain large result follows).
+Each attachment is addressable through ``read_tool_output`` by its own
+handle, which the reducer registers exactly like ``result_handle``, so a
+model can page through a megabyte of stdout without any of it re-entering
+the prompt whole.
+
+Attributes:
+    name: what this is: ``stdout``, ``stderr``, ``value``, or
+        ``file:&lt;relative path>`` for a workspace artifact. Never a host path.
+    handle: the string the model passes to ``read_tool_output``.
+    content_type: how to read ``data`` or the blob back.
+    size_bytes: the size of what was captured.
+    observed_bytes: how much the program actually produced, which is more
+        than ``size_bytes`` when the backend stopped capturing at its cap.
+    truncated: ``observed_bytes > size_bytes``, stated rather than derived
+        so a reader does not have to compare two numbers to learn it.
+    data: the captured bytes, when they were small enough to keep in the
+        record. ``None`` when they live in the ``BlobStore`` or were not
+        kept at all; ``stored`` says which.
+    stored: ``inline`` (in ``data``), ``blob`` (in the ``BlobStore`` under
+        a key derived from this Run and call, never from this record), or
+        ``preview_only`` (the bytes beyond the preview were not kept, by
+        policy or because no ``BlobStore`` was wired; the preview itself
+        is in the call's result).
+    sha256: a hex digest of the captured bytes, so a reader fetching a blob
+        can check it got what was written.
+    readable: whether the model may read this attachment through
+        ``read_tool_output``. ``False`` for bookkeeping a person reads in a
+        report but the model has no use for (the execution's enforcement
+        report), so its presence does not cost the prompt a tool
+        definition on every later turn.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `handle` | `str` |  |
+| `content_type` | `str` |  |
+| `size_bytes` | `int` |  |
+| `observed_bytes` | `int` |  |
+| `truncated` | `bool` |  |
+| `data` | `bytes | None` |  |
+| `stored` | `Literal` |  |
+| `sha256` | `str | None` |  |
+| `readable` | `bool` |  |
 
 ### `ModelCallReport`
 
 *model*
 
 ```python
-class ModelCallReport(*, turn: int, step_id: Optional[psych_runtime.core.ids.StepId], model: str, system_prompt: str, tool_names: tuple[str, ...], usage: psych_runtime.core.usage.Usage | None, cost: psych_runtime.core.usage.Cost | None, timings: psych_runtime.core.records.ModelTimings | None, finish_reason: str | None, text: str, tool_call_ids: tuple[psych_runtime.core.ids.ToolCallId, ...], started_at: datetime.datetime, finished_at: datetime.datetime | None, failure: psych_runtime.core.records.ToolFailure | None, will_retry: bool, dangling: bool)
+class ModelCallReport(*, turn: int, step_id: Optional[psych_runtime.core.ids.StepId], model: str, system_prompt: str, tool_names: tuple[str, ...], usage: psych_runtime.core.usage.Usage | None, usage_reported: bool | None, cost: psych_runtime.core.usage.Cost | None, timings: psych_runtime.core.records.ModelTimings | None, finish_reason: str | None, text: str, tool_call_ids: tuple[psych_runtime.core.ids.ToolCallId, ...], started_at: datetime.datetime, finished_at: datetime.datetime | None, failure: psych_runtime.core.records.ToolFailure | None, will_retry: bool, dangling: bool)
 ```
 
 One model call: what was asked, what came back, what it cost.
@@ -515,6 +580,7 @@ Attributes:
 | `system_prompt` | `str` |  |
 | `tool_names` | `tuple` |  |
 | `usage` | `usage.Usage | None` |  |
+| `usage_reported` | `bool | None` |  |
 | `cost` | `usage.Cost | None` |  |
 | `timings` | `records.ModelTimings | None` |  |
 | `finish_reason` | `str | None` |  |
@@ -560,7 +626,7 @@ Attributes:
 *model*
 
 ```python
-class CompactionReport(*, seq: int, reason: Literal['threshold', 'manual', 'overflow'], replaced_from_seq: int, replaced_to_seq: int, summary: str, model: str, usage: psych_runtime.core.usage.Usage, cost: psych_runtime.core.usage.Cost | None, at: datetime.datetime)
+class CompactionReport(*, seq: int, reason: Literal['threshold', 'manual', 'overflow'], replaced_from_seq: int, replaced_to_seq: int, summary: str, model: str, usage: psych_runtime.core.usage.Usage, usage_reported: bool, cost: psych_runtime.core.usage.Cost | None, at: datetime.datetime)
 ```
 
 One compaction: what it replaced, what it said, and what it cost.
@@ -594,6 +660,7 @@ Attributes:
 | `summary` | `str` |  |
 | `model` | `str` |  |
 | `usage` | `Usage` |  |
+| `usage_reported` | `bool` |  |
 | `cost` | `usage.Cost | None` |  |
 | `at` | `datetime` |  |
 
@@ -823,7 +890,7 @@ Attributes:
 *model*
 
 ```python
-class Cost(*, amount: Annotated[decimal.Decimal, Ge(ge=Decimal('0'))], currency: Annotated[str, MinLen(min_length=3), MaxLen(max_length=3), _PydanticGeneralMetadata(pattern='^[A-Z]{3}$')] = 'USD', model: Annotated[str, MinLen(min_length=1)], source: Literal['computed', 'provider', 'mixed'] = 'computed')
+class Cost(*, amount: Annotated[decimal.Decimal, Ge(ge=Decimal('0'))], currency: Annotated[str, MinLen(min_length=3), MaxLen(max_length=3), _PydanticGeneralMetadata(pattern='^[A-Z]{3}$')] = 'USD', model: Annotated[str, MinLen(min_length=1)], source: Literal['computed', 'provider', 'mixed'] = 'computed', input_amount: Annotated[decimal.Decimal | None, Ge(ge=Decimal('0'))] = None, output_amount: Annotated[decimal.Decimal | None, Ge(ge=Decimal('0'))] = None, cache_read_amount: Annotated[decimal.Decimal | None, Ge(ge=Decimal('0'))] = None, cache_write_amount: Annotated[decimal.Decimal | None, Ge(ge=Decimal('0'))] = None)
 ```
 
 What one model call cost, computed at the time of the call.
@@ -855,6 +922,12 @@ Attributes:
 
         Defaulted to ``"computed"`` so every Record written before this
         field existed still loads, and still means what it said.
+    input_amount: the uncached-input part of ``amount``, when reported.
+    output_amount: the generated-output part of ``amount``, when reported.
+    cache_read_amount: the prompt-cache read part of ``amount``, when reported.
+    cache_write_amount: all prompt-cache write charges, including one-hour
+        retention, when reported. All four category amounts are optional
+        because a provider may return only one final total.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -862,6 +935,10 @@ Attributes:
 | `currency` | `str` |  |
 | `model` | `str` |  |
 | `source` | `Literal` |  |
+| `input_amount` | `decimal.Decimal | None` |  |
+| `output_amount` | `decimal.Decimal | None` |  |
+| `cache_read_amount` | `decimal.Decimal | None` |  |
+| `cache_write_amount` | `decimal.Decimal | None` |  |
 
 ### `Lifecycle`
 

@@ -21,6 +21,20 @@ Usage is recorded **per model call and never aggregated at write time**. The
 totals in a report are a fold over those records, so a report can always be
 recomputed and never disagrees with the log.
 
+The OpenAI-compatible adapter asks for streaming usage and copies the
+provider's counters. It does not tokenize the prompt locally or estimate a
+count. Read provenance before treating a total as complete:
+
+```python
+call.usage_reported
+report.totals.usage_source  # provider | partial | unknown
+report.totals.unreported_usage_calls
+```
+
+A provider that omits usage no longer looks like a measured zero. Psych keeps
+the zero-valued shape for compatibility, marks the call unreported, makes the
+aggregate partial or unknown, and will not estimate a cost from those zeros.
+
 The split matters because the four rates differ by an order of magnitude.
 Collapsing to one "tokens" number makes a cache-heavy agent look identical to
 one that recomputes its prompt every turn.
@@ -28,12 +42,29 @@ one that recomputes its prompt every turn.
 ## Cost
 
 ```python
-psych_runtime.Cost(amount=Decimal("0.0123"), currency="USD", model="gpt-4o", source="computed")
+psych_runtime.Cost(
+    amount=Decimal("0.0123"),
+    currency="USD",
+    model="gpt-4o",
+    source="computed",
+    input_amount=Decimal("0.0040"),
+    output_amount=Decimal("0.0075"),
+    cache_read_amount=Decimal("0.0008"),
+    cache_write_amount=Decimal("0"),
+)
 ```
 
 `source` is `"computed"` when Psych derived it from a price table, or the
 provider when a gateway reported one. A report can tell the two apart rather
 than blending them.
+
+Computed costs also retain the four category amounts used to make the total:
+uncached input, output, cache read and cache write. They are optional because
+many providers report only one final amount. `cost.has_breakdown` is true only
+when all four are present; missing categories mean "not reported", never zero.
+Adding costs preserves the breakdown only when both operands have one, so a
+conversation that mixes detailed and total-only billing cannot look more
+precise than its source data.
 
 ## An unknown price records `None`, never `0`
 
@@ -45,11 +76,13 @@ wrong, and nobody notices until an invoice does not reconcile.
 
 ## Prices
 
-`DEFAULT_PRICES` ships with the package and is documented as incomplete and
-known to go stale. Override for the models you actually pay for:
+`DEFAULT_PRICES` is a bundled, validated snapshot covering thousands of exact
+provider and model ids. `DEFAULT_PRICE_CATALOG_VERSION` identifies the date of
+that snapshot. Rates change, negotiated rates differ, and local models have no
+universal token price, so override the models you actually pay for:
 
 ```python
-from psych_runtime.model.pricing import DEFAULT_PRICES, ModelPrice
+from psych_runtime import DEFAULT_PRICE_CATALOG_VERSION, DEFAULT_PRICES, ModelPrice
 
 prices = DEFAULT_PRICES.with_overrides(
     {
@@ -76,6 +109,25 @@ not out-matched by a shipped `provider-model-v2` entry.
 `PriceResolver` is a port. Implement it against your own reconciled rates when a
 static table is not enough.
 
+## Provider cost versus estimated cost
+
+Streaming OpenAI-compatible endpoints may include the monetary amount in
+either `usage.cost` or `usage.response_cost` on the final usage chunk. Psych
+accepts both. It does not treat response headers as the final streaming cost
+because a server can write those before it has consumed the stream.
+
+These are separate facts in every report:
+
+- `cost.source == "provider"` means the response carried the monetary amount.
+- `cost.source == "computed"` means Psych estimated it from provider-reported
+  token counters and the active rate table.
+- `cost is None` means neither the provider nor the rate table could price it.
+
+Most model APIs report tokens and omit money. That is normal: the invoice can
+depend on account-specific rates that are not part of the completion response.
+Psych therefore prefers a provider amount when one exists and otherwise uses
+the configured catalog without presenting the estimate as provider billing.
+
 ## `cost_policy`: whose number wins
 
 ```python
@@ -101,6 +153,8 @@ report = await psych_runtime.report(store, run_id, child_depth=2)
 
 report.totals.usage  # this Run alone
 report.totals.cost
+report.totals.cost.has_breakdown if report.totals.cost else False
+report.totals.cost.input_amount if report.totals.cost else None
 report.totals.unpriced_model_calls
 report.subtree  # this Run plus every descendant
 

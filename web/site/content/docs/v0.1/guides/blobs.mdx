@@ -78,6 +78,41 @@ Every adapter folds the tenant into where bytes are actually kept, a filesystem
 subdirectory or an S3 key prefix, so two tenants cannot collide even if a
 `run_id`/`call_id` pair somehow repeated.
 
+## Attachments: several outputs from one call
+
+One tool result is one blob. A code execution is not: it produces stdout,
+stderr, a returned value and any files the program wrote, and each is read
+separately. Those arrive as `ResultAttachment`s on the `ToolCallFinished`
+record, each with its own handle:
+
+```python
+attachment.name  # "stdout", "stderr", "value", "file:report.csv"
+attachment.handle  # out_<call_id>_<slot>, registered in the reducer
+attachment.content_type, attachment.size_bytes, attachment.observed_bytes
+attachment.truncated  # the backend stopped capturing at max_bytes
+attachment.stored  # "inline" | "blob" | "preview_only"
+attachment.sha256, attachment.readable
+```
+
+Their blob keys fold the slot into the call segment
+(`BlobKey(tenant, run_id, f"{call_id}.{slot}")`), so the tenant is still part of
+the address and two attachments of one call never collide. `read_tool_output`
+resolves an attachment handle exactly the way it resolves a result handle:
+against the Run's own recorded handles, with the slot prefix checked, so a
+fabricated or borrowed handle is `AccessDenied` rather than someone else's
+bytes.
+
+Small attachments stay `inline` in the record. Larger ones go to the
+`BlobStore`. With no `BlobStore` wired they become `preview_only`: the preview
+is kept, `readable` is `False`, and the payload says how many bytes were let
+go — unless the agent asked for `OutputPreservation.REQUIRED`, which fails the
+call with `blob_store_required` rather than losing them quietly.
+
+Ranged reading matters more here than anywhere else, because a program's stdout
+can be megabytes: `read_tool_output` takes a line offset and limit, or a regular
+expression, and returns a window. Nothing re-inserts a whole attachment into
+the model's context. See `psych-sandbox`.
+
 ## Compact bytes, both ends
 
 A structured result's preview is rendered with `separators=(",", ":")`. The
@@ -107,6 +142,8 @@ for call in report.tool_calls:
 ## Gotchas
 
 - **`read_tool_output` is a reserved tool name.**
+- **An attachment handle is not a blob address.** It resolves through the Run's
+  records. Nothing the model writes is ever turned into a `BlobKey` directly.
 - **Elision is not truncation of the record.** The log's record is complete or
   carries a reference; only what reaches the model is shortened.
 - **`Limits.large_result_bytes` changes the Version hash.** Offload's threshold

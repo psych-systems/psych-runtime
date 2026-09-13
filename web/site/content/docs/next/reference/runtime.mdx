@@ -348,9 +348,10 @@ Attributes:
     file_size_bytes: the largest file the process may write, counting
         every file it opens, not a total across files.
     process_count: how many processes (Linux counts threads too) the
-        execution may hold at once. See ``psych_runtime.sandbox.subprocess`` for
-        why that is a per-user limit on a process backend and what that
-        implies for concurrent runs.
+        execution may add at once, including its root process. See
+        ``psych_runtime.sandbox.subprocess`` for why the kernel mechanism
+        is a per-user limit on a process backend and what that implies for
+        concurrent runs.
     wall_seconds: real time from spawn to teardown. This is the only cap
         here that is not a resource limit on the process; it is enforced
         by the host killing the process (or container) directly.

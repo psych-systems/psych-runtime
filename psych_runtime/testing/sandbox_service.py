@@ -248,7 +248,8 @@ class SandboxService:
     async def __aexit__(self, *exc_info: object) -> None:
         assert self._server is not None
         self._server.close()
-        for writer in list(self._connections):
+        connections = list(self._connections)
+        for writer in connections:
             writer.close()
         for task in list(self._tasks):
             task.cancel()
@@ -257,6 +258,8 @@ class SandboxService:
                 await task
         for execution in self._executions.values():
             execution.cancel.set()
+        for writer in connections:
+            await _close_writer(writer)
         with contextlib.suppress(OSError):
             await asyncio.wait_for(self._server.wait_closed(), timeout=3.0)
 
@@ -276,8 +279,7 @@ class SandboxService:
         except (OSError, asyncio.IncompleteReadError):
             pass
         finally:
-            with contextlib.suppress(OSError):
-                writer.close()
+            await _close_writer(writer)
             if task is not None:
                 self._tasks.discard(task)
             with contextlib.suppress(ValueError):
@@ -529,6 +531,14 @@ async def _respond(writer: asyncio.StreamWriter, status: int, payload: Any) -> N
     writer.write(head.encode() + body)
     with contextlib.suppress(OSError):
         await writer.drain()
+
+
+async def _close_writer(writer: asyncio.StreamWriter) -> None:
+    """Finish transport shutdown so cancellation cannot leak a socket."""
+    with contextlib.suppress(OSError):
+        writer.close()
+    with contextlib.suppress(OSError, ConnectionError, asyncio.CancelledError):
+        await writer.wait_closed()
 
 
 async def _start_stream(writer: asyncio.StreamWriter) -> None:

@@ -62,6 +62,14 @@ output withheld rather than run at this level. For a kernel boundary use
      wants this limit to mean "per execution" should pass distinct
      ``run_as`` uids per worker.
 
+  Psych translates the per-execution budget to the absolute value
+  ``RLIMIT_NPROC`` expects by adding the target uid's process/thread count
+  observed immediately before spawn. Without that baseline, a limit smaller
+  than the processes already owned by a CI runner or desktop user prevents
+  the sandbox program from starting even one legitimate child. The count is
+  still shared and inherently racy, so distinct uids remain the way to make
+  the ceiling independent across concurrent executions.
+
 - **Wall clock.** Not a resource limit on the process; enforced by this
   adapter killing the process group directly (see "Teardown" below) once
   ``limits.wall_seconds`` of real time has passed since spawn.
@@ -513,7 +521,14 @@ class SubprocessSandbox:
 
             argv = self._argv(child_fd, workdir=workdir, canary=canary, network=network)
             env = self._build_env(workdir, canary)
-            preexec = _make_preexec(active_limits, network=network, run_as=self._run_as)
+            target_uid = self._run_as[0] if self._run_as is not None else os.geteuid()
+            nproc_ceiling = _nproc_ceiling(target_uid, active_limits.process_count)
+            preexec = _make_preexec(
+                active_limits,
+                network=network,
+                run_as=self._run_as,
+                nproc_ceiling=nproc_ceiling,
+            )
 
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -624,7 +639,11 @@ class SubprocessSandbox:
 
 
 def _make_preexec(
-    limits: SandboxLimits, *, network: bool, run_as: tuple[int, int] | None
+    limits: SandboxLimits,
+    *,
+    network: bool,
+    run_as: tuple[int, int] | None,
+    nproc_ceiling: int,
 ) -> Callable[[], None]:
     """Build the ``preexec_fn`` for one spawn: rlimits, network, then privilege drop.
 
@@ -648,7 +667,7 @@ def _make_preexec(
             )
 
         _clamp_rlimit(resource.RLIMIT_FSIZE, limits.file_size_bytes, limits.file_size_bytes)
-        _clamp_rlimit(resource.RLIMIT_NPROC, limits.process_count, limits.process_count)
+        _clamp_rlimit(resource.RLIMIT_NPROC, nproc_ceiling, nproc_ceiling)
 
         os.umask(0o077)
 
@@ -662,6 +681,65 @@ def _make_preexec(
             os.setuid(uid)
 
     return _preexec
+
+
+def _nproc_ceiling(uid: int, execution_processes: int) -> int:
+    """Translate an execution-local process budget to RLIMIT_NPROC's uid total.
+
+    Linux counts threads for this limit, so ``/proc`` contributes each
+    process's ``Threads`` value. Other POSIX hosts expose the real uid through
+    ``ps`` and count processes. If the host inventory cannot be read, retain
+    the conservative absolute ceiling rather than silently dropping the cap.
+    """
+    baseline = _uid_task_count(uid)
+    return execution_processes if baseline is None else baseline + execution_processes
+
+
+def _uid_task_count(uid: int) -> int | None:
+    if Path("/proc/self/status").is_file():
+        return _linux_uid_task_count(uid)
+
+    try:
+        completed = subprocess.run(
+            ["ps", "-e", "-o", "ruid="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        return sum(int(value.strip()) == uid for value in completed.stdout.splitlines())
+    except ValueError:
+        return None
+
+
+def _linux_uid_task_count(uid: int) -> int | None:
+    try:
+        total = 0
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                fields = (entry / "status").read_text(encoding="utf-8").splitlines()
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+            real_uid: int | None = None
+            threads = 1
+            for field in fields:
+                if field.startswith("Uid:"):
+                    real_uid = int(field.split()[1])
+                elif field.startswith("Threads:"):
+                    threads = int(field.split()[1])
+            if real_uid == uid:
+                total += threads
+    except (OSError, ValueError):
+        return None
+    else:
+        return total
 
 
 def _try_network_namespace() -> None:
@@ -837,6 +915,9 @@ async def _drive(
         # The caller's task was cancelled (a Worker shutting down, an abort).
         # Nothing from the child may outlive that either.
         await _terminate_process_group(proc)
+        await _close_channel(writer, parent_sock)
+        await bounded(stdout_task)
+        await bounded(stderr_task)
         raise
     finally:
         await _terminate_process_group(proc)

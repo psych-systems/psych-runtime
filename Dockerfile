@@ -101,6 +101,7 @@ FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145
 # Node is needed at run time because the console is a server-rendered Next
 # app, not a static bundle. The npm CLI and the build toolchain are not.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 psych

@@ -373,8 +373,12 @@ allows".
 - `memory_bytes` is address space to a process backend, a cgroup to a
   container, and a job commit limit on Windows. On CPython an exceeded address
   space usually surfaces to the program as an ordinary `MemoryError`.
-- `process_count` is a **per-user** limit on Linux, threads counted, across
-  everything running as that user. That matters for concurrent runs.
+- `process_count` includes the sandbox interpreter and processes it creates.
+  On POSIX, Psych adds the target user's existing process/thread count before
+  applying `RLIMIT_NPROC`, because the kernel accepts an absolute per-user
+  ceiling rather than an execution-local count. Runs sharing a user still
+  share that kernel counter; use a distinct `run_as` uid per worker when the
+  ceiling must be independent across concurrent executions.
 
 `SandboxResult.limit_hit` names which cap ended an execution, or is `None` on a
 clean completion or a plain program error no limit caused.

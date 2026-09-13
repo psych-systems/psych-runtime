@@ -91,6 +91,15 @@ and breaking changes are expected until the design survives a second consumer.
   refused, was aborted, or was left dangling, and recovery gives none of it
   back. Calls the model made directly, and the `run_code` calls themselves, are
   not counted.
+- POSIX process sandboxes applied the execution's `process_count` directly as
+  `RLIMIT_NPROC`, although the kernel interprets it as an absolute per-user
+  total. A CI runner or desktop user already above that number could not spawn
+  one legitimate child. Psych now adds the target account's observed baseline
+  before applying the cap; whole-tree teardown remains unchanged.
+- Cancelling a remote sandbox execution during a host binding could close the
+  reference service's socket without awaiting transport shutdown. Every
+  connection now completes `wait_closed()`, including service teardown and
+  caller-task cancellation paths.
 
 - An agent decides whether it may run programs, in its own Spec:
   `AgentSpec.code_execution` names a sandbox profile, the isolation level it
@@ -136,6 +145,9 @@ and breaking changes are expected until the design survives a second consumer.
   it is offered `run_code`. Nothing else about the `Sandbox` port changed for
   an existing implementation: `describe()` is optional, and a backend without
   one is reported as process-level and unverified rather than refused.
+- The Playground image installs current Debian security updates in its runtime
+  stage before adding runtime packages, so fixed base-system vulnerabilities
+  do not remain in a release built from an older pinned base layer.
 
 
 ## 0.1.1

@@ -144,6 +144,13 @@ Set `tools_page_size` to exercise catalogue pagination and
 `modern_listener_ids` to observe active subscriptions and
 `close_modern_listeners()` to prove that a client reconnects its listener.
 
+Set `sse_responses=True` to answer `tools/list` as a server-sent event instead
+of `application/json`. Both are legal and a client accepts either, but only the
+event carries a size ceiling, so only this shape can refuse a catalogue for
+being too large. The stub answered JSON exclusively until a real server's
+two-megabyte catalogue was reported as an unreachable host, which is the shape
+of bug a stub that never takes the other path cannot catch.
+
 It lives in the shipped package rather than the test suite because it has two
 consumers and only one is a test: the playground drives it for the scenarios a
 person clicks through. Nothing in it imports pytest, so depending on it costs an

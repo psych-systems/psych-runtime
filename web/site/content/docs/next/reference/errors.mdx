@@ -268,6 +268,25 @@ credential is fatal stays a decision the caller makes deliberately: Psych
 never falls back to treating "no credential configured" as "connect
 without one", which would be a much quieter failure than this.
 
+### `McpResponseTooLarge`
+
+*exception*
+
+```python
+class McpResponseTooLarge(server: 'str', limit: 'int', url: 'str') -> 'None'
+```
+
+A single MCP response exceeded the ceiling on one server-sent event.
+
+Not ``McpProtocolError``: the server did nothing wrong. It answered a
+valid request with a valid, complete result that this client refused to
+buffer. Not ``McpServerUnreachable`` either, which is what the SDK's own
+message made it look like -- the server is reachable and healthy, and
+retrying, changing credentials, or waiting will not help.
+
+The two things that do help are named in the message, because the failure
+is otherwise invisible: raise the ceiling, or ask the server for less.
+
 ### `BuilderError`
 
 *exception*

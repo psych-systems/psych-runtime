@@ -69,6 +69,29 @@ and breaking changes are expected until the design survives a second consumer.
 
 ### Fixed
 
+- **A server offering a large tool catalogue was reported as unreachable.** A
+  Streamable HTTP server answers each JSON-RPC request by writing the whole
+  result as a single server-sent event, and the HTTP client under the MCP SDK
+  refuses any one event over a megabyte. A `tools/list` from a server with a
+  few hundred tools and full JSON Schemas passes that easily, so the limit was
+  in practice a cap on how many tools a server could offer.
+
+  It was also invisible. The SDK reads its event stream inside a bare
+  `except Exception`, which discarded the real cause and synthesised
+  `SSE stream ended without a response`; Psych relayed that as
+  `McpServerUnreachable`. Every layer underneath — DNS, TLS, OAuth discovery,
+  token minting, the handshake itself — reported success, so the failure
+  pointed at the network, the credentials, or the server, none of which were
+  involved.
+
+  The ceiling is now Psych's rather than the client's default, set by
+  `psych_runtime.set_max_sse_event_bytes` and large enough for
+  a real catalogue. It is still a ceiling: an MCP server is a third party, and
+  a reply nothing bounds is one that can exhaust the process reading it.
+  Reaching it now raises `McpResponseTooLarge`, which names the ceiling and
+  says the server answered correctly. That type is deliberately not
+  `McpServerUnreachable`, so a server marked `optional` is no longer silently
+  dropped for sending a reply that is merely large.
 - An approval-gated **HTTP, MCP or A2A** tool was callable from inside a
   program with no approval. The approval selectors match on a tool's
   annotations, and the agent loop looked those up in the code-tool registry,

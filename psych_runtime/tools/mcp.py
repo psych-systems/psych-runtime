@@ -53,6 +53,7 @@ from psych_runtime.tools.oauth import (
     find_bearer_challenge,
 )
 from psych_runtime.tools.secrets import CredentialNotFound, ResolvedCredential, SecretResolver
+from psych_runtime.tools.sse_events import SseEventTooLarge, install_event_source
 
 __all__ = [
     "DEFAULT_CATALOGUE_TTL_SECONDS",
@@ -66,6 +67,7 @@ __all__ = [
     "McpProbe",
     "McpProtocolError",
     "McpResourceNotFoundError",
+    "McpResponseTooLarge",
     "McpServerResolution",
     "McpServerUnreachable",
     "McpToolError",
@@ -76,6 +78,12 @@ __all__ = [
     "resolve_mcp_server",
     "resolve_mcp_servers",
 ]
+
+# Raise the HTTP client's one-megabyte ceiling on a single server-sent event
+# before any connection is opened. A Streamable HTTP server sends each JSON-RPC
+# response as one event, so the default silently caps how large a tool catalogue
+# may be, and reports the breach as a stream that ended without a response.
+install_event_source()
 
 DEFAULT_CATALOGUE_TTL_SECONDS: Final = 300.0
 """How long a cached catalogue is trusted before the background sweep or the
@@ -137,6 +145,32 @@ class McpServerUnreachable(PsychError):
         self.server = server
         self.reason = reason
         super().__init__(f"MCP server {server!r} is unreachable: {reason}")
+
+
+class McpResponseTooLarge(PsychError):
+    """A single MCP response exceeded the ceiling on one server-sent event.
+
+    Not ``McpProtocolError``: the server did nothing wrong. It answered a
+    valid request with a valid, complete result that this client refused to
+    buffer. Not ``McpServerUnreachable`` either, which is what the SDK's own
+    message made it look like -- the server is reachable and healthy, and
+    retrying, changing credentials, or waiting will not help.
+
+    The two things that do help are named in the message, because the failure
+    is otherwise invisible: raise the ceiling, or ask the server for less.
+    """
+
+    def __init__(self, server: str, limit: int, url: str) -> None:
+        self.server = server
+        self.limit = limit
+        self.url = url
+        super().__init__(
+            f"MCP server {server!r} returned a single response larger than the "
+            f"{limit}-byte ceiling on one server-sent event. The server answered "
+            f"correctly; this client refused to buffer the reply. Raise the ceiling "
+            f"with psych_runtime.set_max_sse_event_bytes, or reduce "
+            f"what the server returns (a smaller tool catalogue, or paged tools/list)."
+        )
 
 
 class McpProtocolError(PsychError):
@@ -626,6 +660,7 @@ class McpProbe:
     """The exception's class name when ``ok`` is false, so a caller can tell a
     credential problem (``CredentialNotFound``) from an unreachable host
     (``McpServerUnreachable``) from a server misbehaving (``McpProtocolError``)
+    from a server whose reply is too large to accept (``McpResponseTooLarge``)
     without matching on message text."""
     era: Literal["modern", "legacy"] | None = None
 
@@ -1117,6 +1152,13 @@ def _sdk_exception(  # noqa: PLR0911 - ordered boundary translation
             if not isinstance(nested, asyncio.CancelledError):
                 return _sdk_exception(server, nested)
         return McpServerUnreachable(server, "connection was cancelled")
+    if isinstance(error, SseEventTooLarge):
+        # Ahead of the MCPError branch below, and not derived from its message:
+        # the SDK synthesises the same -32000 "stream ended" text for several
+        # unrelated conditions, so matching on it would trade one wrong
+        # diagnosis for another. This arrives as itself precisely so it does
+        # not have to be guessed at.
+        return McpResponseTooLarge(server, error.limit, error.url)
     if isinstance(error, MCPError):
         if error.code == -32000 and any(
             marker in error.message.lower()
@@ -1491,7 +1533,12 @@ class McpPool:
         try:
             connection = await self.get_or_connect(scope, server)
             tools = await connection.list_tools()
-        except (CredentialNotFound, McpServerUnreachable, McpProtocolError) as err:
+        except (
+            CredentialNotFound,
+            McpServerUnreachable,
+            McpProtocolError,
+            McpResponseTooLarge,
+        ) as err:
             return McpProbe(
                 ok=False,
                 server=server.name,

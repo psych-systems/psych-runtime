@@ -41,6 +41,11 @@ function failureHeadline(errorType: string | null | undefined): string {
       return "The server did not answer";
     case "McpProtocolError":
       return "The server answered, but not as a connection";
+    case "McpResponseTooLarge":
+      // Deliberately not phrased as the server's fault. It answered, in full,
+      // and this client would not hold the reply -- which for a large tool
+      // catalogue is the likeliest way this screen is ever reached.
+      return "The server's reply was too large to accept";
     default:
       return "The last attempt failed";
   }

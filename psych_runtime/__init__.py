@@ -190,13 +190,18 @@ from psych_runtime.store.memory import InMemoryStore
 from psych_runtime.store.port import RunHeader, RunState, Store
 from psych_runtime.telemetry.port import Telemetry
 from psych_runtime.tools.a2a import A2APool, A2ATools
-from psych_runtime.tools.mcp import McpPool, McpTools
+from psych_runtime.tools.mcp import McpPool, McpResponseTooLarge, McpTools
 from psych_runtime.tools.policy import AllowAll, Decision, Policy, ToolClass
 from psych_runtime.tools.registry import ToolRegistry
 from psych_runtime.tools.secrets import (
     CredentialNotFound,
     ResolvedCredential,
     SecretResolver,
+)
+from psych_runtime.tools.sse_events import (
+    DEFAULT_MAX_SSE_EVENT_BYTES,
+    max_sse_event_bytes,
+    set_max_sse_event_bytes,
 )
 
 __version__ = "0.1.2"
@@ -224,6 +229,7 @@ is in its log and reaches a consumer through ``psych_runtime.report()`` and the
 """
 
 __all__ = [
+    "DEFAULT_MAX_SSE_EVENT_BYTES",
     "DEFAULT_PRICES",
     "DEFAULT_PRICE_CATALOG_VERSION",
     "A2APeer",
@@ -274,6 +280,7 @@ __all__ = [
     "Limits",
     "McpOAuth",
     "McpPool",
+    "McpResponseTooLarge",
     "McpServer",
     "McpTools",
     "Memory",
@@ -377,12 +384,14 @@ __all__ = [
     "answer",
     "dispatch",
     "interrupt",
+    "max_sse_event_bytes",
     "publish",
     "records",
     "report",
     "resume",
     "send",
     "session",
+    "set_max_sse_event_bytes",
     "state",
     "status",
     "stream",

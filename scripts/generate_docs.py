@@ -37,6 +37,9 @@ REFERENCE = REPO / "web" / "site" / "content" / "docs" / "next" / "reference"
 GENERATED_BY = "scripts/generate_docs.py"
 
 VALUE_DOCS = {
+    "DEFAULT_MAX_SSE_EVENT_BYTES": (
+        "The default process-wide maximum size of one MCP server-sent event, in bytes."
+    ),
     "DEFAULT_PRICE_CATALOG_VERSION": (
         "The snapshot date of the bundled default price catalog, in YYYY-MM-DD format."
     ),
@@ -121,6 +124,9 @@ GROUPS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "Scope",
             "McpPool",
             "McpTools",
+            "DEFAULT_MAX_SSE_EVENT_BYTES",
+            "max_sse_event_bytes",
+            "set_max_sse_event_bytes",
             "A2APool",
             "A2ATools",
             "HttpTransport",
@@ -250,6 +256,7 @@ GROUPS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "CorruptLog",
             "CorruptionReason",
             "CredentialNotFound",
+            "McpResponseTooLarge",
             "BuilderError",
         ),
     ),

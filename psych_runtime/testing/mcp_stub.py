@@ -119,6 +119,21 @@ async def _write_json(
     await writer.drain()
 
 
+async def _write_sse_reply(writer: asyncio.StreamWriter, payload: object) -> None:
+    """Answer a JSON-RPC request as one server-sent event.
+
+    This is what a Streamable HTTP server actually does, and what a stub that
+    only ever replied ``application/json`` never exercised: the whole result
+    arrives as a single ``data:`` line, so the response size and the largest
+    event the client will accept are the same number.
+    """
+    body = json.dumps(payload)
+    headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
+    await _write_status(writer, 200, headers=headers, chunked=True)
+    frame = f"event: message\ndata: {body}\n\n"
+    await _write_chunk(writer, frame.encode())
+
+
 # ---------------------------------------------------------------------------
 # The stub server
 # ---------------------------------------------------------------------------
@@ -200,8 +215,15 @@ class McpStubServer:
         *,
         modern: bool = False,
         legacy_protocol_version: str = "2025-06-18",
+        sse_responses: bool = False,
     ) -> None:
         self.tools = tools
+        self.sse_responses = sse_responses
+        """Answer ``tools/list`` as a server-sent event rather than JSON.
+
+        Both are legal and the client accepts either, but only this one has a
+        ceiling on how much it can carry, so only this one can refuse a
+        catalogue for being too large."""
         self.modern = modern
         self.legacy_protocol_version = legacy_protocol_version
         self.init_count = 0
@@ -488,9 +510,8 @@ class McpStubServer:
                 if self.tools_page_size is None
                 else min(len(tools), cursor + self.tools_page_size)
             )
-            await _write_json(
+            await self._reply_to_list(
                 writer,
-                200,
                 {
                     "jsonrpc": "2.0",
                     "id": payload.get("id"),
@@ -592,7 +613,9 @@ class McpStubServer:
             }
             if end < len(tools):
                 result["nextCursor"] = str(end)
-            await _write_json(writer, 200, {"jsonrpc": "2.0", "id": request_id, "result": result})
+            await self._reply_to_list(
+                writer, {"jsonrpc": "2.0", "id": request_id, "result": result}
+            )
             return
 
         if rpc_method == "tools/call":
@@ -608,6 +631,12 @@ class McpStubServer:
             404,
             {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "no method"}},
         )
+
+    async def _reply_to_list(self, writer: asyncio.StreamWriter, payload: object) -> None:
+        if self.sse_responses:
+            await _write_sse_reply(writer, payload)
+            return
+        await _write_json(writer, 200, payload)
 
     async def _handle_tools_call_modern(
         self,

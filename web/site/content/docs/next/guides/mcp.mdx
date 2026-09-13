@@ -132,6 +132,23 @@ Defaulting `optional` to `True` would produce an agent that confidently tells a
 customer it cannot issue refunds today. Being wrong loudly beats being wrong
 quietly, so the default is the strict one.
 
+## A catalogue too large to accept
+
+A Streamable HTTP server writes each response as one server-sent event, and an
+event has a size ceiling, so the ceiling applies to `tools/list` — which for a
+server generated from an OpenAPI description can run to several megabytes.
+
+Exceeding it raises `McpResponseTooLarge`, **not** `McpServerUnreachable`: the
+server answered correctly and in full, and this client declined to buffer the
+reply. The distinction is the point. Were it unreachable, `optional=True` would
+drop a healthy server and the agent would run without its tools with nobody
+told why.
+
+Raise the ceiling with `psych_runtime.set_max_sse_event_bytes`. It is process-wide,
+because it belongs to the HTTP client every connection shares. Leave it
+bounded: an MCP server is a third party, and a reply nothing bounds can exhaust
+the process reading it.
+
 ## Transports
 
 `"http"` is Streamable HTTP (MCP revision 2026-07-28) and is the default. The

@@ -65,7 +65,7 @@ from typing import Final
 from psych_runtime.core.corruption import CorruptLog
 from psych_runtime.core.errors import LeaseLost, SeqConflict
 from psych_runtime.core.ids import AttemptId, RunId, WorkerId, new_attempt_id, new_worker_id
-from psych_runtime.core.records import TerminalState, ToolFailure, ToolOutcome
+from psych_runtime.core.records import SuspendReason, TerminalState, ToolFailure, ToolOutcome
 from psych_runtime.core.reducer import reduce
 from psych_runtime.core.scope import Scope
 from psych_runtime.runtime.abort import AbortReason, AbortSignal
@@ -409,13 +409,18 @@ class Worker:
             return
         with contextlib.suppress(Exception):
             journal_state = reduce(await self.store.read(attempt.run_id))
-            state = (
-                RunState.SETTLED
-                if journal_state.settled
-                else RunState.SUSPENDED
-                if journal_state.suspended
-                else RunState.RUNNABLE
-            )
+            if journal_state.settled:
+                state = RunState.SETTLED
+            elif journal_state.suspended and journal_state.suspend_reason is SuspendReason.TIMER:
+                # Parked, not waiting on anyone: the engine set `runnable_at`
+                # to the wake time, and RUNNABLE is what lets the store hand
+                # the Run to a Worker once that passes. SUSPENDED would wait
+                # for a resume nobody is going to send.
+                state = RunState.RUNNABLE
+            elif journal_state.suspended:
+                state = RunState.SUSPENDED
+            else:
+                state = RunState.RUNNABLE
             await self.store.release(attempt.run_id, self.worker_id, state)
 
     async def _heartbeat(self, attempt: ActiveAttempt) -> None:

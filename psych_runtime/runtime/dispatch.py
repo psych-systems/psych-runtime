@@ -34,17 +34,19 @@ from psych_runtime.core.errors import (
     RunNotSuspended,
     SuspensionExpired,
     VersionNotFound,
+    WorkflowRequired,
 )
 from psych_runtime.core.ids import RunId, VersionHash, WorkerId, new_queue_entry_id, new_run_id
 from psych_runtime.core.records import RECORD_ADAPTER, QueueKind, Record, TerminalState, ToolFailure
+from psych_runtime.core.reducer import reduce
 from psych_runtime.core.scope import Scope
-from psych_runtime.core.spec import AgentSpec
+from psych_runtime.core.spec import AgentSpec, WorkflowSpec
 from psych_runtime.core.version import Version
 from psych_runtime.runtime.journal import Journal
 from psych_runtime.store.port import RunHeader, RunState, Store
 from psych_runtime.tools.guidance import failure_guidance
 
-__all__ = ["Dispatched", "dispatch", "interrupt", "resume", "send"]
+__all__ = ["Dispatched", "dispatch", "interrupt", "replay", "resume", "send"]
 
 _RESUME_ACTOR: Final = WorkerId("psych.resume")
 """``release`` takes the Worker that held the lease, and a resume is not a Worker
@@ -88,6 +90,10 @@ async def dispatch(
     delegation_depth: int = 0,
     continues: RunId | None = None,
     nested: bool = False,
+    breakpoints: tuple[str, ...] = (),
+    step_mode: bool = False,
+    replays_run_id: RunId | None = None,
+    replay_from_step: str | None = None,
 ) -> Dispatched:
     """Admit a Run.
 
@@ -134,6 +140,13 @@ async def dispatch(
             which is delegation -- see ``RunAdmitted.continues_run_id``'s
             docstring in ``psych_runtime.core.records`` for why the two must not be
             conflated.
+        breakpoints: workflow step names to pause before, as
+            ``SuspendReason.BREAKPOINT``. Ignored by an agent Run.
+        step_mode: pause before every workflow step. A resume's payload may
+            set ``step_mode`` to turn it off again.
+        replays_run_id: for ``replay()``: the Run whose completed steps this
+            one starts from. Set together with ``replay_from_step``.
+        replay_from_step: the top-level step the replay starts executing at.
 
     Returns:
         The Run, and whether this call created it.
@@ -211,10 +224,72 @@ async def dispatch(
             "parent_run_id": parent_run_id,
             "delegation_depth": delegation_depth,
             "continues_run_id": continues,
+            "breakpoints": breakpoints,
+            "step_mode": step_mode,
+            "replays_run_id": replays_run_id,
+            "replay_from_step": replay_from_step,
         }
     )
     await store.append(run_id, 1, admitted)
     return Dispatched(run_id=run_id, created=True)
+
+
+async def replay(
+    store: Store,
+    run_id: RunId,
+    *,
+    from_step: str,
+    input: dict[str, Any] | None = None,  # noqa: A002
+    version: Version | VersionHash | None = None,
+    idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
+    breakpoints: tuple[str, ...] = (),
+    step_mode: bool = False,
+) -> Dispatched:
+    """Start a new workflow Run from the middle of an earlier one.
+
+    Everything the source Run completed before ``from_step`` is copied into
+    the new Run's log as memoised steps, marked with the Run they came from,
+    and execution begins at ``from_step``. The source Run is not touched: it
+    keeps its log and its ending, and the new Run has its own id, its own
+    step ids and its own future. Pass ``input`` to change what the workflow
+    sees from that step on, or ``version`` to run a corrected Version whose
+    steps up to ``from_step`` still have the same names and positions.
+
+    This is how a failed step is rerun after its cause is fixed, and how a
+    workflow is played forward from a chosen point with different data,
+    without pretending the first Run went differently than it did.
+
+    Raises:
+        RunNotFound: no such Run.
+        WorkflowRequired: the source Run is not a workflow, or ``from_step``
+            is not one of its top-level steps.
+    """
+    source = await store.read(run_id)
+    if not source:
+        raise RunNotFound(run_id)
+    state = reduce(source, run_id=run_id)
+    resolved = await _resolve_version(store, version if version is not None else state.version_hash)
+    spec = resolved.spec
+    if not isinstance(spec, WorkflowSpec):
+        raise WorkflowRequired(run_id, f"run {run_id} is an agent Run; only a workflow replays")
+    if from_step not in {step.name for step in spec.steps}:
+        names = ", ".join(step.name for step in spec.steps)
+        raise WorkflowRequired(
+            run_id, f"{from_step!r} is not a top-level step of {spec.name!r} (steps: {names})"
+        )
+    return await dispatch(
+        store,
+        resolved,
+        state.scope,
+        input=input if input is not None else dict(state.run_input),
+        idempotency_key=idempotency_key,
+        deadline_seconds=deadline_seconds,
+        breakpoints=breakpoints,
+        step_mode=step_mode,
+        replays_run_id=run_id,
+        replay_from_step=from_step,
+    )
 
 
 async def resume(

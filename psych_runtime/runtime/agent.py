@@ -59,7 +59,7 @@ from psych_runtime.core.code_execution import (
 )
 from psych_runtime.core.conversation import build_conversation
 from psych_runtime.core.errors import AccessDenied, ProgramToolRefused, TransientError
-from psych_runtime.core.ids import ToolCallId, new_tool_call_id
+from psych_runtime.core.ids import StepId, ToolCallId, new_tool_call_id
 from psych_runtime.core.messages import Message, SystemMessage, ToolDefinition
 from psych_runtime.core.questions import render_questions
 from psych_runtime.core.records import (
@@ -495,8 +495,14 @@ class AgentLoop:
         blob_offload_bytes: int = DEFAULT_OFFLOAD_BYTES,
         history: Sequence[Message] = (),
         abort: AbortSignal | None = None,
+        step_id: StepId | None = None,
     ) -> None:
         self._journal = journal
+        # The workflow step this agent runs inside, or None for a bare agent
+        # Run. Stamped on every turn and tool call so a report and a trace can
+        # say which step's work a model call was, which is the difference
+        # between a workflow trace and a flat list of calls.
+        self._step_id = step_id
         self._spec = spec
         self._model = model
         self._resolver = resolver
@@ -668,6 +674,7 @@ class AgentLoop:
         call_id = new_tool_call_id()
         await self._journal.append(
             type="tool_call_started",
+            step_id=self._step_id,
             call_id=call_id,
             tool=name,
             arguments=arguments,
@@ -1187,7 +1194,7 @@ class AgentLoop:
 
         resolved = self._build_run_code(resolved)
 
-        await self._journal.append(type="turn_started", turn=turn_number)
+        await self._journal.append(type="turn_started", turn=turn_number, step_id=self._step_id)
         turn_attributes: SpanAttributes = {"psych.turn.number": turn_number}
 
         # A steer that arrived before this turn started is delivered now, inside
@@ -1669,6 +1676,7 @@ class AgentLoop:
 
             await self._journal.append(
                 type="tool_call_started",
+                step_id=self._step_id,
                 call_id=call_id,
                 tool=name or "<unnamed>",
                 arguments=arguments,
@@ -1830,6 +1838,7 @@ class AgentLoop:
             arguments, _ = _parse_arguments(call.arguments_json)
             await self._journal.append(
                 type="tool_call_started",
+                step_id=self._step_id,
                 call_id=call_id,
                 tool=name,
                 arguments=arguments,

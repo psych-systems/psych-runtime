@@ -99,7 +99,8 @@ renders what survives rather than failing the whole thread.
 report = await psych_runtime.report(store, run_id, child_depth=0, scope=scope)
 
 report.spec_name, report.version_hash, report.system_prompt  # the prompt AS SENT
-report.steps  # StepReport, workflow only
+report.steps  # StepReport, workflow only: one row per attempt, with path, parent_step_id,
+              # iteration, skipped, will_retry, replayed_from, started_at, completed_at
 report.tool_calls  # ToolCallReport, in start order
 report.model_calls  # ModelCallReport, in start order
 report.suspensions  # SuspensionReport: reason, who, when, decision
@@ -145,6 +146,23 @@ cannot read the whole database by accident. `0` reports this Run only.
 This ships with Psych rather than being left to consumers because it is the most
 visible thing you get on day one, and if every consumer writes their own
 projection they will each get the token arithmetic wrong in a different way.
+
+## workflow_view(): the step tree
+
+```python
+view = await psych_runtime.workflow_view(store, run_id, scope=scope)
+view.steps            # StepView per top-level step, in Spec order, children nested
+view.waiting          # the step the Run is parked on, and why
+view.state, view.output, view.step_starts, view.completed, view.failed
+view.replays_run_id, view.replay_from_step, view.breakpoints, view.step_mode
+```
+
+Each `StepView` carries `status` (`pending running waiting completed failed
+retrying skipped replayed`), `attempts`, `input`, `output`, `failure`,
+`started_at`, `completed_at`, `retry_at`, `iteration`, `children` and, for a
+branch, `cases`. Steps the Run has not reached yet are present as `pending`,
+from the Spec; loop iterations and foreach items are read from the log, by
+parent. Raises `WorkflowRequired` for an agent Run. See `psych-workflows`.
 
 ## CorruptLog
 

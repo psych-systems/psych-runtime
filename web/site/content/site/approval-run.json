@@ -40,6 +40,10 @@
           "deadline_at": "+120s",
           "parent_run_id": null,
           "delegation_depth": 0,
+          "replays_run_id": null,
+          "replay_from_step": null,
+          "breakpoints": [],
+          "step_mode": false,
           "continues_run_id": null
         },
         {
@@ -397,6 +401,10 @@
           "reason": "approval",
           "payload_schema": {},
           "expires_at": "+24h",
+          "step_id": null,
+          "step_name": null,
+          "event": null,
+          "wake_at": null,
           "pending_call_id": "call_3",
           "question": "Approve calling 'issue_refund' with {\"order_id\": \"A1\", \"cents\": 4200}?",
           "questions": []
@@ -705,6 +713,10 @@
           "deadline_at": "+120s",
           "parent_run_id": null,
           "delegation_depth": 0,
+          "replays_run_id": null,
+          "replay_from_step": null,
+          "breakpoints": [],
+          "step_mode": false,
           "continues_run_id": null
         },
         {
@@ -1062,6 +1074,10 @@
           "reason": "approval",
           "payload_schema": {},
           "expires_at": "+24h",
+          "step_id": null,
+          "step_name": null,
+          "event": null,
+          "wake_at": null,
           "pending_call_id": "call_3",
           "question": "Approve calling 'issue_refund' with {\"order_id\": \"A1\", \"cents\": 4200}?",
           "questions": []

@@ -17,14 +17,21 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Final, Protocol, runtime_checkable
 
 from psych_runtime.core.answer import split_answer
 from psych_runtime.core.code_execution import DEFAULT_BINDING_BUDGET
 from psych_runtime.core.errors import AccessDenied, VersionNotFound
-from psych_runtime.core.ids import RunId, ToolCallId, WorkerId
+from psych_runtime.core.ids import RunId, StepId, ToolCallId, WorkerId
 from psych_runtime.core.messages import ToolDefinition
-from psych_runtime.core.records import QueueKind, Record, TerminalState, ToolFailure
+from psych_runtime.core.records import (
+    QueueKind,
+    Record,
+    SuspendReason,
+    TerminalState,
+    ToolFailure,
+)
 from psych_runtime.core.reducer import ChildRun, reduce
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.spec import AgentSpec, SubagentRef, WorkflowSpec
@@ -47,7 +54,8 @@ from psych_runtime.runtime.journal import Journal
 from psych_runtime.runtime.notify import notify_parent
 from psych_runtime.runtime.subagent import SpawnRequest, child_input, compose_child_spec
 from psych_runtime.runtime.thread import load_thread_history
-from psych_runtime.runtime.workflow import StepFailed, WorkflowEngine
+from psych_runtime.runtime.workflow import StepContext, StepFailed, WorkflowEngine
+from psych_runtime.runtime.workflow_replay import seed_replay
 from psych_runtime.sandbox.port import Sandbox, SandboxDescription
 from psych_runtime.sandbox.profiles import (
     DEFAULT_PROFILE,
@@ -72,7 +80,7 @@ from psych_runtime.tools.code import HostCall, make_run_code, run_code_definitio
 from psych_runtime.tools.deferred import DEFAULT_CATALOGUE_BUDGET_CHARS, DeferredDiscovery
 from psych_runtime.tools.guidance import failure_guidance
 from psych_runtime.tools.mcp import McpTools
-from psych_runtime.tools.policy import AllowAll, Policy
+from psych_runtime.tools.policy import AllowAll, Decision, Policy
 from psych_runtime.tools.registry import ToolRegistry
 from psych_runtime.tools.resolver import ToolResolver
 
@@ -129,7 +137,8 @@ class _AttemptContext:
 
     scope: Scope
     run_id: RunId
-    span: TelemetrySpan | None
+    span: Telemetry | None
+    """The attempt span, or the step span for work inside a workflow step."""
 
 
 @dataclass
@@ -408,15 +417,48 @@ class Runtime:
         # to match `_run_agent`'s and to keep the caller's one call site honest
         # about what it is handing each branch.
         _ = parent
-        engine = self.engine_for(journal, abort=abort)
-        state, outputs = await engine.run(spec)
-        if journal.state.settled or journal.state.suspended:
+        await self._wake_timer(journal)
+        if journal.state.suspended:
+            # Claimed while parked on a timer that has not fired: a resume
+            # delivered to a Run whose wake time is in the future is the only
+            # way here, and the resume already made it runnable. Nothing to
+            # wake; the engine reads the resume like any other answer.
+            pass
+        if journal.state.replays_run_id is not None:
+            await seed_replay(self.store, journal, spec)
+        engine = self.engine_for(journal, abort=abort, telemetry=parent)
+        outcome = await engine.execute(spec)
+        if journal.state.settled or journal.state.suspended or outcome.state is None:
             return
         if abort is not None and abort.is_set() and abort.reason is not AbortReason.DEADLINE:
             return
-        await journal.append(type="run_settled", state=state, output=outputs)
+        await journal.append(
+            type="run_settled", state=outcome.state, output=outcome.output, failure=outcome.failure
+        )
 
-    def engine_for(self, journal: Journal, *, abort: AbortSignal | None = None) -> WorkflowEngine:
+    async def _wake_timer(self, journal: Journal) -> None:
+        """Record the wake of a Run parked on a timer, if its time has come.
+
+        A timer suspension is answered by nobody: the store makes the Run
+        claimable at its wake time and the claiming Attempt writes the
+        ``resumed`` itself, so the log says when the wait ended the way it
+        does for every other suspension.
+        """
+        state = journal.state
+        if not state.suspended or state.suspend_reason is not SuspendReason.TIMER:
+            return
+        wake_at = state.suspend_wake_at
+        if wake_at is not None and datetime.now(UTC) < wake_at:
+            return
+        await journal.append(type="resumed", payload={"woken_by": "timer"})
+
+    def engine_for(
+        self,
+        journal: Journal,
+        *,
+        abort: AbortSignal | None = None,
+        telemetry: Telemetry | None = None,
+    ) -> WorkflowEngine:
         """A ``WorkflowEngine`` bound to one Run, for a caller driving a
         workflow directly rather than through a ``Worker``.
 
@@ -428,19 +470,28 @@ class Runtime:
         context), so the seam belongs here instead.
         """
         context = _AttemptContext(scope=journal.scope, run_id=journal.run_id, span=None)
+
+        async def park(wake_at: datetime) -> None:
+            await self.store.set_runnable_at(journal.run_id, wake_at)
+
         return WorkflowEngine(
             journal,
-            lambda inner, agent_spec, step_input: self._nested_agent(
-                inner, agent_spec, step_input, context, abort
+            lambda inner, agent_spec, step_input, step: self._nested_agent(
+                inner, agent_spec, step_input, step, context, abort
             ),
             lambda inner, tool, arguments: self._nested_tool(inner, tool, arguments, context),
+            tool_gate=lambda tool, arguments: self._gate_step_tool(tool, arguments, context),
+            park=park,
+            abort=abort,
+            telemetry=telemetry,
         )
 
-    async def _nested_agent(
+    async def _nested_agent(  # noqa: PLR0917 - one argument per thing the step is
         self,
         journal: Journal,
         spec: AgentSpec,
         step_input: dict[str, Any],
+        step: StepContext,
         context: _AttemptContext,
         abort: AbortSignal | None,
     ) -> dict[str, Any] | None:
@@ -448,10 +499,13 @@ class Runtime:
 
         Shares the parent's journal, so the whole workflow is one Run with one
         log and one resume path. The agent's own turns, model calls and tool
-        calls appear in that log between the step's start and completion records.
+        calls appear in that log between the step's start and completion
+        records. The step's mapped ``input`` reaches the model through the
+        conversation projection, which emits it as the user message at the
+        step's own ``step_started`` record (``psych_runtime.core.conversation``).
         """
-        _ = step_input
-        loop = await self._loop_for(journal, spec, context.span, abort)
+        _ = step_input, context
+        loop = await self._loop_for(journal, spec, step.telemetry, abort, step_id=step.step_id)
         outcome = await loop.run()
         if outcome.failure is not None:
             raise StepFailed(outcome.failure)
@@ -461,8 +515,10 @@ class Runtime:
         self,
         journal: Journal,
         spec: AgentSpec,
-        parent: TelemetrySpan | None = None,
+        parent: Telemetry | None = None,
         abort: AbortSignal | None = None,
+        *,
+        step_id: StepId | None = None,
     ) -> AgentLoop:
         """One place that builds an agent loop, so a top-level Run, a workflow
         step and a subagent are all configured identically.
@@ -551,6 +607,7 @@ class Runtime:
             blob_offload_bytes=self.blob_offload_bytes,
             history=history,
             abort=abort,
+            step_id=step_id,
         )
         if spec.code_execution is not None and spec.code_execution.enabled:
             await self._offer_run_code(loop, spec, journal, abort)
@@ -802,28 +859,25 @@ class Runtime:
         await self.store.put_version(version)
         return version
 
+    async def _gate_step_tool(
+        self, tool: str, arguments: dict[str, Any], context: _AttemptContext
+    ) -> Decision:
+        """The consumer's ``Policy`` on a workflow ``ToolStep``, exactly as on a
+        model's tool call. A decision that asks for a person suspends the Run
+        on the step (``psych_runtime.runtime.workflow``); the engine owns that."""
+        policy = self.policy if self.policy is not None else AllowAll()
+        return await policy.allow_tool(context.scope, tool, arguments)
+
     async def _nested_tool(
         self, journal: Journal, tool: str, arguments: dict[str, Any], context: _AttemptContext
     ) -> Any:
-        """A workflow's ``ToolStep``, gated exactly like a model's tool call.
+        """A workflow's ``ToolStep``, after the gate allowed it.
 
         A step calling the registry directly skipped the consumer's ``Policy``
         entirely, so a Version dispatched under a Scope that may not call a tool
-        called it anyway. There is no model here to hand a refusal back to as
-        data, so a denial raises and the step records it as a failure.
+        called it anyway. The gate is ``_gate_step_tool``; this only calls.
         """
-        _ = journal
-        policy = self.policy if self.policy is not None else AllowAll()
-        decision = await policy.allow_tool(context.scope, tool, arguments)
-        if decision.requires_approval:
-            raise AccessDenied(
-                f"tool {tool!r}",
-                "the policy asks for a human decision, and a workflow tool step has "
-                "no model turn to suspend into. Run this tool inside an agent step "
-                "if it needs an approval.",
-            )
-        if not decision.allowed:
-            raise AccessDenied(f"tool {tool!r}", decision.reason or "the policy refused it")
+        _ = journal, context
         return await self.registry.call(tool, arguments)
 
     async def _settle_aborted(self, journal: Journal) -> None:

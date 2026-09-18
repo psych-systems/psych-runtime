@@ -175,6 +175,19 @@ class StepReport(BaseModel):
     failure: ToolFailure | None
     child_run_id: RunId | None
     child: RunReport | None = None
+    path: tuple[str | int, ...] = ()
+    """The step's position in the workflow tree, outermost first."""
+    parent_step_id: StepId | None = None
+    """The composite step this one ran inside, or ``None`` at the top."""
+    iteration: int | None = None
+    skipped: bool = False
+    will_retry: bool = False
+    """This attempt failed and another was allowed; the next attempt is its
+    own row."""
+    replayed_from: RunId | None = None
+    """Copied from that Run by ``psych_runtime.replay()`` rather than run here."""
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class FailureStreakTrip(BaseModel):
@@ -217,6 +230,10 @@ class SuspensionReport(BaseModel):
     expires_at: datetime
     resumed_at: datetime | None
     approved: bool | None
+    step_id: StepId | None = None
+    """The workflow step this wait belonged to, when it was a step's."""
+    event: str | None = None
+    wake_at: datetime | None = None
     payload: dict[str, Any] | None
 
 

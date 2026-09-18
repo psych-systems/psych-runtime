@@ -213,15 +213,23 @@ class LogBuilder:
     # -- steps --------------------------------------------------------------
 
     def step_started(
-        self, step_id: str, name: str = "step", kind: str = "tool", attempt_number: int = 1
+        self,
+        step_id: str,
+        name: str = "step",
+        kind: str = "tool",
+        attempt_number: int = 1,
+        **kwargs: Any,
     ) -> Self:
+        """``kwargs`` are the tree fields: ``path``, ``parent_step_id``,
+        ``iteration``, ``replayed_from``, ``input``."""
         return self._add(
             StepStarted(
                 **self._common(),
                 step_id=StepId(step_id),
                 name=name,
-                kind=kind,  # type: ignore[arg-type]
+                kind=kind,
                 attempt_number=attempt_number,
+                **kwargs,
             )
         )
 

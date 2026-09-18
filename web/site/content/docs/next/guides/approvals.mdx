@@ -161,5 +161,10 @@ turn's resolved tool set, which is where every origin's annotations live.
 - **`interruptible=False` and approvals are unrelated.** One is about aborting
   mid-call; the other is about permission to start.
 - **A denied call is not a failed Run.** The model is told and continues.
+- **A workflow `tool` step is gated too.** `Decision.ask()` suspends the Run on
+  that step (`status.pending_approval` with `call_id=None` and `step_id` set,
+  carrying the tool and its resolved arguments); `resume(approved=True)` runs
+  it, `approved=False` fails the step with kind `denied`, which is never
+  retried. See `psych-workflows`.
 - **The failure-streak guard does not count a call a policy refused before
   execution,** nor one the user cancelled. It counts genuine tool failures.

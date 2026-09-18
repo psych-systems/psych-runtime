@@ -99,7 +99,7 @@ Raises:
 *function*
 
 ```python
-async def dispatch(store: 'Store', version: 'Version | VersionHash', scope: 'Scope', *, input: 'dict[str, Any] | None' = None, idempotency_key: 'str | None' = None, deadline_seconds: 'float | None' = None, continues: 'RunId | None' = None) -> 'Dispatched'
+async def dispatch(store: 'Store', version: 'Version | VersionHash', scope: 'Scope', *, input: 'dict[str, Any] | None' = None, idempotency_key: 'str | None' = None, deadline_seconds: 'float | None' = None, continues: 'RunId | None' = None, breakpoints: 'tuple[str, ...]' = (), step_mode: 'bool' = False) -> 'Dispatched'
 ```
 
 Admit a Run, exactly once per idempotency key.
@@ -113,6 +113,11 @@ Args:
         with ``AccessDenied`` when that Run belongs to a different Scope
         -- a continuation is a new way to reach another Run's content and
         gets the same scrutiny as the MCP pool key (DESIGN.md §10.4).
+    breakpoints: for a workflow, step names to pause before. The Run
+        suspends with ``SuspendReason.BREAKPOINT`` and ``resume()``
+        continues it. Ignored by an agent Run.
+    step_mode: for a workflow, pause before every step. A resume whose
+        payload carries ``\{"step_mode": False}`` turns it off again.
 
 ### `stream`
 
@@ -415,6 +420,59 @@ Args:
 Raises:
     AccessDenied: ``scope`` names a different tenant than the Run's.
 
+### `replay`
+
+*function*
+
+```python
+async def replay(store: 'Store', run_id: 'RunId', *, from_step: 'str', input: 'dict[str, Any] | None' = None, version: 'Version | VersionHash | None' = None, idempotency_key: 'str | None' = None, deadline_seconds: 'float | None' = None, breakpoints: 'tuple[str, ...]' = (), step_mode: 'bool' = False, scope: 'Scope | None' = None) -> 'Dispatched'
+```
+
+Start a new workflow Run from the middle of an earlier one.
+
+Every step the source Run settled before ``from_step`` is copied into the
+new Run's log as a memoised step marked with where it came from, and
+execution begins at ``from_step``. The source Run is untouched. Pass
+``input`` to change what the workflow sees from that step on, or
+``version`` to run a corrected Version whose earlier steps kept their
+names and positions. This is how a failed step is rerun once its cause is
+fixed, and how a workflow is played forward from a chosen point with
+different data, without pretending the first Run went differently.
+
+Args:
+    scope: whose replay this is. Passing it refuses a Run belonging to
+        another tenant.
+
+Raises:
+    RunNotFound: no such Run.
+    AccessDenied: ``scope`` names a different tenant than the Run's.
+    WorkflowRequired: the Run is not a workflow, or ``from_step`` is not
+        one of its top-level steps.
+    VersionNotFound: ``version`` names a hash the store does not hold.
+
+### `workflow_view`
+
+*function*
+
+```python
+async def workflow_view(store: 'Store', run_id: 'RunId', *, scope: 'Scope | None' = None) -> 'WorkflowView'
+```
+
+A workflow Run as the tree of its steps, for a graph, a timeline or a
+test.
+
+Every step in the pinned Version in order, with its status, attempts,
+input, output, failure and children, plus which step the Run is waiting
+on and the workflow state so far. Derived from the same fold the engine
+uses, so a console and the runtime cannot disagree about whether a branch
+was taken.
+
+Raises:
+    RunNotFound: no such Run.
+    AccessDenied: ``scope`` names a different tenant than the Run's.
+    WorkflowRequired: the Run's Version is an agent, not a workflow.
+    VersionNotFound: the pinned Version is gone from the store.
+
 ### `agent`
 
 *function*
@@ -434,3 +492,53 @@ def workflow(name: 'str', *, registry: 'ToolRegistry | None' = None) -> 'Workflo
 ```
 
 Start building a Workflow Spec named ``name``.
+
+### `ref`
+
+*function*
+
+```python
+def ref(path: 'str') -> 'ValuePath'
+```
+
+A reference to a value the workflow already has: ``ref("steps.fetch.output.rows")``.
+
+### `lit`
+
+*function*
+
+```python
+def lit(value: 'Any') -> 'LiteralValue'
+```
+
+A constant, for a mapping that mixes constants with references.
+
+### `when`
+
+*function*
+
+```python
+def when(path: 'str', op: 'ConditionOp' = 'truthy', value: 'Any' = None) -> 'Condition'
+```
+
+A leaf condition: ``when("steps.check.output.result", "eq", "ok")``.
+
+### `all_of`
+
+*function*
+
+```python
+def all_of(*conditions: 'Condition') -> 'Condition'
+```
+
+_No docstring. That is a bug in the library rather than in this page: the reader who found this symbol in their editor sees the same gap._
+
+### `any_of`
+
+*function*
+
+```python
+def any_of(*conditions: 'Condition') -> 'Condition'
+```
+
+_No docstring. That is a bug in the library rather than in this page: the reader who found this symbol in their editor sees the same gap._

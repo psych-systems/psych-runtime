@@ -292,3 +292,14 @@ is otherwise invisible: raise the ceiling, or ask the server for less.
 *exception*
 
 The builder was asked to produce a Spec it cannot construct.
+
+### `WorkflowRequired`
+
+*exception*
+
+```python
+class WorkflowRequired(run_id: 'str', reason: 'str') -> 'None'
+```
+
+An operation that only a workflow Run supports was asked of something
+else, or named a step the workflow does not have.

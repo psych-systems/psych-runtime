@@ -27,14 +27,22 @@ from typing import Any, Final
 from pydantic import BaseModel, ConfigDict
 
 from psych_runtime.core.components import Component
-from psych_runtime.core.ids import AttemptId, RunId, ToolCallId, VersionHash
+from psych_runtime.core.ids import AttemptId, RunId, StepId, ToolCallId, VersionHash
 from psych_runtime.core.questions import AskedQuestion
 from psych_runtime.core.records import SuspendReason, TerminalState
 from psych_runtime.core.reducer import RunStateView
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.tasks import Task
 
-__all__ = ["SETTLED_LIFECYCLE", "Lifecycle", "PendingApproval", "RunStatus", "status_of"]
+__all__ = [
+    "SETTLED_LIFECYCLE",
+    "Lifecycle",
+    "PendingApproval",
+    "PendingQuestion",
+    "PendingWait",
+    "RunStatus",
+    "status_of",
+]
 
 
 class Lifecycle(StrEnum):
@@ -72,7 +80,11 @@ class PendingApproval(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    call_id: ToolCallId
+    call_id: ToolCallId | None
+    """The model's tool call awaiting the decision, or ``None`` when the call
+    is a workflow ``tool`` step's, which has no call record and is addressed
+    by ``step_id`` instead."""
+    step_id: StepId | None = None
     tool: str
     arguments: dict[str, Any]
     question: str | None
@@ -92,9 +104,33 @@ class PendingQuestion(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    call_id: ToolCallId
+    call_id: ToolCallId | None
+    """The ``ask_question`` call, or ``None`` for a workflow ``human`` step,
+    which asks without a model and is addressed by ``step_id``."""
+    step_id: StepId | None = None
     questions: tuple[AskedQuestion, ...]
     summary: str
+    expires_at: datetime
+
+
+class PendingWait(BaseModel):
+    """A workflow step parked on something that is not a person's answer.
+
+    A ``wait`` step names the ``event`` a consumer's webhook handler should
+    deliver with ``psych_runtime.resume(payload=...)``, and the
+    ``payload_schema`` that payload must satisfy. A ``sleep`` or a retry
+    backoff carries ``wake_at`` instead: nothing is expected, the Run
+    continues on its own. A breakpoint carries neither: a resume is "go on".
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    step_id: StepId
+    step_name: str
+    reason: SuspendReason
+    event: str | None
+    payload_schema: dict[str, Any]
+    wake_at: datetime | None
     expires_at: datetime
 
 
@@ -120,6 +156,14 @@ class RunStatus(BaseModel):
     suspend_expires_at: datetime | None
     pending_approval: PendingApproval | None
     pending_question: PendingQuestion | None
+    pending_wait: PendingWait | None = None
+    """Set when a workflow step is waiting on an event, a timer or a
+    breakpoint. The third sibling of the two above, for a console that
+    renders "deliver the event", "wakes at", or "continue" rather than an
+    approval prompt."""
+    suspended_step_id: StepId | None = None
+    """The workflow step the current suspension belongs to, whatever its
+    reason, so a console can highlight it."""
     components: tuple[Component, ...]
     """Everything the agent has shown so far, oldest first. Here rather than
     only in the report for the reason the plan is: a card the agent produced on
@@ -165,6 +209,8 @@ def status_of(state: RunStateView) -> RunStatus:
         suspend_expires_at=state.suspend_expires_at,
         pending_approval=_pending_approval(state),
         pending_question=_pending_question(state),
+        pending_wait=_pending_wait(state),
+        suspended_step_id=state.suspended_step_id,
         components=state.components,
         tasks=state.tasks,
         turn=state.turn,
@@ -215,15 +261,38 @@ def _pending_question(state: RunStateView) -> PendingQuestion | None:
     question takes words. A console that had to tell them apart by reading
     `suspend_reason` would be one `if` away from offering the wrong control.
     """
-    if state.suspend_reason is not SuspendReason.QUESTION:
+    if state.suspend_reason is not SuspendReason.QUESTION or state.suspend_expires_at is None:
         return None
     call = state.pending_call
-    if call is None or state.suspend_expires_at is None:
+    if call is None and state.suspended_step_id is None:
         return None
     return PendingQuestion(
-        call_id=call.call_id,
+        call_id=call.call_id if call is not None else None,
+        step_id=state.suspended_step_id,
         questions=state.suspend_questions,
         summary=state.suspend_question or "",
+        expires_at=state.suspend_expires_at,
+    )
+
+
+def _pending_wait(state: RunStateView) -> PendingWait | None:
+    """A workflow step parked on an event, a timer or a breakpoint, or `None`."""
+    if state.suspended_step_id is None or state.suspend_expires_at is None:
+        return None
+    if state.suspend_reason not in (
+        SuspendReason.EXTERNAL,
+        SuspendReason.TIMER,
+        SuspendReason.BREAKPOINT,
+    ):
+        return None
+    step = state.steps.get(state.suspended_step_id)
+    return PendingWait(
+        step_id=state.suspended_step_id,
+        step_name=state.suspended_step_name or (step.name if step is not None else ""),
+        reason=state.suspend_reason,
+        event=state.suspend_event,
+        payload_schema={},
+        wake_at=state.suspend_wake_at,
         expires_at=state.suspend_expires_at,
     )
 
@@ -235,15 +304,29 @@ def _pending_approval(state: RunStateView) -> PendingApproval | None:
     a question also parks the Run with a pending call, and without this a
     console would offer Approve and Deny for something that needs words.
     """
-    if state.suspend_reason is not SuspendReason.APPROVAL:
+    if state.suspend_reason is not SuspendReason.APPROVAL or state.suspend_expires_at is None:
         return None
     call = state.pending_call
-    if call is None or state.suspend_expires_at is None:
+    if call is not None:
+        return PendingApproval(
+            call_id=call.call_id,
+            tool=call.tool,
+            arguments=dict(call.arguments),
+            question=state.suspend_question,
+            expires_at=state.suspend_expires_at,
+        )
+    if state.suspended_step_id is None:
+        return None
+    # A workflow tool step's approval: the call has no record of its own, so
+    # the tool and its resolved arguments come from the step's start record.
+    step = state.steps.get(state.suspended_step_id)
+    if step is None:
         return None
     return PendingApproval(
-        call_id=call.call_id,
-        tool=call.tool,
-        arguments=dict(call.arguments),
+        call_id=None,
+        step_id=step.step_id,
+        tool=str(step.input.get("tool", step.name)),
+        arguments=dict(step.input.get("arguments", {})),
         question=state.suspend_question,
         expires_at=state.suspend_expires_at,
     )

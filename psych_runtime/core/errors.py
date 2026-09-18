@@ -27,6 +27,7 @@ __all__ = [
     "TransientError",
     "ValidationIssue",
     "VersionNotFound",
+    "WorkflowRequired",
 ]
 
 
@@ -240,6 +241,16 @@ class SuspensionExpired(PsychError):
         self.run_id = run_id
         self.reason = reason
         super().__init__(f"run {run_id} was suspended for {reason} and waited past its expiry")
+
+
+class WorkflowRequired(PsychError):
+    """An operation that only a workflow Run supports was asked of something
+    else, or named a step the workflow does not have."""
+
+    def __init__(self, run_id: str, reason: str) -> None:
+        self.run_id = run_id
+        self.reason = reason
+        super().__init__(reason)
 
 
 class AccessDenied(PsychError):

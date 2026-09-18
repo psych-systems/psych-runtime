@@ -156,6 +156,9 @@ SUSPEND_TASK_STATES: Final[Mapping[SuspendReason, TaskState]] = {
     # A timer is nobody's turn to act. Telling a client INPUT_REQUIRED for a
     # Run that is merely sleeping would have it prompt a person for input the
     # Run will never read.
+    SuspendReason.TIMER: TaskState.WORKING,
+    # A breakpoint is a person's turn: the Run continues when they say so.
+    SuspendReason.BREAKPOINT: TaskState.INPUT_REQUIRED,
     # A parent waiting on its own children is working, not stuck. Nothing is
     # being asked of the caller: the work is going on, in Runs this Psych
     # admitted and will resume the parent from. INPUT_REQUIRED would have a

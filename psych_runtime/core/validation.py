@@ -29,6 +29,7 @@ from psych_runtime.core.spec import (
     ToolStep,
     WorkflowSpec,
     WorkflowStepRef,
+    iter_steps,
 )
 
 __all__ = ["ValidationContext", "collect_issues", "validate_spec"]
@@ -177,7 +178,9 @@ def _visit_workflow(
     _check_mcp(spec, ctx, path, issues)
 
     workflow_tool_names = {tool.name for tool in spec.tools}
-    for step in spec.steps:
+    # Every step in the tree, so a tool step inside a branch arm or a loop
+    # body is checked exactly as a top-level one.
+    for step in iter_steps(spec.steps):
         step_path = f"{path}.steps.{step.name}"
         if isinstance(step, ToolStep):
             if step.tool not in workflow_tool_names and step.tool not in ctx.registered_tools:

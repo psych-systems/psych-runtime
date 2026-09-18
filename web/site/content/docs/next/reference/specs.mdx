@@ -57,7 +57,7 @@ A Step that loops Turns until a stop condition (DESIGN.md §5).
 *model*
 
 ```python
-class WorkflowSpec(*, kind: Literal['workflow'] = 'workflow', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', steps: Annotated[tuple[Annotated[psych_runtime.core.spec.AgentStep | psych_runtime.core.spec.ToolStep | psych_runtime.core.spec.WorkflowStepRef, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...], MinLen(min_length=1)], tools: tuple[typing.Annotated[psych_runtime.core.spec.CodeTool | psych_runtime.core.spec.HttpTool, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...] = (), mcp_servers: tuple[psych_runtime.core.spec.McpServer, ...] = (), limits: psych_runtime.core.spec.Limits = <factory>, suspension: psych_runtime.core.spec.SuspensionPolicy = <factory>)
+class WorkflowSpec(*, kind: Literal['workflow'] = 'workflow', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', steps: Annotated[tuple[Annotated[psych_runtime.core.spec.AgentStep | psych_runtime.core.spec.ToolStep | psych_runtime.core.spec.WorkflowStepRef | psych_runtime.core.spec.ParallelStep | psych_runtime.core.spec.BranchStep | psych_runtime.core.spec.ForEachStep | psych_runtime.core.spec.LoopStep | psych_runtime.core.spec.MapStep | psych_runtime.core.spec.SetStateStep | psych_runtime.core.spec.SleepStep | psych_runtime.core.spec.WaitStep | psych_runtime.core.spec.HumanStep, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...], MinLen(min_length=1)], tools: tuple[typing.Annotated[psych_runtime.core.spec.CodeTool | psych_runtime.core.spec.HttpTool, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...] = (), mcp_servers: tuple[psych_runtime.core.spec.McpServer, ...] = (), limits: psych_runtime.core.spec.Limits = <factory>, suspension: psych_runtime.core.spec.SuspensionPolicy = <factory>, input_schema: dict[str, typing.Any] | None = None, initial_state: dict[str, typing.Any] = <factory>, output: dict[str, typing.Annotated[psych_runtime.core.spec.ValuePath | psych_runtime.core.spec.LiteralValue, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]] | None = None, retry: psych_runtime.core.spec.RetryPolicy = <factory>)
 ```
 
 A Step that sequences other Steps deterministically (DESIGN.md §5).
@@ -76,55 +76,455 @@ two.
 | `mcp_servers` | `tuple` |  |
 | `limits` | `Limits` |  |
 | `suspension` | `SuspensionPolicy` |  |
+| `input_schema` | `dict[str, Any] | None` |  |
+| `initial_state` | `dict` |  |
+| `output` | `dict[str, spec.ValuePath | spec.LiteralValue] | None` |  |
+| `retry` | `RetryPolicy` |  |
 
 ### `AgentStep`
 
 *model*
 
 ```python
-class AgentStep(*, kind: Literal['agent'] = 'agent', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], spec: psych_runtime.core.spec.AgentSpec)
+class AgentStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['agent'] = 'agent', spec: psych_runtime.core.spec.AgentSpec, input: dict[str, typing.Annotated[psych_runtime.core.spec.ValuePath | psych_runtime.core.spec.LiteralValue, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]] = <factory>)
 ```
 
-A workflow step that runs an agent.
+A workflow step that runs an agent to completion inside this Run.
+
+``input`` maps the nested agent's Run input. Its ``message`` field, when
+mapped, is the first user message the agent sees; every other field is
+serialised for it. Unmapped, the agent receives the workflow's own input.
 
 | Field | Type | Notes |
 |---|---|---|
-| `kind` | `Literal` |  |
 | `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
 | `spec` | `AgentSpec` |  |
+| `input` | `dict` |  |
 
 ### `ToolStep`
 
 *model*
 
 ```python
-class ToolStep(*, kind: Literal['tool'] = 'tool', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], tool: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], arguments: dict[str, typing.Any] = <factory>)
+class ToolStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['tool'] = 'tool', tool: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], arguments: dict[str, typing.Any] = <factory>, arguments_from: dict[str, typing.Annotated[psych_runtime.core.spec.ValuePath | psych_runtime.core.spec.LiteralValue, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]] = <factory>)
 ```
 
-A workflow step that calls one tool with fixed arguments.
+A workflow step that calls one tool.
+
+``arguments`` are written down; ``arguments_from`` fills or overrides
+argument names from values the workflow already has. Both are resolved
+before the call and the resolved arguments are what the log records.
 
 | Field | Type | Notes |
 |---|---|---|
-| `kind` | `Literal` |  |
 | `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
 | `tool` | `str` |  |
 | `arguments` | `dict` |  |
+| `arguments_from` | `dict` |  |
 
 ### `WorkflowStepRef`
 
 *model*
 
 ```python
-class WorkflowStepRef(*, kind: Literal['workflow'] = 'workflow', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], spec: psych_runtime.core.spec.WorkflowSpec)
+class WorkflowStepRef(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['workflow'] = 'workflow', spec: psych_runtime.core.spec.WorkflowSpec, input: dict[str, typing.Annotated[psych_runtime.core.spec.ValuePath | psych_runtime.core.spec.LiteralValue, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]] = <factory>)
 ```
 
-A workflow step that runs a nested workflow.
+A workflow step that runs a nested workflow, sharing this Run's log.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `spec` | `WorkflowSpec` |  |
+| `input` | `dict` |  |
+
+### `ParallelStep`
+
+*model*
+
+```python
+class ParallelStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['parallel'] = 'parallel', branches: Annotated[tuple[Annotated[psych_runtime.core.spec.AgentStep | psych_runtime.core.spec.ToolStep | psych_runtime.core.spec.WorkflowStepRef | psych_runtime.core.spec.ParallelStep | psych_runtime.core.spec.BranchStep | psych_runtime.core.spec.ForEachStep | psych_runtime.core.spec.LoopStep | psych_runtime.core.spec.MapStep | psych_runtime.core.spec.SetStateStep | psych_runtime.core.spec.SleepStep | psych_runtime.core.spec.WaitStep | psych_runtime.core.spec.HumanStep, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...], MinLen(min_length=1)], on_branch_failure: Literal['fail_fast', 'wait_all'] = 'fail_fast')
+```
+
+Run every branch at once; the output is each branch's output by name.
+
+``fail_fast`` cancels the other branches at the first failure. ``wait_all``
+lets them finish and then reports the first failure, for branches whose
+side effects should complete even when a sibling did not.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `branches` | `tuple` |  |
+| `on_branch_failure` | `Literal` |  |
+
+### `BranchStep`
+
+*model*
+
+```python
+class BranchStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['branch'] = 'branch', cases: Annotated[tuple[psych_runtime.core.spec.BranchCase, ...], MinLen(min_length=1)], otherwise: Optional[Annotated[psych_runtime.core.spec.AgentStep | psych_runtime.core.spec.ToolStep | psych_runtime.core.spec.WorkflowStepRef | psych_runtime.core.spec.ParallelStep | psych_runtime.core.spec.BranchStep | psych_runtime.core.spec.ForEachStep | psych_runtime.core.spec.LoopStep | psych_runtime.core.spec.MapStep | psych_runtime.core.spec.SetStateStep | psych_runtime.core.spec.SleepStep | psych_runtime.core.spec.WaitStep | psych_runtime.core.spec.HumanStep, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]] = None, mode: Literal['first', 'all'] = 'first')
+```
+
+Choose which step runs by evaluating conditions.
+
+``first`` runs the first case whose condition holds, or ``otherwise``;
+``all`` runs every case that holds, concurrently. The output carries
+``chosen`` (the case names that ran) and each ran case's output by name.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `cases` | `tuple` |  |
+| `otherwise` | `Union` |  |
+| `mode` | `Literal` |  |
+
+### `BranchCase`
+
+*model*
+
+```python
+class BranchCase(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], when: psych_runtime.core.spec.Condition, step: psych_runtime.core.spec.AgentStep | psych_runtime.core.spec.ToolStep | psych_runtime.core.spec.WorkflowStepRef | psych_runtime.core.spec.ParallelStep | psych_runtime.core.spec.BranchStep | psych_runtime.core.spec.ForEachStep | psych_runtime.core.spec.LoopStep | psych_runtime.core.spec.MapStep | psych_runtime.core.spec.SetStateStep | psych_runtime.core.spec.SleepStep | psych_runtime.core.spec.WaitStep | psych_runtime.core.spec.HumanStep)
+```
+
+One arm of a ``BranchStep``.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `when` | `Condition` |  |
+| `step` | `spec.AgentStep | spec.ToolStep | spec.WorkflowStepRef | spec.ParallelStep | spec.BranchStep | spec.ForEachStep | spec.LoopStep | spec.MapStep | spec.SetStateStep | spec.SleepStep | spec.WaitStep | spec.HumanStep` |  |
+
+### `ForEachStep`
+
+*model*
+
+```python
+class ForEachStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['foreach'] = 'foreach', items: psych_runtime.core.spec.ValuePath, body: psych_runtime.core.spec.AgentStep | psych_runtime.core.spec.ToolStep | psych_runtime.core.spec.WorkflowStepRef | psych_runtime.core.spec.ParallelStep | psych_runtime.core.spec.BranchStep | psych_runtime.core.spec.ForEachStep | psych_runtime.core.spec.LoopStep | psych_runtime.core.spec.MapStep | psych_runtime.core.spec.SetStateStep | psych_runtime.core.spec.SleepStep | psych_runtime.core.spec.WaitStep | psych_runtime.core.spec.HumanStep, concurrency: Annotated[int, Ge(ge=1), Le(le=64)] = 1, on_item_failure: Literal['fail_fast', 'wait_all'] = 'fail_fast')
+```
+
+Run ``body`` once per element of the list at ``items``.
+
+Each iteration sees its element as ``item`` and its position as ``index``.
+Iterations run ``concurrency`` at a time and each is memoised on its own,
+so a crash mid-list resumes with the finished elements kept. The output is
+``\{"items": [output per element, in order]}``.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `items` | `ValuePath` |  |
+| `body` | `spec.AgentStep | spec.ToolStep | spec.WorkflowStepRef | spec.ParallelStep | spec.BranchStep | spec.ForEachStep | spec.LoopStep | spec.MapStep | spec.SetStateStep | spec.SleepStep | spec.WaitStep | spec.HumanStep` |  |
+| `concurrency` | `int` |  |
+| `on_item_failure` | `Literal` |  |
+
+### `LoopStep`
+
+*model*
+
+```python
+class LoopStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['loop'] = 'loop', body: psych_runtime.core.spec.AgentStep | psych_runtime.core.spec.ToolStep | psych_runtime.core.spec.WorkflowStepRef | psych_runtime.core.spec.ParallelStep | psych_runtime.core.spec.BranchStep | psych_runtime.core.spec.ForEachStep | psych_runtime.core.spec.LoopStep | psych_runtime.core.spec.MapStep | psych_runtime.core.spec.SetStateStep | psych_runtime.core.spec.SleepStep | psych_runtime.core.spec.WaitStep | psych_runtime.core.spec.HumanStep, until: psych_runtime.core.spec.Condition | None = None, while_: psych_runtime.core.spec.Condition | None = None, max_iterations: Annotated[int, Ge(ge=1), Le(le=10000)] = 100)
+```
+
+Run ``body`` repeatedly: at least once, then while ``while_`` holds or
+until ``until`` holds, whichever is set.
+
+Each iteration sees its number as ``iteration`` (from 1) and the previous
+iteration's output as ``steps.&lt;body>.output``. ``max_iterations`` bounds
+the loop; reaching it is a failure of kind ``loop_exhausted``. The output
+is ``\{"iterations": n, "last": &lt;last body output>}``.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `body` | `spec.AgentStep | spec.ToolStep | spec.WorkflowStepRef | spec.ParallelStep | spec.BranchStep | spec.ForEachStep | spec.LoopStep | spec.MapStep | spec.SetStateStep | spec.SleepStep | spec.WaitStep | spec.HumanStep` |  |
+| `until` | `spec.Condition | None` |  |
+| `while_` | `spec.Condition | None` |  |
+| `max_iterations` | `int` |  |
+
+### `MapStep`
+
+*model*
+
+```python
+class MapStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['map'] = 'map', output: Annotated[dict[str, Annotated[psych_runtime.core.spec.ValuePath | psych_runtime.core.spec.LiteralValue, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]], MinLen(min_length=1)])
+```
+
+Shape data between steps, with no side effects.
+
+The output is ``output`` with every reference resolved. This is the one
+place a workflow rearranges values, and it is a step like any other so
+the shaping is in the log rather than hidden inside another step's input.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `output` | `dict` |  |
+
+### `SetStateStep`
+
+*model*
+
+```python
+class SetStateStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['set_state'] = 'set_state', values: Annotated[dict[str, Annotated[psych_runtime.core.spec.ValuePath | psych_runtime.core.spec.LiteralValue, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]], MinLen(min_length=1)])
+```
+
+Write values into the workflow's state.
+
+State is the small, named set of values a workflow carries across steps
+and loop iterations, read as ``state.&lt;name>``. It is derived from the log
+by folding every completed ``set_state`` step in order, so it survives a
+Worker crash without being stored anywhere else.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `values` | `dict` |  |
+
+### `SleepStep`
+
+*model*
+
+```python
+class SleepStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['sleep'] = 'sleep', seconds: Annotated[float | None, Gt(gt=0), Le(le=2592000)] = None, until: psych_runtime.core.spec.ValuePath | None = None)
+```
+
+Wait, holding no Worker: the Run releases its lease and is claimable
+again at the wake time. ``seconds`` or ``until`` (a path to an ISO 8601
+timestamp) sets it; exactly one is required.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `seconds` | `float | None` |  |
+| `until` | `spec.ValuePath | None` |  |
+
+### `WaitStep`
+
+*model*
+
+```python
+class WaitStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=2592000)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['wait'] = 'wait', event: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], payload_schema: dict[str, typing.Any] = <factory>)
+```
+
+Suspend until something outside the Run delivers a payload.
+
+The Run suspends with reason ``external`` naming ``event`` and, when set,
+``payload_schema``; ``psych_runtime.resume(payload=...)`` completes the step
+with the payload as its output. ``timeout_seconds`` bounds the wait; the
+suspension expires past it and the Run is abandoned, exactly as an
+unanswered approval is.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `event` | `str` |  |
+| `payload_schema` | `dict` |  |
+
+### `HumanStep`
+
+*model*
+
+```python
+class HumanStep(*, name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MaxLen(max_length=4096)] = '', when: psych_runtime.core.spec.Condition | None = None, retry: psych_runtime.core.spec.RetryPolicy | None = None, timeout_seconds: Annotated[float | None, Gt(gt=0), Le(le=86400)] = None, on_failure: Literal['fail', 'continue'] = 'fail', output_schema: dict[str, typing.Any] | None = None, ends_workflow: bool = False, kind: Literal['human'] = 'human', prompt: Annotated[str, MinLen(min_length=1), MaxLen(max_length=8192)], questions: tuple[psych_runtime.core.questions.AskedQuestion, ...] = (), expires_seconds: Annotated[float | None, Gt(gt=0), Le(le=2592000)] = None)
+```
+
+Stop and ask a person, without a model in the loop.
+
+Suspends with reason ``question`` carrying ``prompt`` and ``questions``;
+the answer delivered by ``psych_runtime.resume(payload=...)`` is the step's
+output. ``expires_seconds`` falls back to the workflow's
+``suspension.question_expires_seconds``.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `str` |  |
+| `description` | `str` |  |
+| `when` | `spec.Condition | None` |  |
+| `retry` | `spec.RetryPolicy | None` |  |
+| `timeout_seconds` | `float | None` |  |
+| `on_failure` | `Literal` |  |
+| `output_schema` | `dict[str, Any] | None` |  |
+| `ends_workflow` | `bool` |  |
+| `kind` | `Literal` |  |
+| `prompt` | `str` |  |
+| `questions` | `tuple` |  |
+| `expires_seconds` | `float | None` |  |
+
+### `Condition`
+
+*model*
+
+```python
+class Condition(*, path: Annotated[str | None, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.\\-\\[\\]]{0,511}$')] = None, op: Literal['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'contains', 'exists', 'truthy', 'matches'] = 'truthy', value: Any = None, all_of: tuple[psych_runtime.core.spec.Condition, ...] = (), any_of: tuple[psych_runtime.core.spec.Condition, ...] = (), negate: bool = False)
+```
+
+A predicate over values the workflow already has.
+
+Exactly one of ``path``, ``all_of`` or ``any_of`` is set. A leaf compares
+the value at ``path`` against ``value`` with ``op``; a compound combines
+its children. ``negate`` inverts the result. Declarative on purpose: the
+engine evaluates it, records what it decided, and a reader can evaluate it
+again from the log by hand.
+
+| Field | Type | Notes |
+|---|---|---|
+| `path` | `str | None` |  |
+| `op` | `Literal` |  |
+| `value` | `Any` |  |
+| `all_of` | `tuple` |  |
+| `any_of` | `tuple` |  |
+| `negate` | `bool` |  |
+
+### `ValuePath`
+
+*model*
+
+```python
+class ValuePath(*, kind: Literal['path'] = 'path', path: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.\\-\\[\\]]{0,511}$')])
+```
+
+A reference to a value the workflow already has.
+
+Resolved by the engine when the step starts, against the Run's input, the
+outputs of completed steps, the workflow state, and the loop position:
+``input.customer_id``, ``steps.fetch.output.rows[0].id``, ``state.total``,
+``item.sku``, ``index``, ``iteration``. The resolved value is what lands in
+the step's ``step_started`` record, so the log shows what the step was
+actually given rather than a reference to go and look up.
 
 | Field | Type | Notes |
 |---|---|---|
 | `kind` | `Literal` |  |
-| `name` | `str` |  |
-| `spec` | `WorkflowSpec` |  |
+| `path` | `str` |  |
+
+### `LiteralValue`
+
+*model*
+
+```python
+class LiteralValue(*, kind: Literal['literal'] = 'literal', value: Any = None)
+```
+
+A value written down in the Spec, for a mapping that mixes constants
+with references.
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | `Literal` |  |
+| `value` | `Any` |  |
+
+### `RetryPolicy`
+
+*model*
+
+```python
+class RetryPolicy(*, max_attempts: Annotated[int, Ge(ge=1), Le(le=100)] = 1, backoff_seconds: Annotated[float, Ge(ge=0), Le(le=86400)] = 0.0, multiplier: Annotated[float, Ge(ge=1.0), Le(le=10.0)] = 2.0, max_backoff_seconds: Annotated[float, Gt(gt=0), Le(le=86400)] = 3600.0, retry_on: tuple[str, ...] = ())
+```
+
+How a failed step is retried before the failure counts.
+
+``max_attempts`` is the total including the first, so the default of one
+means no retry. A backoff parks the Run between attempts by releasing its
+lease rather than sleeping on a Worker, so a long backoff costs nothing
+while it waits. ``retry_on`` narrows retries to the named failure kinds;
+empty retries any failure.
+
+| Field | Type | Notes |
+|---|---|---|
+| `max_attempts` | `int` |  |
+| `backoff_seconds` | `float` |  |
+| `multiplier` | `float` |  |
+| `max_backoff_seconds` | `float` |  |
+| `retry_on` | `tuple` |  |
 
 ### `ModelRef`
 
@@ -866,11 +1266,22 @@ Fluent construction of a ``WorkflowSpec``.
 spec = (
     WorkflowBuilder("onboard-customer")
     .tool(create_account)
-    .tool_step("create", "create_account", \{"plan": "starter"})
+    .tool_step("create", "create_account", arguments_from=\{"email": ref("input.email")})
+    .branch(
+        "tier",
+        ("paid", when("input.plan", "ne", "free"), ToolStep(name="bill", tool="charge")),
+        otherwise=MapStep(name="free", output=\{"charged": lit(False)}),
+    )
     .agent_step("welcome", AgentBuilder("greeter").model("gpt-4o-mini"))
+    .output(account=ref("steps.create.output.result"))
     .build()
 )
 ```
+
+Composite steps take their children as Spec models (``ToolStep``,
+``MapStep`` and the rest, all on ``psych_runtime``), so nesting reads the
+way the tree runs; ``ref``, ``lit``, ``when``, ``all_of`` and ``any_of``
+build the references and conditions.
 
 A step's ``name`` is what ``psych_runtime.core.validation`` and a report address
 it by, so it must be unique within one workflow; the Spec model enforces

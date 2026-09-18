@@ -41,6 +41,7 @@ the Run settled ``FAILED`` with "the attempt raised" rather than ``ABORTED``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -100,6 +101,13 @@ class Journal:
         self.scope = scope
         self._state = state
         self.attempt_id = attempt_id
+        # One Attempt, several coroutines: a workflow's parallel branches
+        # append through the same Journal. The sequence is read from the state
+        # and the write awaits the store, and two appends interleaving between
+        # those two points would both claim the same sequence, so the whole of
+        # an append is one critical section. The single-writer rule is about
+        # Attempts, and this is what keeps one Attempt a single writer.
+        self._lock = asyncio.Lock()
 
     @classmethod
     async def open(
@@ -144,12 +152,13 @@ class Journal:
             CorruptLog: this record would make the log impossible. Raised before
                 the write, so a bug here cannot persist a contradiction.
         """
-        try:
-            return await self._append_once(fields)
-        except SeqConflict:
-            if not await self._absorb_external_records():
-                raise
-            return await self._append_once(fields)
+        async with self._lock:
+            try:
+                return await self._append_once(fields)
+            except SeqConflict:
+                if not await self._absorb_external_records():
+                    raise
+                return await self._append_once(fields)
 
     async def _append_once(self, fields: dict[str, Any]) -> Record:
         record: Record = RECORD_ADAPTER.validate_python(
@@ -186,7 +195,8 @@ class Journal:
                 appeared. Another Worker owns this log now, and this one must
                 stop; the caller treats it exactly as a lost lease.
         """
-        return await self._absorb_external_records()
+        async with self._lock:
+            return await self._absorb_external_records()
 
     async def _absorb_external_records(self) -> bool:
         foreign = await self._store.read(self.run_id, after=self._state.head_seq)

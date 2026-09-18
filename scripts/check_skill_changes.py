@@ -46,6 +46,16 @@ RULES = (
     ),
     Rule(("psych_runtime/testing/mcp_stub.py",), ".agents/skills/psych-testing/SKILL.md"),
     Rule(("psych_runtime/tools/large_results.py",), ".agents/skills/psych-blobs/SKILL.md"),
+    Rule(
+        (
+            "psych_runtime/runtime/workflow.py",
+            "psych_runtime/runtime/workflow_replay.py",
+            "psych_runtime/core/workflow_values.py",
+            "psych_runtime/core/workflow_view.py",
+            "psych_runtime/builder/workflow.py",
+        ),
+        ".agents/skills/psych-workflows/SKILL.md",
+    ),
 )
 
 

@@ -72,6 +72,7 @@ from psych_runtime.core.records import (
     QueueEnqueued,
     Record,
     RunAdmitted,
+    StepStarted,
     SubagentFinished,
     ToolCallFinished,
     ToolCallStarted,
@@ -82,7 +83,7 @@ from psych_runtime.core.records import (
 __all__ = ["build_conversation", "child_finished_text"]
 
 
-def build_conversation(records: Iterable[Record]) -> list[Message]:
+def build_conversation(records: Iterable[Record]) -> list[Message]:  # noqa: PLR0912 - one arm per record kind
     """Project a record log into the messages the model should receive.
 
     Excludes the system message, which ``psych_runtime.model.prompt.assemble`` owns and
@@ -118,6 +119,15 @@ def build_conversation(records: Iterable[Record]) -> list[Message]:
         match record:
             case RunAdmitted():
                 text = _input_text(record.input)
+                if text:
+                    messages.append(UserMessage(content=text))
+
+            case StepStarted() if record.kind == "agent" and "input" in record.input:
+                # A workflow agent step with a mapped `input`: what that
+                # mapping produced is the user message the nested agent is
+                # answering, emitted here so the log position of the step is
+                # the position of the message.
+                text = _input_text(record.input["input"])
                 if text:
                     messages.append(UserMessage(content=text))
 
@@ -207,7 +217,7 @@ def _compaction(records: Sequence[Record]) -> tuple[int, list[str]]:
     return boundary, summaries
 
 
-def _input_text(payload: dict[str, Any]) -> str:
+def _input_text(payload: Any) -> str:
     """The Run's input, as text for the model.
 
     A ``message`` or ``input`` key is used directly, because that is what a
@@ -216,6 +226,8 @@ def _input_text(payload: dict[str, Any]) -> str:
     silently ignoring a payload the caller provided is worse than showing them
     JSON.
     """
+    if not isinstance(payload, dict):
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False) if payload else ""
     for key in ("message", "input", "text", "prompt"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():

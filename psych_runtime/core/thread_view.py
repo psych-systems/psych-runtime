@@ -61,6 +61,7 @@ from psych_runtime.core.records import (
     QueueEnqueued,
     Record,
     RunAdmitted,
+    StepStarted,
     SubagentFinished,
     ToolCallFinished,
     ToolOutcome,
@@ -140,6 +141,16 @@ def message_views(records: Iterable[Record]) -> list[MessageView]:  # noqa: PLR0
         match record:
             case RunAdmitted():
                 text = _input_text(record.input)
+                if text:
+                    views.append(
+                        MessageView(
+                            role="user", content=text, run_id=run_id, seq=record.seq, at=record.at
+                        )
+                    )
+            case StepStarted() if record.kind == "agent" and "input" in record.input:
+                # Same rule as build_conversation: a workflow agent step's
+                # mapped input is the message its agent answers.
+                text = _input_text(record.input["input"])
                 if text:
                     views.append(
                         MessageView(

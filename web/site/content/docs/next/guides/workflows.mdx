@@ -22,52 +22,175 @@ agent, which is how "validate, then let a model draft, then send" is written.
 ## Building one
 
 ```python
-spec = psych_runtime.WorkflowSpec(
-    name="onboard-customer",
-    description="Create the account, then greet them.",
-    steps=(
-        psych_runtime.ToolStep(name="create", tool="create_account", arguments={"plan": "starter"}),
-        psych_runtime.AgentStep(name="welcome", spec=greeter_agent_spec),
-        psych_runtime.WorkflowStepRef(name="provision", spec=provisioning_workflow),
-    ),
-    tools=(psych_runtime.CodeTool(name="create_account"),),
-    limits=psych_runtime.Limits(max_steps=64),
+from psych_runtime import ref, lit, when
+
+spec = (
+    psych_runtime.workflow("onboard-customer")
+    .tool(create_account)
+    .tool(charge)
+    .tool_step("create", "create_account", arguments_from={"email": ref("input.email")})
+    .branch(
+        "tier",
+        ("paid", when("input.plan", "ne", "free"),
+         psych_runtime.ToolStep(name="bill", tool="charge",
+                                arguments_from={"account": ref("steps.create.output.result")})),
+        otherwise=psych_runtime.MapStep(name="free", output={"charged": lit(False)}),
+    )
+    .agent_step("welcome", greeter, input={"message": ref("input.email")})
+    .output(account=ref("steps.create.output.result"), tier=ref("steps.tier.output.chosen"))
+    .build()
 )
 ```
 
-All three step types are on `psych` itself. The builder in `psych-builder` is
-usually shorter.
+Every step type is on `psych_runtime` itself and the same Spec can be written as
+a dict or JSON: the builder produces data and stops.
 
-## Three step kinds
+## Twelve step kinds
 
-| Kind | Fields | Runs |
+| Kind | Model | Runs |
 |---|---|---|
-| `ToolStep` | `name`, `tool`, `arguments` | One tool with fixed arguments. No model call. |
-| `AgentStep` | `name`, `spec` | A nested agent to completion. |
-| `WorkflowStepRef` | `name`, `spec` | A nested workflow. |
+| `tool` | `ToolStep(tool, arguments, arguments_from)` | One tool. `arguments` are written down; `arguments_from` fills names from references. No model call. |
+| `agent` | `AgentStep(spec, input)` | A nested agent to completion, in this Run's log. `input.message` is its first user message. |
+| `workflow` | `WorkflowStepRef(spec, input)` | A nested workflow: its own step namespace, fed by `input`; shares the workflow state. |
+| `parallel` | `ParallelStep(branches, on_branch_failure)` | Every branch at once. Output: `{branch_name: output}`. |
+| `branch` | `BranchStep(cases, otherwise, mode)` | `first` runs the first case whose condition holds; `all` runs every one that holds. Output: `{"chosen": [...], case_step_name: output}`. Cases not chosen are recorded as skipped. |
+| `foreach` | `ForEachStep(items, body, concurrency, on_item_failure)` | `body` once per element; `item` and `index` are readable inside. Output: `{"items": [...], "count": n}`. |
+| `loop` | `LoopStep(body, until \| while, max_iterations)` | `body` at least once, then until/while the condition holds; `iteration` (from 1) is readable inside. Output: `{"iterations": n, "last": output}`. Running out is failure kind `loop_exhausted`. |
+| `map` | `MapStep(output)` | Shapes data; the output is the mapping resolved. No side effects. |
+| `set_state` | `SetStateStep(values)` | Writes into the workflow state (`state.<name>`), which is `initial_state` under every completed `set_state`, folded from the log. |
+| `sleep` | `SleepStep(seconds \| until)` | Parks the Run without a Worker; a claim wakes it at the time. Output: `{"woken_by": "timer"}`. |
+| `wait` | `WaitStep(event, payload_schema, timeout_seconds)` | Suspends as `external` naming the event; `psych_runtime.resume(payload=...)` completes it with the payload as output. |
+| `human` | `HumanStep(prompt, questions, expires_seconds)` | Suspends as `question` with no model in the loop; the answer payload is the output. |
 
-`arguments` on a `ToolStep` is fixed at authoring time. A workflow does not let
-a model choose arguments; that is what an `AgentStep` is for.
+Every step also takes `when` (a guard; false records the step as skipped),
+`retry` (a `RetryPolicy`, else the workflow's `retry`), `timeout_seconds`
+(failure kind `step_timeout`), `on_failure` (`fail`, the default, stops the
+workflow; `continue` records the failure and moves on with `None` as the
+output), `output_schema` (a JSON Schema; a violation is failure kind
+`schema_violation`, retried like any other) and `ends_workflow` (an early,
+successful exit once this step completes; the steps after it are never
+reached and stay `pending`).
+
+## Data flows by reference, never by template
+
+A `ValuePath` names a value the workflow already has. Roots: `input.<field>`
+(the Run's input), `steps.<name>.output...` (and `.failure`, `.skipped`,
+`.status`), `state.<name>`, `item` and `index` inside a `foreach`, `iteration`
+inside a `loop`. Segments are dotted names and `[i]` indexes. A `Mapping` is
+field name to `ValuePath | LiteralValue`; `ref()` and `lit()` build them.
+
+The step's resolved inputs land on its `step_started` record, so the log
+says what each step was actually given. A path that does not resolve fails
+the step with kind `unresolved_path` naming the path and what *was* there,
+rather than feeding `None` to a tool that would fail later and further away.
+
+`Condition` is a leaf `{path, op, value}` (`eq ne gt gte lt lte in contains
+exists truthy matches`), or `all_of` / `any_of` groups, with `negate`. It is
+data, evaluated by the engine, so the decision it made can be re-derived from
+the log. `when()`, `all_of()`, `any_of()` build them.
+
+The workflow's own output is `output` (a mapping) when set, else every
+top-level step's output by name. `input_schema` checks the Run input before
+the first step runs.
 
 ## Step names are the memoisation key
 
-They must be unique within one workflow, and the Spec model enforces that at
-validation. Two consequences worth knowing before you rename anything:
+Names must be unique across the whole workflow tree, including branch arms and
+loop bodies, because a `ValuePath` addresses a step by name from anywhere; the
+Spec enforces it. A nested workflow is its own namespace. Consequences:
 
 - A report addresses a step by its name, so renaming a step in a published Spec
   produces a different Version, which is correct: it is a different workflow.
-- Memoisation is keyed by the step id derived from the name and position. A
-  resume finds "create" already completed and does not create a second account.
+- Memoisation is keyed by the step id derived from the Run id and the step's
+  path (node names and loop indices). A resume finds "create" already
+  completed and does not create a second account.
+
+## Waiting holds no Worker
+
+Sleep, retry backoff, `wait`, `human`, a tool step's approval and a breakpoint
+all suspend the Run (`psych-suspend-resume`) with the step named on the
+`suspended` record: `status.suspended_step_id`, and `status.pending_wait` for a
+timer, event or breakpoint, `pending_question` for a `human` step,
+`pending_approval` (with `call_id=None`, `step_id` set) for a tool step the
+`Policy` asked a person about. The Worker releases the lease; whichever Worker
+claims the Run next re-enters the walk, skips the memoised steps, and finds the
+answer in the log. Nothing about a wait lives in a process.
+
+A tool step whose `Policy.allow_tool` returns `Decision.ask()` suspends for
+approval exactly as a model's tool call does. `resume(approved=False)` fails
+the step with kind `denied`, which is never retried.
+
+## Retries and timeouts
+
+```python
+psych_runtime.RetryPolicy(max_attempts=4, backoff_seconds=2, multiplier=2, max_backoff_seconds=60,
+                          retry_on=("http_500", "timeout"))
+```
+
+`max_attempts` counts the first try. A failed attempt is recorded as
+`step_completed(failure, will_retry=True, retry_at=...)`; the next attempt is
+its own `step_started` with `attempt_number + 1`, so `report.steps` shows one
+row per attempt. A backoff parks the Run (`SuspendReason.TIMER`, then a claim
+wakes it) rather than sleeping on a Worker. Composite steps are not retried as
+a whole: the child that failed owns the retry.
+
+`Limits.max_steps` (default 48) bounds every `step_started` in the Run, loop
+iterations and foreach items included; passing it fails the step being
+started with kind `budget_exhausted`.
+
+## Seeing it: `workflow_view`
+
+```python
+view = await psych_runtime.workflow_view(store, run_id, scope=scope)
+for step in view.steps:            # StepView, in Spec order, children inside
+    step.status                    # pending running waiting completed failed retrying skipped replayed
+    step.attempts, step.input, step.output, step.failure, step.started_at, step.completed_at
+    step.children                  # branches, arms, iterations, items, a nested workflow's steps
+view.waiting                       # WaitingStep: the step the Run is parked on, and why
+view.state, view.output, view.step_starts, view.completed, view.failed
+```
+
+Derived from the same fold the engine uses, so a console and the runtime never
+disagree about whether a branch was taken. `report.steps` carries the same per
+attempt (`path`, `parent_step_id`, `iteration`, `skipped`, `will_retry`,
+`replayed_from`, `started_at`, `completed_at`), and `report.suspensions` says
+which step each wait belonged to.
+
+## Debugging: breakpoints and step mode
+
+```python
+run = await psych_runtime.dispatch(store, version, scope, input=..., breakpoints=("bill",))
+run = await psych_runtime.dispatch(store, version, scope, input=..., step_mode=True)
+```
+
+The Run suspends with `SuspendReason.BREAKPOINT` before the named step (or
+before every step). `resume()` continues; a payload of `{"step_mode": True}`
+or `{"step_mode": False}` turns stepping on or off for the rest of the Run.
+Breakpoints are an admission-time property of the Run, not of the Spec, so the
+Version hash does not change.
+
+## Replay: rerun from a step, without rewriting history
+
+```python
+again = await psych_runtime.replay(store, run_id, from_step="bill", input={"plan": "pro"}, scope=scope)
+```
+
+Admits a **new** Run that copies every step the source Run settled before
+`from_step` into its own log (`step_started(replayed_from=run_id)` +
+`step_completed`, status `replayed` in the view) and executes from there. Pass
+`input` to change what later steps see, or `version` to run a corrected
+Version whose earlier steps kept their names and positions. The source Run is
+untouched. `from_step` must be a top-level step; anything else is
+`WorkflowRequired`.
 
 ## Crash resume
 
-This is the property to test, and Psych's own e2e suite asserts it: a workflow
-with a nested agent, killed mid-run, resumes from its last completed step and
-does not re-execute the completed ones. Nothing about that lives in a process.
-It follows from the log plus the memoisation, so you get it without writing
-anything.
-
-`Limits.max_steps` (default 48) bounds the whole Run, nested steps included.
+Psych's own e2e suite asserts it: a workflow killed mid-run resumes from its
+last completed step and does not re-execute the completed ones, including a
+finished branch of a parallel step whose sibling was in flight. It follows
+from the log plus the memoisation, so you get it without writing anything. The
+unit of restart is a step: one that crashed halfway re-runs from its start, so
+size steps as things you would be willing to repeat.
 
 ## Publishing and running
 
@@ -78,26 +201,29 @@ Worker executes both kinds:
 version = await psych_runtime.publish(
     store, spec, context=psych_runtime.ValidationContext(registered_tools=registry.names)
 )
-run = await psych_runtime.dispatch(store, version, scope, input={"customer_id": "c-1"})
+run = await psych_runtime.dispatch(store, version, scope, input={"email": "a@b.c", "plan": "pro"})
 ```
-
-`psych_runtime.report()` fills `report.steps` with a `StepReport` per step: its
-`step_id`, `name`, `kind`, `attempt_number`, `input`, `completed`, `output`,
-`failure`, and `child_run_id` plus a nested `child` report for an agent or
-workflow step.
 
 ## Gotchas
 
-- **A step's tool must be granted.** Either on the workflow's own `tools`, or
-  registered in the process the Run executes in. Publish-time validation checks
-  the first and names the second as a possibility when it cannot.
+- **A step's tool must be granted**, on the workflow's `tools` or registered
+  in the executing process, and that holds for a tool step deep inside a
+  branch arm or loop body. Publish-time validation walks the whole tree.
 - **Order is never sorted.** Tools and MCP servers on a Spec are sorted sets, so
-  declaration order does not affect the hash. `steps` is not, because order is
-  exactly what "sequences deterministically" means.
-- **A workflow has no `instructions` and no `model`.** It runs steps. Anything
-  needing a model is an `AgentStep`.
-- **`steps` must be non-empty.** A workflow with no steps is refused at
-  validation rather than completing instantly.
+  declaration order does not affect the hash. `steps` and `branches` are not,
+  because order is exactly what "sequences deterministically" means.
+- **A workflow has no `instructions` and no `model`.** Anything needing a model
+  is an `AgentStep`. An agent step's mapped `input.message` reaches the model
+  as the user message at that step; unmapped, the agent sees the Run's input.
+- **`steps` must be non-empty**, a `loop` sets exactly one of `until`/`while`,
+  a `sleep` exactly one of `seconds`/`until`, a `Condition` exactly one of
+  `path`/`all_of`/`any_of`. All refused at validation.
+- **A suspension in one parallel branch pauses the whole Run.** Siblings still
+  in flight are cancelled and re-run from their own starts on resume; what
+  they had completed stays completed.
+- **`state` is shared with nested workflows** and is one flat namespace.
+  `steps.<name>` is not: a nested workflow's steps are addressed only from
+  inside it, and its result reaches the parent as the nested step's output.
 - **An `AgentStep` keeps its agent's own failure kind.** A nested agent that
   ends on its turn budget records the step's failure as `budget_exhausted`
   with the agent's traceback, never as `StepFailed` with the engine's.

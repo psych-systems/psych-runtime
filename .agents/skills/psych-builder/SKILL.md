@@ -101,17 +101,42 @@ Workflow-only: `.description()`, `.tool_step()`, `.agent_step()`,
 ## A workflow
 
 ```python
+from psych_runtime import ref, lit, when
+
 spec = (
     psych_runtime.workflow("onboard-customer")
     .tool(create_account)
-    .tool_step("create", "create_account", {"plan": "starter"})
-    .agent_step("welcome", psych_runtime.agent("greeter").model("gpt-4o-mini"))
+    .tool(charge)
+    .tool_step("create", "create_account", arguments_from={"email": ref("input.email")})
+    .branch(
+        "tier",
+        ("paid", when("input.plan", "ne", "free"),
+         psych_runtime.ToolStep(name="bill", tool="charge",
+                                arguments_from={"account": ref("steps.create.output.result")})),
+        otherwise=psych_runtime.MapStep(name="free", output={"charged": lit(False)}),
+    )
+    .agent_step("welcome", psych_runtime.agent("greeter").model("gpt-4o-mini"),
+                input={"message": ref("input.email")})
+    .output(account=ref("steps.create.output.result"))
     .build()
 )
 ```
 
 `.agent_step()` and `.subagent()` accept a built Spec or another builder, so a
 child can be composed inline without a separate variable.
+
+One method per step kind: `.tool_step()`, `.agent_step()`, `.workflow_step()`,
+`.parallel(name, *steps)`, `.branch(name, *(case, when, step), otherwise=)`,
+`.foreach(name, items, body)`, `.loop(name, body, until= | while_=)`,
+`.map(name, **fields)`, `.set_state(name, **values)`, `.sleep(name, seconds= |
+until=)`, `.wait(name, event)`, `.human(name, prompt)`, and `.step(step)` for
+anything built directly from the Spec models. Composite steps take their
+children as Spec models, so the nesting reads the way the tree runs. Per-step
+options (`when`, `retry`, `timeout_seconds`, `on_failure`, `output_schema`) go
+through as keyword arguments. Workflow-level: `.input_schema()`,
+`.initial_state()`, `.output()`, `.retry()`. `ref()`, `lit()`, `when()`,
+`all_of()` and `any_of()` build the references and conditions; a bare value
+in a mapping is a literal. See `psych-workflows` for what each step does.
 
 ## Gotchas
 

@@ -15,7 +15,14 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from psych_runtime.core.answer import AnswerView, split_answer
-from psych_runtime.core.errors import AccessDenied, RunAborted, RunFailed, RunNotFound
+from psych_runtime.core.errors import (
+    AccessDenied,
+    RunAborted,
+    RunFailed,
+    RunNotFound,
+    VersionNotFound,
+    WorkflowRequired,
+)
 from psych_runtime.core.ids import RunId, VersionHash
 from psych_runtime.core.records import (
     ModelCallFinished,
@@ -26,17 +33,20 @@ from psych_runtime.core.records import (
 )
 from psych_runtime.core.reducer import RunStateView, reduce
 from psych_runtime.core.scope import Scope
-from psych_runtime.core.spec import Spec
+from psych_runtime.core.spec import Spec, WorkflowSpec
 from psych_runtime.core.status import RunStatus, status_of
 from psych_runtime.core.thread_view import MessageView, ThreadView, message_views
 from psych_runtime.core.validation import ValidationContext, validate_spec
 from psych_runtime.core.version import Version
 from psych_runtime.core.version import publish as _make_version
+from psych_runtime.core.workflow_view import WorkflowView
+from psych_runtime.core.workflow_view import workflow_view as _workflow_view
 from psych_runtime.report.build import build_report
 from psych_runtime.report.model import RunReport
 from psych_runtime.runtime.dispatch import Dispatched
 from psych_runtime.runtime.dispatch import dispatch as _dispatch
 from psych_runtime.runtime.dispatch import interrupt as _interrupt
+from psych_runtime.runtime.dispatch import replay as _replay
 from psych_runtime.runtime.dispatch import resume as _resume
 from psych_runtime.runtime.dispatch import send as _send
 from psych_runtime.runtime.stream import stream as _stream
@@ -46,10 +56,12 @@ __all__ = [
     "MessageView",
     "RunStatus",
     "ThreadView",
+    "WorkflowView",
     "dispatch",
     "interrupt",
     "publish",
     "records",
+    "replay",
     "report",
     "resume",
     "send",
@@ -58,6 +70,7 @@ __all__ = [
     "stream",
     "stream_text",
     "thread",
+    "workflow",
 ]
 
 
@@ -110,6 +123,8 @@ async def dispatch(
     idempotency_key: str | None = None,
     deadline_seconds: float | None = None,
     continues: RunId | None = None,
+    breakpoints: tuple[str, ...] = (),
+    step_mode: bool = False,
 ) -> Dispatched:
     """Admit a Run, exactly once per idempotency key.
 
@@ -122,6 +137,11 @@ async def dispatch(
             with ``AccessDenied`` when that Run belongs to a different Scope
             -- a continuation is a new way to reach another Run's content and
             gets the same scrutiny as the MCP pool key (DESIGN.md §10.4).
+        breakpoints: for a workflow, step names to pause before. The Run
+            suspends with ``SuspendReason.BREAKPOINT`` and ``resume()``
+            continues it. Ignored by an agent Run.
+        step_mode: for a workflow, pause before every step. A resume whose
+            payload carries ``{"step_mode": False}`` turns it off again.
     """
     return await _dispatch(
         store,
@@ -131,7 +151,83 @@ async def dispatch(
         idempotency_key=idempotency_key,
         deadline_seconds=deadline_seconds,
         continues=continues,
+        breakpoints=breakpoints,
+        step_mode=step_mode,
     )
+
+
+async def replay(
+    store: Store,
+    run_id: RunId,
+    *,
+    from_step: str,
+    input: dict[str, Any] | None = None,  # noqa: A002
+    version: Version | VersionHash | None = None,
+    idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
+    breakpoints: tuple[str, ...] = (),
+    step_mode: bool = False,
+    scope: Scope | None = None,
+) -> Dispatched:
+    """Start a new workflow Run from the middle of an earlier one.
+
+    Every step the source Run settled before ``from_step`` is copied into the
+    new Run's log as a memoised step marked with where it came from, and
+    execution begins at ``from_step``. The source Run is untouched. Pass
+    ``input`` to change what the workflow sees from that step on, or
+    ``version`` to run a corrected Version whose earlier steps kept their
+    names and positions. This is how a failed step is rerun once its cause is
+    fixed, and how a workflow is played forward from a chosen point with
+    different data, without pretending the first Run went differently.
+
+    Args:
+        scope: whose replay this is. Passing it refuses a Run belonging to
+            another tenant.
+
+    Raises:
+        RunNotFound: no such Run.
+        AccessDenied: ``scope`` names a different tenant than the Run's.
+        WorkflowRequired: the Run is not a workflow, or ``from_step`` is not
+            one of its top-level steps.
+        VersionNotFound: ``version`` names a hash the store does not hold.
+    """
+    await _check_run_scope(store, run_id, scope)
+    return await _replay(
+        store,
+        run_id,
+        from_step=from_step,
+        input=input,
+        version=version,
+        idempotency_key=idempotency_key,
+        deadline_seconds=deadline_seconds,
+        breakpoints=breakpoints,
+        step_mode=step_mode,
+    )
+
+
+async def workflow(store: Store, run_id: RunId, *, scope: Scope | None = None) -> WorkflowView:
+    """A workflow Run as the tree of its steps, for a graph, a timeline or a
+    test.
+
+    Every step in the pinned Version in order, with its status, attempts,
+    input, output, failure and children, plus which step the Run is waiting
+    on and the workflow state so far. Derived from the same fold the engine
+    uses, so a console and the runtime cannot disagree about whether a branch
+    was taken.
+
+    Raises:
+        RunNotFound: no such Run.
+        AccessDenied: ``scope`` names a different tenant than the Run's.
+        WorkflowRequired: the Run's Version is an agent, not a workflow.
+        VersionNotFound: the pinned Version is gone from the store.
+    """
+    folded = await state(store, run_id, scope=scope)
+    version = await store.get_version(folded.version_hash)
+    if version is None:
+        raise VersionNotFound(folded.version_hash)
+    if not isinstance(version.spec, WorkflowSpec):
+        raise WorkflowRequired(run_id, f"run {run_id} is an agent Run and has no workflow view")
+    return _workflow_view(version.spec, folded)
 
 
 async def stream(

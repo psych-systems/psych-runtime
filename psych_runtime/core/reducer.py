@@ -86,6 +86,7 @@ __all__ = [
     "PendingQueueEntry",
     "RunStateView",
     "StepRecord",
+    "StepResume",
     "reduce",
 ]
 
@@ -182,6 +183,33 @@ class StepRecord:
     output: dict[str, Any] | None = None
     failure: ToolFailure | None = None
     child_run_id: RunId | None = None
+    path: tuple[str | int, ...] = ()
+    parent_step_id: StepId | None = None
+    iteration: int | None = None
+    skipped: bool = False
+    will_retry: bool = False
+    retry_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    started_seq: int = 0
+    completed_seq: int | None = None
+    replayed_from: RunId | None = None
+
+    @property
+    def settled(self) -> bool:
+        """Completed for good: memoised, failed without another attempt coming,
+        or skipped. A completion marked ``will_retry`` is not settled."""
+        return self.completed and not self.will_retry
+
+
+@dataclass(frozen=True, slots=True)
+class StepResume:
+    """One answer delivered to a suspended workflow step."""
+
+    reason: SuspendReason
+    payload: dict[str, Any]
+    approved: bool | None
+    seq: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +349,28 @@ class RunStateView:
     tool_results: list[ToolResult] = field(default_factory=list)
 
     steps: dict[StepId, StepRecord] = field(default_factory=dict)
+    step_starts: int = 0
+    """Every ``step_started`` so far, retries included, for ``Limits.max_steps``."""
+    suspended_step_id: StepId | None = None
+    """The workflow step the current suspension belongs to, if any."""
+    suspended_step_name: str | None = None
+    suspend_event: str | None = None
+    suspend_wake_at: datetime | None = None
+    step_resumes: dict[StepId, tuple[StepResume, ...]] = field(default_factory=dict)
+    """Every ``resumed`` that answered a suspension belonging to a workflow
+    step, by step, oldest first. The sibling of ``resume_payloads`` for steps
+    rather than tool calls, kept for the same reason: the Worker that
+    continues is usually not the one that asked. A list rather than one slot
+    because one step may suspend more than once -- a breakpoint before it,
+    then the event it waits for -- and each answer belongs to its own
+    question."""
+    workflow_state_updates: dict[str, Any] = field(default_factory=dict)
+    """Every completed ``set_state`` step's values, folded in order. The
+    workflow's state is the Spec's ``initial_state`` under these."""
+    replays_run_id: RunId | None = None
+    replay_from_step: str | None = None
+    breakpoints: tuple[str, ...] = ()
+    step_mode: bool = False
 
     pending_steer: list[PendingQueueEntry] = field(default_factory=list)
     pending_follow_up: list[PendingQueueEntry] = field(default_factory=list)
@@ -601,6 +651,10 @@ def reduce(  # noqa: PLR0912, PLR0915
                 state.continues_run_id = record.continues_run_id
                 state.idempotency_key = record.idempotency_key
                 state.run_input = dict(record.input)
+                state.replays_run_id = record.replays_run_id
+                state.replay_from_step = record.replay_from_step
+                state.breakpoints = record.breakpoints
+                state.step_mode = record.step_mode
 
             case AttemptStarted():
                 if not state.admitted:
@@ -792,13 +846,14 @@ def reduce(  # noqa: PLR0912, PLR0915
             case StepStarted():
                 existing = state.steps.get(record.step_id)
                 if existing is not None:
-                    if existing.completed:
+                    if existing.completed and not existing.will_retry:
                         raise CorruptLog(
                             CorruptionReason.INCONSISTENT_STEP,
                             resolved_run_id,
                             record.seq,
                             f"step {record.step_id} started again after it completed. A "
-                            "memoised step is returned from the log, never re-run.",
+                            "memoised step is returned from the log, never re-run; only a "
+                            "completion marked will_retry admits another attempt.",
                         )
                     if record.attempt_number != existing.attempt_number + 1:
                         raise CorruptLog(
@@ -824,7 +879,14 @@ def reduce(  # noqa: PLR0912, PLR0915
                     attempt_number=record.attempt_number,
                     input=dict(record.input),
                     completed=False,
+                    path=record.path,
+                    parent_step_id=record.parent_step_id,
+                    iteration=record.iteration,
+                    started_at=record.at,
+                    started_seq=record.seq,
+                    replayed_from=record.replayed_from,
                 )
+                state.step_starts += 1
 
             case StepCompleted():
                 started = state.steps.get(record.step_id)
@@ -853,7 +915,28 @@ def reduce(  # noqa: PLR0912, PLR0915
                     output=record.output,
                     failure=record.failure,
                     child_run_id=record.child_run_id,
+                    path=started.path,
+                    parent_step_id=started.parent_step_id,
+                    iteration=started.iteration,
+                    skipped=record.skipped,
+                    will_retry=record.will_retry,
+                    retry_at=record.retry_at,
+                    started_at=started.started_at,
+                    completed_at=record.at,
+                    started_seq=started.started_seq,
+                    completed_seq=record.seq,
+                    replayed_from=started.replayed_from,
                 )
+                if (
+                    started.kind == "set_state"
+                    and record.output is not None
+                    and record.failure is None
+                    and not record.skipped
+                ):
+                    # State is the fold of every set_state step, in log
+                    # order, so a reclaiming Worker derives it with nothing
+                    # stored beside the log.
+                    state.workflow_state_updates.update(record.output)
 
             case AbortRequested():
                 if state.abort_seq is None:
@@ -1051,6 +1134,10 @@ def reduce(  # noqa: PLR0912, PLR0915
                 state.pending_approval_call_id = record.pending_call_id
                 state.suspend_question = record.question
                 state.suspend_questions = record.questions
+                state.suspended_step_id = record.step_id
+                state.suspended_step_name = record.step_name
+                state.suspend_event = record.event
+                state.suspend_wake_at = record.wake_at
                 state.turn_open = False
                 state.model_call_open = False
 
@@ -1066,6 +1153,23 @@ def reduce(  # noqa: PLR0912, PLR0915
                     state.approval_decisions[state.pending_approval_call_id] = record.approved
                 if state.pending_approval_call_id is not None and record.payload:
                     state.resume_payloads[state.pending_approval_call_id] = dict(record.payload)
+                if state.suspended_step_id is not None and state.suspend_reason is not None:
+                    # Delivered to the step, not to a call: a wait, human,
+                    # sleep, breakpoint or tool-step approval has no tool call
+                    # record of its own to key by.
+                    state.step_resumes[state.suspended_step_id] = (
+                        *state.step_resumes.get(state.suspended_step_id, ()),
+                        StepResume(
+                            reason=state.suspend_reason,
+                            payload=dict(record.payload),
+                            approved=record.approved,
+                            seq=record.seq,
+                        ),
+                    )
+                    if state.suspend_reason is SuspendReason.BREAKPOINT and isinstance(
+                        record.payload.get("step_mode"), bool
+                    ):
+                        state.step_mode = record.payload["step_mode"]
                 if state.suspended_at is not None:
                     waited = (record.at - state.suspended_at).total_seconds()
                     state.suspended_seconds += max(waited, 0.0)
@@ -1077,6 +1181,10 @@ def reduce(  # noqa: PLR0912, PLR0915
                 state.pending_approval_call_id = None
                 state.suspend_question = None
                 state.suspend_questions = ()
+                state.suspended_step_id = None
+                state.suspended_step_name = None
+                state.suspend_event = None
+                state.suspend_wake_at = None
 
             case TaskListUpdated():
                 # Replaced wholesale. The record carries the whole list for
@@ -1157,6 +1265,8 @@ def _continue_from(prior: RunStateView) -> RunStateView:
         children=dict(prior.children),
         resume_payloads=dict(prior.resume_payloads),
         run_input=dict(prior.run_input),
+        step_resumes=dict(prior.step_resumes),
+        workflow_state_updates=dict(prior.workflow_state_updates),
     )
 
 

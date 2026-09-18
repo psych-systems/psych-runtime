@@ -23,6 +23,15 @@ up on opposite sides of the line -- and asks a model for the summary; the
 `CompactionApplied` Record it appends is what `psych_runtime.core.conversation` then
 reads. Opt-in per Spec (`CompactionPolicy`) and off by default.
 
+The workflow engine (`workflow.py`) walks a `WorkflowSpec`'s step tree:
+composite steps (parallel, branch, foreach, loop, nested workflow) are steps
+in the log with children under them, data moves between steps by reference
+(`psych_runtime.core.workflow_values`), and a step that waits -- a sleep, a
+retry backoff, an event, a person, a tool step's approval, a breakpoint --
+suspends the Run with the step named on the record and continues on the next
+claim. `workflow_replay.py` seeds a Run admitted by `replay()` with the
+settled prefix of the Run it replays. See `docs/design-notes/workflows.md`.
+
 `abort.py` holds the reason an Attempt was told to stop, because the four
 reasons need four different answers: a deadline settles the Run, a graceful
 shutdown hands it back RUNNABLE for the next Worker, a lost lease writes
@@ -31,8 +40,11 @@ Record. Collapsing them into one bare event settled healthy Runs as "passed
 its deadline" on every redeploy.
 
 ## Does not own
-Scheduling. Psych evaluates no cron expressions and runs no timers (DESIGN.md
-§20). The consumer owns the clock and calls `dispatch()`.
+Scheduling. Psych evaluates no cron expressions and runs no scheduler
+(DESIGN.md §20). The consumer owns the clock and calls `dispatch()`. The one
+clock the runtime keeps is a workflow step's sleep or retry backoff, and it
+keeps it in the Store: the Run is parked with a wake time and any Worker's
+claim wakes it, so no timer lives in a process.
 
 ## Ports
 Consumes Store, BlobStore, ModelClient, Telemetry, Policy and Sandbox. Defines

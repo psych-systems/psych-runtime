@@ -132,6 +132,21 @@ class SuspendReason(StrEnum):
     APPROVAL = "approval"
     QUESTION = "question"
     EXTERNAL = "external"
+    TIMER = "timer"
+    """A workflow step is sleeping, or a failed step is waiting out its retry
+    backoff. The Run holds no Worker while it waits: it is parked with a wake
+    time (``Store.set_runnable_at``) and claimed again when that passes, at
+    which point the Attempt records its own ``resumed``. Distinct from
+    ``EXTERNAL`` because nothing outside Psych is being waited for, so a
+    reader is told when the Run will continue rather than what it is waiting
+    on, and a resume delivered early wakes it early rather than answering a
+    question nobody asked."""
+    BREAKPOINT = "breakpoint"
+    """A workflow paused at a step because the Run was admitted with that step
+    named as a breakpoint, or in step mode. Nothing is being asked but "go on":
+    ``psych_runtime.resume()`` continues, and its payload may turn step mode on
+    or off for the rest of the Run. This is how a workflow is stepped through
+    one step at a time while it really runs."""
     CHILDREN = "children"
     """Waiting on subagents it spawned in the background, with no work of its
     own left to do (DESIGN.md §17 by way of §11).
@@ -368,6 +383,24 @@ class RunAdmitted(_RecordBase):
     child arriving with fresh options must not be counted from zero, or it
     delegates as though it were top-level and the recursion budget is
     defeated (DESIGN.md §17)."""
+    replays_run_id: RunId | None = None
+    """For a workflow Run started by ``psych_runtime.replay()``: the earlier Run
+    whose completed steps this one starts from. The engine copies that Run's
+    step results up to ``replay_from_step`` into this log as memoised steps
+    marked ``replayed_from``, then runs from there. Nothing is shared: this
+    Run has its own log, its own step ids and its own future, and the source
+    Run is untouched."""
+    replay_from_step: str | None = Field(default=None, max_length=128)
+    """The top-level step name a replay starts executing at. Every step that
+    finished before it in the source Run is copied, never re-run."""
+    breakpoints: tuple[str, ...] = ()
+    """Step names the workflow pauses before, as ``SuspendReason.BREAKPOINT``.
+    Admission-time rather than on the Spec, because where a person wants to
+    stop and look is a property of this Run, not of the published workflow."""
+    step_mode: bool = False
+    """Pause before every step. A resume's payload may set ``step_mode`` to
+    turn it off again, so a person can step through the interesting part and
+    then let the rest run."""
     continues_run_id: RunId | None = None
     """The immediate predecessor Run in a conversation thread, when this Run
     was admitted by ``psych_runtime.dispatch(..., continues=...)`` rather than as a
@@ -618,16 +651,36 @@ class ToolCallFinished(_RecordBase):
 
 
 class StepStarted(_RecordBase):
-    """A checkpointed unit of work began."""
+    """A checkpointed unit of work began.
+
+    Attributes:
+        path: the step's position in the workflow tree, outermost first: node
+            names and loop indices, the same sequence ``derive_step_id`` hashed.
+            Recorded so a reader can place the step without the Spec, and so a
+            replay can match steps across Runs whose ids differ.
+        parent_step_id: the composite step (parallel, branch, loop, foreach,
+            nested workflow) this one runs inside, or ``None`` at the top.
+        iteration: the loop iteration or list index this step is, when its
+            parent is a loop or a foreach.
+        replayed_from: set when this record was copied from an earlier Run by
+            ``psych_runtime.replay()`` rather than executed here. Its completion
+            follows immediately and carries the copied result.
+    """
 
     type: Literal["step_started"] = "step_started"
     step_id: StepId
     name: str = Field(min_length=1)
-    kind: Literal["agent", "tool", "workflow", "subagent"]
+    kind: str = Field(min_length=1, max_length=32)
+    """A ``WorkflowStep.kind`` (``psych_runtime.core.spec.STEP_KINDS``), or
+    ``subagent`` for a delegation recorded as a step."""
     attempt_number: int = Field(default=1, ge=1)
     """Retries of one step increment this by exactly one. The reducer refuses a
     gap as ``non_consecutive_attempt``."""
     input: dict[str, Any] = Field(default_factory=dict)
+    path: tuple[str | int, ...] = ()
+    parent_step_id: StepId | None = None
+    iteration: int | None = Field(default=None, ge=0)
+    replayed_from: RunId | None = None
 
 
 class StepCompleted(_RecordBase):
@@ -644,6 +697,23 @@ class StepCompleted(_RecordBase):
     failure: ToolFailure | None = None
     child_run_id: RunId | None = None
     """Set when the step was a nested Run, so the report can walk into it."""
+    skipped: bool = False
+    """The step's guard was false, or a branch did not choose it. Recorded as a
+    completion with no output so the log says the step was considered."""
+    will_retry: bool = False
+    """This attempt failed and the step's ``RetryPolicy`` allows another. The
+    only case in which the reducer accepts a later ``step_started`` for a
+    completed step; without it a second start is corruption."""
+    retry_at: datetime | None = None
+    """When the next attempt may start, for a retry with a backoff."""
+
+    @model_validator(mode="after")
+    def _shape(self) -> Self:
+        if self.will_retry and self.failure is None:
+            raise ValueError("a step_completed with will_retry must carry the failure it retries")
+        if self.skipped and (self.output is not None or self.failure is not None):
+            raise ValueError("a skipped step has neither output nor failure")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +889,20 @@ class Suspended(_RecordBase):
     reason: SuspendReason
     payload_schema: dict[str, Any] = Field(default_factory=dict)
     expires_at: datetime
+    step_id: StepId | None = None
+    """The workflow step this suspension belongs to: the ``wait``, ``human``,
+    ``sleep`` or breakpointed step, or the ``tool`` step whose call needs an
+    approval. The resume that answers it is keyed to this step so a reclaiming
+    Worker delivers the payload to the right place."""
+    step_name: str | None = Field(default=None, max_length=128)
+    """That step's name, so a reader can say which step is waiting without
+    the Spec: a breakpoint pauses *before* the step's own start record
+    exists, and this is the only place its name is written."""
+    event: str | None = Field(default=None, max_length=128)
+    """For a ``wait`` step: the event name it waits for, so a consumer routing
+    webhooks can tell which one this Run wants."""
+    wake_at: datetime | None = None
+    """For ``TIMER``: when the Run becomes claimable again."""
     """Suspensions expire. A Run suspended past this is settled as abandoned
     rather than waiting forever on a user who left (DESIGN.md §11)."""
     pending_call_id: ToolCallId | None = None

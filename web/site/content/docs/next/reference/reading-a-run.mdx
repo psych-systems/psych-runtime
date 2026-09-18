@@ -89,7 +89,7 @@ Attributes:
 *model*
 
 ```python
-class RunStatus(*, run_id: psych_runtime.core.ids.RunId, scope: psych_runtime.core.scope.Scope, version_hash: psych_runtime.core.ids.VersionHash, lifecycle: psych_runtime.core.status.Lifecycle, terminal_state: psych_runtime.core.records.TerminalState | None, output: dict[str, typing.Any] | None, failure_message: str | None, failure_kind: str | None, suspend_reason: psych_runtime.core.records.SuspendReason | None, suspend_expires_at: datetime.datetime | None, pending_approval: psych_runtime.core.status.PendingApproval | None, pending_question: psych_runtime.core.status.PendingQuestion | None, components: tuple[Component, ...], tasks: tuple[psych_runtime.core.tasks.Task, ...], turn: int, tool_calls: int, model_calls: int, head_seq: int, attempt_count: int, current_attempt: Optional[psych_runtime.core.ids.AttemptId], deadline_at: datetime.datetime | None, continues_run_id: Optional[psych_runtime.core.ids.RunId], parent_run_id: Optional[psych_runtime.core.ids.RunId], has_dangling_tool_calls: bool)
+class RunStatus(*, run_id: psych_runtime.core.ids.RunId, scope: psych_runtime.core.scope.Scope, version_hash: psych_runtime.core.ids.VersionHash, lifecycle: psych_runtime.core.status.Lifecycle, terminal_state: psych_runtime.core.records.TerminalState | None, output: dict[str, typing.Any] | None, failure_message: str | None, failure_kind: str | None, suspend_reason: psych_runtime.core.records.SuspendReason | None, suspend_expires_at: datetime.datetime | None, pending_approval: psych_runtime.core.status.PendingApproval | None, pending_question: psych_runtime.core.status.PendingQuestion | None, pending_wait: psych_runtime.core.status.PendingWait | None = None, suspended_step_id: Optional[psych_runtime.core.ids.StepId] = None, components: tuple[Component, ...], tasks: tuple[psych_runtime.core.tasks.Task, ...], turn: int, tool_calls: int, model_calls: int, head_seq: int, attempt_count: int, current_attempt: Optional[psych_runtime.core.ids.AttemptId], deadline_at: datetime.datetime | None, continues_run_id: Optional[psych_runtime.core.ids.RunId], parent_run_id: Optional[psych_runtime.core.ids.RunId], has_dangling_tool_calls: bool)
 ```
 
 One Run's current state, as a UI would render it.
@@ -108,6 +108,8 @@ One Run's current state, as a UI would render it.
 | `suspend_expires_at` | `datetime.datetime | None` |  |
 | `pending_approval` | `status.PendingApproval | None` |  |
 | `pending_question` | `status.PendingQuestion | None` |  |
+| `pending_wait` | `status.PendingWait | None` |  |
+| `suspended_step_id` | `Optional` |  |
 | `components` | `tuple` |  |
 | `tasks` | `tuple` |  |
 | `turn` | `int` |  |
@@ -126,7 +128,7 @@ One Run's current state, as a UI would render it.
 *class*
 
 ```python
-class RunStateView(run_id: 'RunId', scope: 'Scope', version_hash: 'VersionHash', head_seq: 'int' = 0, admitted: 'bool' = False, settled: 'bool' = False, terminal_state: 'TerminalState | None' = None, output: 'dict[str, Any] | None' = None, failure: 'ToolFailure | None' = None, deadline_at: 'datetime | None' = None, parent_run_id: 'RunId | None' = None, delegation_depth: 'int' = 0, continues_run_id: 'RunId | None' = None, idempotency_key: 'str | None' = None, run_input: 'dict[str, Any]' = <factory>, attempt_count: 'int' = 0, current_attempt: 'AttemptId | None' = None, turn: 'int' = 0, turn_open: 'bool' = False, model_call_open: 'bool' = False, abort_seq: 'int | None' = None, suspended: 'bool' = False, suspend_reason: 'SuspendReason | None' = None, suspend_expires_at: 'datetime | None' = None, suspended_at: 'datetime | None' = None, pending_approval_call_id: 'ToolCallId | None' = None, suspend_question: 'str | None' = None, suspend_questions: 'tuple[AskedQuestion, ...]' = (), resumed_since_attempt: 'bool' = False, suspended_seconds: 'float' = 0.0, resume_payloads: 'dict[ToolCallId, dict[str, Any]]' = <factory>, approval_decisions: 'dict[ToolCallId, bool]' = <factory>, open_tool_calls: 'dict[ToolCallId, OpenToolCall]' = <factory>, tool_results: 'list[ToolResult]' = <factory>, steps: 'dict[StepId, StepRecord]' = <factory>, pending_steer: 'list[PendingQueueEntry]' = <factory>, pending_follow_up: 'list[PendingQueueEntry]' = <factory>, pending_next_run: 'list[PendingQueueEntry]' = <factory>, tasks: 'tuple[Task, ...]' = (), components: 'tuple[Component, ...]' = (), usage: 'Usage' = <factory>, unreported_usage_calls: 'int' = 0, cost: 'Cost | None' = None, unpriced_model_calls: 'int' = 0, provider_reported_costs: 'int' = 0, model_calls: 'int' = 0, failed_model_calls: 'int' = 0, transient_retries_used: 'int' = 0, last_prompt_tokens: 'int' = 0, failure_streaks: 'dict[str, int]' = <factory>, repeat_counts: 'dict[str, RepeatTally]' = <factory>, compaction_boundary_seq: 'int' = 0, compaction_summaries: 'list[str]' = <factory>, compaction_calls: 'int' = 0, children: 'dict[RunId, ChildRun]' = <factory>, result_handles: 'dict[str, ToolCallId]' = <factory>, program_call_ids: 'set[ToolCallId]' = <factory>, program_binding_call_ids: 'set[ToolCallId]' = <factory>, program_preserved_bytes: 'int' = 0, program_tool_calls: 'int' = 0)
+class RunStateView(run_id: 'RunId', scope: 'Scope', version_hash: 'VersionHash', head_seq: 'int' = 0, admitted: 'bool' = False, settled: 'bool' = False, terminal_state: 'TerminalState | None' = None, output: 'dict[str, Any] | None' = None, failure: 'ToolFailure | None' = None, deadline_at: 'datetime | None' = None, parent_run_id: 'RunId | None' = None, delegation_depth: 'int' = 0, continues_run_id: 'RunId | None' = None, idempotency_key: 'str | None' = None, run_input: 'dict[str, Any]' = <factory>, attempt_count: 'int' = 0, current_attempt: 'AttemptId | None' = None, turn: 'int' = 0, turn_open: 'bool' = False, model_call_open: 'bool' = False, abort_seq: 'int | None' = None, suspended: 'bool' = False, suspend_reason: 'SuspendReason | None' = None, suspend_expires_at: 'datetime | None' = None, suspended_at: 'datetime | None' = None, pending_approval_call_id: 'ToolCallId | None' = None, suspend_question: 'str | None' = None, suspend_questions: 'tuple[AskedQuestion, ...]' = (), resumed_since_attempt: 'bool' = False, suspended_seconds: 'float' = 0.0, resume_payloads: 'dict[ToolCallId, dict[str, Any]]' = <factory>, approval_decisions: 'dict[ToolCallId, bool]' = <factory>, open_tool_calls: 'dict[ToolCallId, OpenToolCall]' = <factory>, tool_results: 'list[ToolResult]' = <factory>, steps: 'dict[StepId, StepRecord]' = <factory>, step_starts: 'int' = 0, suspended_step_id: 'StepId | None' = None, suspended_step_name: 'str | None' = None, suspend_event: 'str | None' = None, suspend_wake_at: 'datetime | None' = None, step_resumes: 'dict[StepId, tuple[StepResume, ...]]' = <factory>, workflow_state_updates: 'dict[str, Any]' = <factory>, replays_run_id: 'RunId | None' = None, replay_from_step: 'str | None' = None, breakpoints: 'tuple[str, ...]' = (), step_mode: 'bool' = False, pending_steer: 'list[PendingQueueEntry]' = <factory>, pending_follow_up: 'list[PendingQueueEntry]' = <factory>, pending_next_run: 'list[PendingQueueEntry]' = <factory>, tasks: 'tuple[Task, ...]' = (), components: 'tuple[Component, ...]' = (), usage: 'Usage' = <factory>, unreported_usage_calls: 'int' = 0, cost: 'Cost | None' = None, unpriced_model_calls: 'int' = 0, provider_reported_costs: 'int' = 0, model_calls: 'int' = 0, failed_model_calls: 'int' = 0, transient_retries_used: 'int' = 0, last_prompt_tokens: 'int' = 0, failure_streaks: 'dict[str, int]' = <factory>, repeat_counts: 'dict[str, RepeatTally]' = <factory>, compaction_boundary_seq: 'int' = 0, compaction_summaries: 'list[str]' = <factory>, compaction_calls: 'int' = 0, children: 'dict[RunId, ChildRun]' = <factory>, result_handles: 'dict[str, ToolCallId]' = <factory>, program_call_ids: 'set[ToolCallId]' = <factory>, program_binding_call_ids: 'set[ToolCallId]' = <factory>, program_preserved_bytes: 'int' = 0, program_tool_calls: 'int' = 0)
 ```
 
 Everything derivable from a Run's log.
@@ -407,7 +409,7 @@ Attributes:
 *model*
 
 ```python
-class StepReport(*, step_id: psych_runtime.core.ids.StepId, name: str, kind: str, attempt_number: int, input: dict[str, typing.Any], completed: bool, output: dict[str, typing.Any] | None, failure: psych_runtime.core.records.ToolFailure | None, child_run_id: Optional[psych_runtime.core.ids.RunId], child: psych_runtime.report.model.RunReport | None = None)
+class StepReport(*, step_id: psych_runtime.core.ids.StepId, name: str, kind: str, attempt_number: int, input: dict[str, typing.Any], completed: bool, output: dict[str, typing.Any] | None, failure: psych_runtime.core.records.ToolFailure | None, child_run_id: Optional[psych_runtime.core.ids.RunId], child: psych_runtime.report.model.RunReport | None = None, path: tuple[str | int, ...] = (), parent_step_id: Optional[psych_runtime.core.ids.StepId] = None, iteration: int | None = None, skipped: bool = False, will_retry: bool = False, replayed_from: Optional[psych_runtime.core.ids.RunId] = None, started_at: datetime.datetime | None = None, completed_at: datetime.datetime | None = None)
 ```
 
 One workflow step: one checkpointed, memoised unit of work.
@@ -444,6 +446,14 @@ Attributes:
 | `failure` | `records.ToolFailure | None` |  |
 | `child_run_id` | `Optional` |  |
 | `child` | `psych_runtime.report.model.RunReport | None` |  |
+| `path` | `tuple` |  |
+| `parent_step_id` | `Optional` |  |
+| `iteration` | `int | None` |  |
+| `skipped` | `bool` |  |
+| `will_retry` | `bool` |  |
+| `replayed_from` | `Optional` |  |
+| `started_at` | `datetime.datetime | None` |  |
+| `completed_at` | `datetime.datetime | None` |  |
 
 ### `ToolCallReport`
 
@@ -597,7 +607,7 @@ Attributes:
 *model*
 
 ```python
-class SuspensionReport(*, reason: psych_runtime.core.records.SuspendReason, question: str | None, pending_call_id: Optional[psych_runtime.core.ids.ToolCallId], suspended_at: datetime.datetime, expires_at: datetime.datetime, resumed_at: datetime.datetime | None, approved: bool | None, payload: dict[str, typing.Any] | None)
+class SuspensionReport(*, reason: psych_runtime.core.records.SuspendReason, question: str | None, pending_call_id: Optional[psych_runtime.core.ids.ToolCallId], suspended_at: datetime.datetime, expires_at: datetime.datetime, resumed_at: datetime.datetime | None, approved: bool | None, step_id: Optional[psych_runtime.core.ids.StepId] = None, event: str | None = None, wake_at: datetime.datetime | None = None, payload: dict[str, typing.Any] | None)
 ```
 
 One wait: why the Run paused, and how it ended.
@@ -619,6 +629,9 @@ Attributes:
 | `expires_at` | `datetime` |  |
 | `resumed_at` | `datetime.datetime | None` |  |
 | `approved` | `bool | None` |  |
+| `step_id` | `Optional` |  |
+| `event` | `str | None` |  |
+| `wake_at` | `datetime.datetime | None` |  |
 | `payload` | `dict[str, Any] | None` |  |
 
 ### `CompactionReport`
@@ -693,7 +706,7 @@ streak; a later run of failures on the same tool trips again.
 *model*
 
 ```python
-class PendingApproval(*, call_id: psych_runtime.core.ids.ToolCallId, tool: str, arguments: dict[str, typing.Any], question: str | None, expires_at: datetime.datetime)
+class PendingApproval(*, call_id: Optional[psych_runtime.core.ids.ToolCallId], step_id: Optional[psych_runtime.core.ids.StepId] = None, tool: str, arguments: dict[str, typing.Any], question: str | None, expires_at: datetime.datetime)
 ```
 
 The call a suspended Run is waiting on a decision for.
@@ -704,18 +717,144 @@ if approved, and when waiting stops being useful.
 
 | Field | Type | Notes |
 |---|---|---|
-| `call_id` | `ToolCallId` |  |
+| `call_id` | `Optional` |  |
+| `step_id` | `Optional` |  |
 | `tool` | `str` |  |
 | `arguments` | `dict` |  |
 | `question` | `str | None` |  |
 | `expires_at` | `datetime` |  |
+
+### `PendingWait`
+
+*model*
+
+```python
+class PendingWait(*, step_id: psych_runtime.core.ids.StepId, step_name: str, reason: psych_runtime.core.records.SuspendReason, event: str | None, payload_schema: dict[str, typing.Any], wake_at: datetime.datetime | None, expires_at: datetime.datetime)
+```
+
+A workflow step parked on something that is not a person's answer.
+
+A ``wait`` step names the ``event`` a consumer's webhook handler should
+deliver with ``psych_runtime.resume(payload=...)``, and the
+``payload_schema`` that payload must satisfy. A ``sleep`` or a retry
+backoff carries ``wake_at`` instead: nothing is expected, the Run
+continues on its own. A breakpoint carries neither: a resume is "go on".
+
+| Field | Type | Notes |
+|---|---|---|
+| `step_id` | `StepId` |  |
+| `step_name` | `str` |  |
+| `reason` | `SuspendReason` |  |
+| `event` | `str | None` |  |
+| `payload_schema` | `dict` |  |
+| `wake_at` | `datetime.datetime | None` |  |
+| `expires_at` | `datetime` |  |
+
+### `WorkflowView`
+
+*model*
+
+```python
+class WorkflowView(*, run_id: psych_runtime.core.ids.RunId, workflow: str, steps: tuple[psych_runtime.core.workflow_view.StepView, ...], waiting: psych_runtime.core.workflow_view.WaitingStep | None, state: dict[str, typing.Any], input: dict[str, typing.Any], output: dict[str, typing.Any] | None, terminal_state: psych_runtime.core.records.TerminalState | None, step_starts: int, completed: int, failed: int, replays_run_id: Optional[psych_runtime.core.ids.RunId], replay_from_step: str | None, breakpoints: tuple[str, ...], step_mode: bool)
+```
+
+A workflow Run as a tree of steps.
+
+| Field | Type | Notes |
+|---|---|---|
+| `run_id` | `RunId` |  |
+| `workflow` | `str` |  |
+| `steps` | `tuple` |  |
+| `waiting` | `workflow_view.WaitingStep | None` |  |
+| `state` | `dict` |  |
+| `input` | `dict` |  |
+| `output` | `dict[str, Any] | None` |  |
+| `terminal_state` | `records.TerminalState | None` |  |
+| `step_starts` | `int` |  |
+| `completed` | `int` |  |
+| `failed` | `int` |  |
+| `replays_run_id` | `Optional` |  |
+| `replay_from_step` | `str | None` |  |
+| `breakpoints` | `tuple` |  |
+| `step_mode` | `bool` |  |
+
+### `StepView`
+
+*model*
+
+```python
+class StepView(*, step_id: psych_runtime.core.ids.StepId, name: str, kind: str, path: tuple[str | int, ...], status: psych_runtime.core.workflow_view.StepViewStatus, attempts: int, input: dict[str, typing.Any] | None, output: dict[str, typing.Any] | None, failure: psych_runtime.core.records.ToolFailure | None, started_at: datetime.datetime | None, completed_at: datetime.datetime | None, retry_at: datetime.datetime | None, iteration: int | None, replayed_from: Optional[psych_runtime.core.ids.RunId], child_run_id: Optional[psych_runtime.core.ids.RunId], children: tuple[psych_runtime.core.workflow_view.StepView, ...] = (), cases: tuple[str, ...] = ())
+```
+
+One step in the tree, with every attempt it has made.
+
+| Field | Type | Notes |
+|---|---|---|
+| `step_id` | `StepId` |  |
+| `name` | `str` |  |
+| `kind` | `str` |  |
+| `path` | `tuple` |  |
+| `status` | `StepViewStatus` |  |
+| `attempts` | `int` |  |
+| `input` | `dict[str, Any] | None` |  |
+| `output` | `dict[str, Any] | None` |  |
+| `failure` | `records.ToolFailure | None` |  |
+| `started_at` | `datetime.datetime | None` |  |
+| `completed_at` | `datetime.datetime | None` |  |
+| `retry_at` | `datetime.datetime | None` |  |
+| `iteration` | `int | None` |  |
+| `replayed_from` | `Optional` |  |
+| `child_run_id` | `Optional` |  |
+| `children` | `tuple` |  |
+| `cases` | `tuple` |  |
+
+### `StepViewStatus`
+
+*enum*
+
+```python
+class StepViewStatus(*values)
+```
+
+Where one step is, in the words a graph node would use.
+
+| Member | Value |
+|---|---|
+| `PENDING` | `pending` |
+| `RUNNING` | `running` |
+| `WAITING` | `waiting` |
+| `COMPLETED` | `completed` |
+| `FAILED` | `failed` |
+| `RETRYING` | `retrying` |
+| `SKIPPED` | `skipped` |
+| `REPLAYED` | `replayed` |
+
+### `WaitingStep`
+
+*model*
+
+```python
+class WaitingStep(*, step_id: psych_runtime.core.ids.StepId, name: str, reason: psych_runtime.core.records.SuspendReason, question: str | None, event: str | None, wake_at: datetime.datetime | None, expires_at: datetime.datetime | None)
+```
+
+The step the Run is suspended on.
+
+| Field | Type | Notes |
+|---|---|---|
+| `step_id` | `StepId` |  |
+| `name` | `str` |  |
+| `reason` | `SuspendReason` |  |
+| `question` | `str | None` |  |
+| `event` | `str | None` |  |
+| `wake_at` | `datetime.datetime | None` |  |
+| `expires_at` | `datetime.datetime | None` |  |
 
 ### `PendingQuestion`
 
 *model*
 
 ```python
-class PendingQuestion(*, call_id: psych_runtime.core.ids.ToolCallId, questions: tuple[psych_runtime.core.questions.AskedQuestion, ...], summary: str, expires_at: datetime.datetime)
+class PendingQuestion(*, call_id: Optional[psych_runtime.core.ids.ToolCallId], step_id: Optional[psych_runtime.core.ids.StepId] = None, questions: tuple[psych_runtime.core.questions.AskedQuestion, ...], summary: str, expires_at: datetime.datetime)
 ```
 
 A Run stopped because the agent asked something.
@@ -729,7 +868,8 @@ may answer in their own words, which is what makes offering them safe.
 
 | Field | Type | Notes |
 |---|---|---|
-| `call_id` | `ToolCallId` |  |
+| `call_id` | `Optional` |  |
+| `step_id` | `Optional` |  |
 | `questions` | `tuple` |  |
 | `summary` | `str` |  |
 | `expires_at` | `datetime` |  |
@@ -997,6 +1137,8 @@ Why a Run is waiting (DESIGN.md §11).
 | `APPROVAL` | `approval` |
 | `QUESTION` | `question` |
 | `EXTERNAL` | `external` |
+| `TIMER` | `timer` |
+| `BREAKPOINT` | `breakpoint` |
 | `CHILDREN` | `children` |
 
 ### `ToolOutcome`

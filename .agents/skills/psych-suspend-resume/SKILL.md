@@ -1,16 +1,18 @@
 ---
 name: psych-suspend-resume
 description: >-
-  Make a Psych Run wait and then continue: the four SuspendReason values
-  (approval, question, external, children), the `ask_question`
-  built-in and `may_ask_questions`, waiting on a webhook, expiry and ABANDONED,
-  and `psych_runtime.resume(payload=..., approved=..., by=...)`. Use whenever a Psych
-  agent needs to pause for a person, a webhook or a clock, someone asks how to
-  ask the user a clarifying question, asks why a suspended Run holds no Worker,
-  hits `RunNotSuspended` or `SuspensionExpired`, or is building an inbox or
-  approval queue over suspended Runs. Read before implementing any wait, because
-  a suspension releases its lease and persists rather than blocking, so the
-  process that resumes need not be the one that suspended.
+  Make a Psych Run wait and then continue: the six SuspendReason values
+  (approval, question, external, children, timer, breakpoint), the
+  `ask_question` built-in and `may_ask_questions`, waiting on a webhook, a
+  workflow step's wait/human/sleep/approval/breakpoint, expiry and ABANDONED,
+  `status.pending_wait`, and `psych_runtime.resume(payload=..., approved=..., by=...)`.
+  Use whenever a Psych agent or workflow needs to pause for a person, a webhook
+  or a clock, someone asks how to ask the user a clarifying question, asks why
+  a suspended Run holds no Worker, hits `RunNotSuspended` or
+  `SuspensionExpired`, or is building an inbox or approval queue over suspended
+  Runs. Read before implementing any wait, because a suspension releases its
+  lease and persists rather than blocking, so the process that resumes need
+  not be the one that suspended.
 ---
 
 # Suspend and resume
@@ -23,17 +25,37 @@ The alternative, holding the lease and polling, is exactly what this removes. A
 fan-out of four children would pin four Workers doing nothing while their own
 children queue behind them.
 
-Approvals, questions, webhook waits and waiting on children are **one
-mechanism**, because they all run through the same lease and log machinery.
+Approvals, questions, webhook waits, waiting on children, a workflow's
+timers and its breakpoints are **one mechanism**, because they all run through
+the same lease and log machinery.
 
-## Four reasons
+## Six reasons
 
 | `SuspendReason` | Waiting on | Default expiry |
 |---|---|---|
-| `APPROVAL` | A human decision on one tool call | 24h |
-| `QUESTION` | A person's answer to `ask_question` | 24h |
-| `EXTERNAL` | A webhook, a callback, a clock: anything outside Psych | 7 days |
+| `APPROVAL` | A human decision on one tool call, or on a workflow `tool` step | 24h |
+| `QUESTION` | A person's answer to `ask_question`, or to a workflow `human` step | 24h |
+| `EXTERNAL` | A webhook, a callback: anything outside Psych, including a workflow `wait` step's event | 7 days |
 | `CHILDREN` | Background subagents this Run spawned | 1h |
+| `TIMER` | A workflow `sleep` step or a retry backoff. Nobody answers it: the Run is parked with a wake time and claimed again when it passes | wake + 7 days |
+| `BREAKPOINT` | A person saying "go on" to a workflow paused before a step | 24h |
+
+`TIMER` and `BREAKPOINT` are produced only by workflows (`psych-workflows`).
+A timer parks the Run as `RUNNABLE` with `runnable_at` set rather than as
+`SUSPENDED`, because nothing will ever call `resume()` for it; the claiming
+Worker writes the `resumed` record itself. Every other reason parks the Run
+`SUSPENDED` until a resume arrives.
+
+## Which step is waiting
+
+When the wait belongs to a workflow step, the `suspended` record names it
+(`step_id`, `step_name`, `event`, `wake_at`) and `status()` projects it:
+`status.suspended_step_id`, plus one of `pending_approval` (`call_id=None`,
+`step_id` set, the tool and its resolved arguments), `pending_question`
+(`call_id=None`, `step_id` set), or `pending_wait` (`reason`, `event`,
+`payload_schema`, `wake_at`, `expires_at`) for an event, a timer or a
+breakpoint. `psych_runtime.workflow_view(store, run_id).waiting` says the same
+thing inside the step tree.
 
 `CHILDREN` is a distinct reason rather than a reuse of `EXTERNAL`, and the
 difference earns the enum member. Every other suspension waits on something
@@ -107,15 +129,25 @@ async def on_provider_callback(event: dict) -> None:
     await psych_runtime.resume(store, RunId(event["run_id"]), payload=event["result"])
 ```
 
-Psych stores no cron expressions and runs no timers. A Run waiting on a
-clock is one your own scheduler resumes with `resume()`, the same way it admits
-one with `dispatch()`. Suspend it as `EXTERNAL`: from the runtime's side a clock
-and a webhook are the same thing, something outside Psych that will call back.
+Psych stores no cron expressions and runs no scheduler. An *agent* waiting
+on a clock is one your own scheduler resumes with `resume()`, the same way it
+admits one with `dispatch()`; suspend it as `EXTERNAL`, since from the
+runtime's side a clock and a webhook are the same thing. A *workflow* `sleep`
+step or retry backoff is the one clock the runtime does keep, as `TIMER`: the
+store parks the Run until the wake time and any Worker's claim wakes it, so
+no timer lives in a process.
 
-There is deliberately no `SCHEDULED` reason. An enum member nothing in the
-library produces is a branch a consumer writes and can never execute, and their
-coverage tool flags it forever with no way to tell from outside whether they
-misread the runtime or found a bug.
+A workflow `wait` step is the same webhook pattern with the event named:
+`status.pending_wait.event` says which event the Run wants, and the payload
+you deliver becomes the step's output, checked against the step's
+`payload_schema` first.
+
+## Breakpoints
+
+A workflow dispatched with `breakpoints=` or `step_mode=True` suspends as
+`BREAKPOINT` before the named step. `resume()` with no payload continues;
+`resume(payload={"step_mode": False})` or `True` turns stepping off or on for
+the rest of the Run. A resume delivered to a `TIMER` wakes it early.
 
 ## Expiry
 

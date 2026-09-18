@@ -45,11 +45,13 @@ from __future__ import annotations
 import logging
 
 from psych_runtime.api import (
+    WorkflowView,
     answer,
     dispatch,
     interrupt,
     publish,
     records,
+    replay,
     report,
     resume,
     send,
@@ -59,9 +61,20 @@ from psych_runtime.api import (
     stream_text,
     thread,
 )
+from psych_runtime.api import (
+    workflow as workflow_view,
+)
 from psych_runtime.builder.agent import AgentBuilder, agent
 from psych_runtime.builder.errors import BuilderError
-from psych_runtime.builder.workflow import WorkflowBuilder, workflow
+from psych_runtime.builder.workflow import (
+    WorkflowBuilder,
+    all_of,
+    any_of,
+    lit,
+    ref,
+    when,
+    workflow,
+)
 from psych_runtime.core.answer import AnswerView, ToolCallView, WorkTurn
 from psych_runtime.core.code_execution import (
     ArtifactCollection,
@@ -91,6 +104,7 @@ from psych_runtime.core.errors import (
     SuspensionExpired,
     TransientError,
     ValidationIssue,
+    WorkflowRequired,
 )
 from psych_runtime.core.ids import AttemptId, RunId, StepId, ToolCallId, VersionHash, WorkerId
 from psych_runtime.core.messages import ToolDefinition
@@ -112,31 +126,52 @@ from psych_runtime.core.spec import (
     AgentSpec,
     AgentStep,
     ArtifactPolicy,
+    BranchCase,
+    BranchStep,
     CodeExecution,
     CodeExecutionLimits,
     CodeTool,
     CompactionPolicy,
+    Condition,
+    ForEachStep,
     HttpTool,
+    HumanStep,
     Limits,
+    LiteralValue,
+    LoopStep,
+    MapStep,
     McpOAuth,
     McpServer,
     ModelRef,
     OutputPolicy,
+    ParallelStep,
+    RetryPolicy,
+    SetStateStep,
     Skill,
+    SleepStep,
     SpawnEnvelope,
     Spec,
     SubagentRef,
     SuspensionPolicy,
     ToolStep,
+    ValuePath,
+    WaitStep,
     WorkflowSpec,
     WorkflowStepRef,
 )
-from psych_runtime.core.status import Lifecycle, PendingApproval, PendingQuestion, RunStatus
+from psych_runtime.core.status import (
+    Lifecycle,
+    PendingApproval,
+    PendingQuestion,
+    PendingWait,
+    RunStatus,
+)
 from psych_runtime.core.tasks import Task, TaskStatus
 from psych_runtime.core.thread_view import MessageView, ThreadView
 from psych_runtime.core.usage import Cost, Usage
 from psych_runtime.core.validation import ValidationContext
 from psych_runtime.core.version import Version
+from psych_runtime.core.workflow_view import StepView, StepViewStatus, WaitingStep
 from psych_runtime.memory.port import Memory, MemoryKey, MemoryStore
 from psych_runtime.model.egress import EgressPolicy, HttpTransport
 from psych_runtime.model.openai_compat import OpenAICompatibleClient
@@ -248,6 +283,8 @@ __all__ = [
     "BindingBudget",
     "BlobKey",
     "BlobStore",
+    "BranchCase",
+    "BranchStep",
     "BuilderError",
     "CodeExecution",
     "CodeExecutionGrant",
@@ -257,6 +294,7 @@ __all__ = [
     "CompactionPolicy",
     "CompactionReport",
     "Component",
+    "Condition",
     "CorruptLog",
     "CorruptionReason",
     "Cost",
@@ -268,9 +306,11 @@ __all__ = [
     "EgressPolicy",
     "Enforcement",
     "FailureStreakTrip",
+    "ForEachStep",
     "HostBinding",
     "HttpTool",
     "HttpTransport",
+    "HumanStep",
     "InMemoryBlobStore",
     "InMemoryStore",
     "IsolationLevel",
@@ -278,6 +318,9 @@ __all__ = [
     "LeaseLost",
     "Lifecycle",
     "Limits",
+    "LiteralValue",
+    "LoopStep",
+    "MapStep",
     "McpOAuth",
     "McpPool",
     "McpResponseTooLarge",
@@ -298,8 +341,10 @@ __all__ = [
     "OutputCapture",
     "OutputPolicy",
     "OutputPreservation",
+    "ParallelStep",
     "PendingApproval",
     "PendingQuestion",
+    "PendingWait",
     "Policy",
     "PriceResolver",
     "PsychError",
@@ -308,6 +353,7 @@ __all__ = [
     "Record",
     "ResolvedCredential",
     "ResultAttachment",
+    "RetryPolicy",
     "RunAborted",
     "RunAlreadySettled",
     "RunEndedWithoutAnswer",
@@ -335,13 +381,17 @@ __all__ = [
     "SecretResolver",
     "SeqConflict",
     "Session",
+    "SetStateStep",
     "Skill",
+    "SleepStep",
     "SpawnEnvelope",
     "Spec",
     "SpecValidationError",
     "StaticPriceTable",
     "StepId",
     "StepReport",
+    "StepView",
+    "StepViewStatus",
     "Store",
     "StoreError",
     "SubagentRef",
@@ -370,23 +420,33 @@ __all__ = [
     "Usage",
     "ValidationContext",
     "ValidationIssue",
+    "ValuePath",
     "Version",
     "VersionHash",
+    "WaitStep",
+    "WaitingStep",
     "WorkTurn",
     "Worker",
     "WorkerId",
     "WorkflowBuilder",
+    "WorkflowRequired",
     "WorkflowSpec",
     "WorkflowStepRef",
+    "WorkflowView",
     "WorkspacePolicy",
     "__version__",
     "agent",
+    "all_of",
     "answer",
+    "any_of",
     "dispatch",
     "interrupt",
+    "lit",
     "max_sse_event_bytes",
     "publish",
     "records",
+    "ref",
+    "replay",
     "report",
     "resume",
     "send",
@@ -397,5 +457,7 @@ __all__ = [
     "stream",
     "stream_text",
     "thread",
+    "when",
     "workflow",
+    "workflow_view",
 ]

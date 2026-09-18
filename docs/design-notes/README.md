@@ -12,6 +12,7 @@ Where a note and DESIGN.md disagree, DESIGN.md wins and the note is a bug.
 | [spec-versioning-and-tool-access.md](spec-versioning-and-tool-access.md) | DESIGN.md §4, §10.4 to §10.6, §10.9, §14: Specs as data, content-hashed Versions, narrowing, pooling, selectors, approvals, the failure-streak guard |
 | [tool-disclosure-and-prompt-budget.md](tool-disclosure-and-prompt-budget.md) | DESIGN.md §10.2, §10.3, §10.7, §10.8, §19: deferred disclosure, the catalog cache, large results, prompt assembly and cache stability |
 | [metering-and-telemetry.md](metering-and-telemetry.md) | DESIGN.md §13: usage, pricing, latency, the report, the telemetry port and its conformance suite |
+| [workflows.md](workflows.md) | DESIGN.md §5 for a workflow with structure: composite steps as a tree in the log, data flow by reference, waits keyed to steps, retries as new attempts, replay by copying, breakpoints |
 | [subagents-and-delegation.md](subagents-and-delegation.md) | DESIGN.md §17: depth, spawn permissions, addressing, listing, projections, cold resume |
 | [code-execution-and-sandboxing.md](code-execution-and-sandboxing.md) | DESIGN.md §18: the sandbox contract, the wire protocol, resource limits, teardown |
 | [mcp-2026-07-28.md](mcp-2026-07-28.md) | What the current MCP specification revision changed and what Psych has to do about it |

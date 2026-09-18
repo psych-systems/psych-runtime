@@ -421,8 +421,22 @@ _STEP: Final = SpanDefinition(
         "psych.step.kind": AttributeDefinition(
             type=AttributeType.STRING,
             required=True,
-            values=("agent", "tool", "workflow", "subagent"),
-            description="What kind of work this step performs.",
+            values=(
+                "agent",
+                "tool",
+                "workflow",
+                "subagent",
+                "parallel",
+                "branch",
+                "foreach",
+                "loop",
+                "map",
+                "set_state",
+                "sleep",
+                "wait",
+                "human",
+            ),
+            description="What kind of work this step performs (a WorkflowStep.kind).",
         ),
         "psych.step.attempt_number": AttributeDefinition(
             type=AttributeType.INT,
@@ -433,8 +447,12 @@ _STEP: Final = SpanDefinition(
     end_attributes={
         "psych.step.outcome": AttributeDefinition(
             type=AttributeType.STRING,
-            values=("succeeded", "failed", "aborted"),
-            description="How the step ended.",
+            values=("succeeded", "failed", "aborted", "skipped", "suspended"),
+            description=(
+                "How this attempt of the step ended. 'suspended' closes the span of an "
+                "attempt that parked the Run; the attempt continues under a new span "
+                "when the Run is claimed again."
+            ),
         ),
     },
     status_error_when="the step's outcome is 'failed'",

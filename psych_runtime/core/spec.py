@@ -26,6 +26,7 @@ collections do not, and line endings normalise. By the time
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Final, Literal, Self
 from urllib.parse import urlsplit
 
@@ -45,6 +46,7 @@ from psych_runtime.core.code_execution import (
     OutputPreservation,
     WorkspacePolicy,
 )
+from psych_runtime.core.questions import AskedQuestion
 from psych_runtime.core.tool_names import qualified_owner
 
 __all__ = [
@@ -52,28 +54,47 @@ __all__ = [
     "MIN_SPAWN_PURPOSE",
     "MIN_SPAWN_TASK",
     "MIN_SUBAGENT_DESCRIPTION",
+    "STEP_KINDS",
     "A2APeer",
     "AgentSpec",
     "AgentStep",
     "ArtifactPolicy",
+    "BranchCase",
+    "BranchStep",
     "CodeExecution",
     "CodeExecutionLimits",
     "CodeTool",
     "CompactionPolicy",
+    "Condition",
+    "ConditionOp",
+    "ForEachStep",
     "HttpTool",
+    "HumanStep",
     "Limits",
+    "LiteralValue",
+    "LoopStep",
+    "MapStep",
+    "Mapping",
     "McpOAuth",
     "McpServer",
     "ModelRef",
     "OutputPolicy",
+    "ParallelStep",
+    "RetryPolicy",
+    "SetStateStep",
     "Skill",
+    "SleepStep",
     "SpawnEnvelope",
     "Spec",
     "SubagentRef",
     "SuspensionPolicy",
     "ToolStep",
+    "ValuePath",
+    "ValueRef",
+    "WaitStep",
     "WorkflowSpec",
     "WorkflowStep",
+    "iter_steps",
 ]
 
 _NAME_PATTERN: Final = r"^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$"
@@ -1269,32 +1290,382 @@ class AgentSpec(_SpecModel):
         return self
 
 
-class AgentStep(_SpecModel):
-    """A workflow step that runs an agent."""
+_PATH_PATTERN: Final = r"^[a-zA-Z_][a-zA-Z0-9_.\-\[\]]{0,511}$"
+"""A ``ValuePath``: dotted names with optional ``[index]`` segments, rooted at
+one of the names ``psych_runtime.core.workflow_values.ROOTS`` lists."""
+
+
+class ValuePath(_SpecModel):
+    """A reference to a value the workflow already has.
+
+    Resolved by the engine when the step starts, against the Run's input, the
+    outputs of completed steps, the workflow state, and the loop position:
+    ``input.customer_id``, ``steps.fetch.output.rows[0].id``, ``state.total``,
+    ``item.sku``, ``index``, ``iteration``. The resolved value is what lands in
+    the step's ``step_started`` record, so the log shows what the step was
+    actually given rather than a reference to go and look up.
+    """
+
+    kind: Literal["path"] = "path"
+    path: str = Field(pattern=_PATH_PATTERN)
+
+
+class LiteralValue(_SpecModel):
+    """A value written down in the Spec, for a mapping that mixes constants
+    with references."""
+
+    kind: Literal["literal"] = "literal"
+    value: Any = None
+
+
+ValueRef = Annotated[ValuePath | LiteralValue, Field(discriminator="kind")]
+"""What one mapped field is fed from."""
+
+Mapping = dict[str, ValueRef]
+"""Field name to source. A mapping is data selection and nothing more: it
+cannot compute, format or branch, which keeps a workflow's data flow readable
+from the Spec alone and recorded whole in the log."""
+
+ConditionOp = Literal[
+    "eq", "ne", "gt", "gte", "lt", "lte", "in", "contains", "exists", "truthy", "matches"
+]
+
+
+class Condition(_SpecModel):
+    """A predicate over values the workflow already has.
+
+    Exactly one of ``path``, ``all_of`` or ``any_of`` is set. A leaf compares
+    the value at ``path`` against ``value`` with ``op``; a compound combines
+    its children. ``negate`` inverts the result. Declarative on purpose: the
+    engine evaluates it, records what it decided, and a reader can evaluate it
+    again from the log by hand.
+    """
+
+    path: str | None = Field(default=None, pattern=_PATH_PATTERN)
+    op: ConditionOp = "truthy"
+    value: Any = None
+    all_of: tuple[Condition, ...] = ()
+    any_of: tuple[Condition, ...] = ()
+    negate: bool = False
+
+    @model_validator(mode="after")
+    def _exactly_one_shape(self) -> Self:
+        shapes = sum(1 for present in (self.path is not None, self.all_of, self.any_of) if present)
+        if shapes != 1:
+            raise ValueError(
+                "a Condition is exactly one of: a `path` to compare, an `all_of` group, "
+                "or an `any_of` group"
+            )
+        if self.op == "matches" and not isinstance(self.value, str):
+            raise ValueError("a `matches` condition needs a regular expression string in `value`")
+        if self.op == "matches" and isinstance(self.value, str):
+            try:
+                re.compile(self.value)
+            except re.error as err:
+                raise ValueError(
+                    f"`matches` value is not a valid regular expression: {err}"
+                ) from err
+        return self
+
+
+class RetryPolicy(_SpecModel):
+    """How a failed step is retried before the failure counts.
+
+    ``max_attempts`` is the total including the first, so the default of one
+    means no retry. A backoff parks the Run between attempts by releasing its
+    lease rather than sleeping on a Worker, so a long backoff costs nothing
+    while it waits. ``retry_on`` narrows retries to the named failure kinds;
+    empty retries any failure.
+    """
+
+    max_attempts: int = Field(default=1, ge=1, le=100)
+    backoff_seconds: float = Field(default=0.0, ge=0, le=86_400)
+    multiplier: float = Field(default=2.0, ge=1.0, le=10.0)
+    max_backoff_seconds: float = Field(default=3_600.0, gt=0, le=86_400)
+    retry_on: tuple[str, ...] = ()
+
+    def delay_before(self, attempt_number: int) -> float:
+        """Seconds to wait before ``attempt_number`` (2 for the first retry)."""
+        if attempt_number <= 1 or self.backoff_seconds == 0:
+            return 0.0
+        raw = self.backoff_seconds * (self.multiplier ** (attempt_number - 2))
+        return min(raw, self.max_backoff_seconds)
+
+
+class _StepBase(_SpecModel):
+    """What every step kind carries besides its own fields.
+
+    Attributes:
+        when: a guard. A step whose guard is false is recorded as skipped
+            and the workflow moves on; its output is ``None``.
+        retry: overrides the workflow's default ``retry``.
+        timeout_seconds: the step fails with kind ``step_timeout`` past this.
+            Counted per attempt, in the Worker holding the Run.
+        on_failure: ``fail`` stops the workflow at this step's failure;
+            ``continue`` records the failure and carries on with ``None`` as
+            the step's output, for a step whose result is optional.
+        output_schema: a JSON Schema the step's output must satisfy, checked
+            when it completes. A violation is a failure of kind
+            ``schema_violation`` and is retried like any other.
+        ends_workflow: when this step completes, the workflow it sits in
+            completes too, without running the steps after it. For an early
+            exit that is a success: "nothing to do" decided by a branch arm,
+            say. The steps not reached stay ``pending`` in the view, which is
+            the honest picture. Inside a nested workflow it ends the nested
+            one, not the parent.
+    """
+
+    name: str = Field(pattern=_NAME_PATTERN)
+    description: str = Field(default="", max_length=4096)
+    when: Condition | None = None
+    retry: RetryPolicy | None = None
+    timeout_seconds: float | None = Field(default=None, gt=0, le=86_400)
+    on_failure: Literal["fail", "continue"] = "fail"
+    output_schema: dict[str, Any] | None = None
+    ends_workflow: bool = False
+
+
+class AgentStep(_StepBase):
+    """A workflow step that runs an agent to completion inside this Run.
+
+    ``input`` maps the nested agent's Run input. Its ``message`` field, when
+    mapped, is the first user message the agent sees; every other field is
+    serialised for it. Unmapped, the agent receives the workflow's own input.
+    """
 
     kind: Literal["agent"] = "agent"
-    name: str = Field(pattern=_NAME_PATTERN)
     spec: AgentSpec
+    input: Mapping = Field(default_factory=dict)
 
 
-class ToolStep(_SpecModel):
-    """A workflow step that calls one tool with fixed arguments."""
+class ToolStep(_StepBase):
+    """A workflow step that calls one tool.
+
+    ``arguments`` are written down; ``arguments_from`` fills or overrides
+    argument names from values the workflow already has. Both are resolved
+    before the call and the resolved arguments are what the log records.
+    """
 
     kind: Literal["tool"] = "tool"
-    name: str = Field(pattern=_NAME_PATTERN)
     tool: str = Field(pattern=_NAME_PATTERN)
     arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments_from: Mapping = Field(default_factory=dict)
 
 
-class WorkflowStepRef(_SpecModel):
-    """A workflow step that runs a nested workflow."""
+class WorkflowStepRef(_StepBase):
+    """A workflow step that runs a nested workflow, sharing this Run's log."""
 
     kind: Literal["workflow"] = "workflow"
-    name: str = Field(pattern=_NAME_PATTERN)
     spec: WorkflowSpec
+    input: Mapping = Field(default_factory=dict)
 
 
-WorkflowStep = Annotated[AgentStep | ToolStep | WorkflowStepRef, Field(discriminator="kind")]
+class ParallelStep(_StepBase):
+    """Run every branch at once; the output is each branch's output by name.
+
+    ``fail_fast`` cancels the other branches at the first failure. ``wait_all``
+    lets them finish and then reports the first failure, for branches whose
+    side effects should complete even when a sibling did not.
+    """
+
+    kind: Literal["parallel"] = "parallel"
+    branches: tuple[WorkflowStep, ...] = Field(min_length=1)
+    on_branch_failure: Literal["fail_fast", "wait_all"] = "fail_fast"
+
+
+class BranchCase(_SpecModel):
+    """One arm of a ``BranchStep``."""
+
+    name: str = Field(pattern=_NAME_PATTERN)
+    when: Condition
+    step: WorkflowStep
+
+
+class BranchStep(_StepBase):
+    """Choose which step runs by evaluating conditions.
+
+    ``first`` runs the first case whose condition holds, or ``otherwise``;
+    ``all`` runs every case that holds, concurrently. The output carries
+    ``chosen`` (the case names that ran) and each ran case's output by name.
+    """
+
+    kind: Literal["branch"] = "branch"
+    cases: tuple[BranchCase, ...] = Field(min_length=1)
+    otherwise: WorkflowStep | None = None
+    mode: Literal["first", "all"] = "first"
+
+    @field_validator("cases")
+    @classmethod
+    def _case_names_are_unique(cls, value: tuple[BranchCase, ...]) -> tuple[BranchCase, ...]:
+        _reject_duplicate_names(value, "cases")
+        return value
+
+
+class ForEachStep(_StepBase):
+    """Run ``body`` once per element of the list at ``items``.
+
+    Each iteration sees its element as ``item`` and its position as ``index``.
+    Iterations run ``concurrency`` at a time and each is memoised on its own,
+    so a crash mid-list resumes with the finished elements kept. The output is
+    ``{"items": [output per element, in order]}``.
+    """
+
+    kind: Literal["foreach"] = "foreach"
+    items: ValuePath
+    body: WorkflowStep
+    concurrency: int = Field(default=1, ge=1, le=64)
+    on_item_failure: Literal["fail_fast", "wait_all"] = "fail_fast"
+
+
+class LoopStep(_StepBase):
+    """Run ``body`` repeatedly: at least once, then while ``while_`` holds or
+    until ``until`` holds, whichever is set.
+
+    Each iteration sees its number as ``iteration`` (from 1) and the previous
+    iteration's output as ``steps.<body>.output``. ``max_iterations`` bounds
+    the loop; reaching it is a failure of kind ``loop_exhausted``. The output
+    is ``{"iterations": n, "last": <last body output>}``.
+    """
+
+    kind: Literal["loop"] = "loop"
+    body: WorkflowStep
+    until: Condition | None = None
+    while_: Condition | None = Field(default=None, alias="while")
+    max_iterations: int = Field(default=100, ge=1, le=10_000)
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _one_exit(self) -> Self:
+        if (self.until is None) == (self.while_ is None):
+            raise ValueError("a loop sets exactly one of `until` or `while`")
+        return self
+
+
+class MapStep(_StepBase):
+    """Shape data between steps, with no side effects.
+
+    The output is ``output`` with every reference resolved. This is the one
+    place a workflow rearranges values, and it is a step like any other so
+    the shaping is in the log rather than hidden inside another step's input.
+    """
+
+    kind: Literal["map"] = "map"
+    output: Mapping = Field(min_length=1)
+
+
+class SetStateStep(_StepBase):
+    """Write values into the workflow's state.
+
+    State is the small, named set of values a workflow carries across steps
+    and loop iterations, read as ``state.<name>``. It is derived from the log
+    by folding every completed ``set_state`` step in order, so it survives a
+    Worker crash without being stored anywhere else.
+    """
+
+    kind: Literal["set_state"] = "set_state"
+    values: Mapping = Field(min_length=1)
+
+
+class SleepStep(_StepBase):
+    """Wait, holding no Worker: the Run releases its lease and is claimable
+    again at the wake time. ``seconds`` or ``until`` (a path to an ISO 8601
+    timestamp) sets it; exactly one is required."""
+
+    kind: Literal["sleep"] = "sleep"
+    seconds: float | None = Field(default=None, gt=0, le=2_592_000)
+    until: ValuePath | None = None
+
+    @model_validator(mode="after")
+    def _one_wake(self) -> Self:
+        if (self.seconds is None) == (self.until is None):
+            raise ValueError("a sleep sets exactly one of `seconds` or `until`")
+        return self
+
+
+class WaitStep(_StepBase):
+    """Suspend until something outside the Run delivers a payload.
+
+    The Run suspends with reason ``external`` naming ``event`` and, when set,
+    ``payload_schema``; ``psych_runtime.resume(payload=...)`` completes the step
+    with the payload as its output. ``timeout_seconds`` bounds the wait; the
+    suspension expires past it and the Run is abandoned, exactly as an
+    unanswered approval is.
+    """
+
+    kind: Literal["wait"] = "wait"
+    event: str = Field(pattern=_NAME_PATTERN)
+    payload_schema: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: float | None = Field(default=None, gt=0, le=2_592_000)
+
+
+class HumanStep(_StepBase):
+    """Stop and ask a person, without a model in the loop.
+
+    Suspends with reason ``question`` carrying ``prompt`` and ``questions``;
+    the answer delivered by ``psych_runtime.resume(payload=...)`` is the step's
+    output. ``expires_seconds`` falls back to the workflow's
+    ``suspension.question_expires_seconds``.
+    """
+
+    kind: Literal["human"] = "human"
+    prompt: str = Field(min_length=1, max_length=8192)
+    questions: tuple[AskedQuestion, ...] = ()
+    expires_seconds: float | None = Field(default=None, gt=0, le=2_592_000)
+
+
+WorkflowStep = Annotated[
+    AgentStep
+    | ToolStep
+    | WorkflowStepRef
+    | ParallelStep
+    | BranchStep
+    | ForEachStep
+    | LoopStep
+    | MapStep
+    | SetStateStep
+    | SleepStep
+    | WaitStep
+    | HumanStep,
+    Field(discriminator="kind"),
+]
+
+STEP_KINDS: Final = (
+    "agent",
+    "tool",
+    "workflow",
+    "parallel",
+    "branch",
+    "foreach",
+    "loop",
+    "map",
+    "set_state",
+    "sleep",
+    "wait",
+    "human",
+)
+"""Every ``WorkflowStep.kind``, for a switch that must be exhaustive."""
+
+
+def iter_steps(steps: tuple[Any, ...]) -> list[Any]:
+    """Every step in ``steps`` and every step nested inside a composite one,
+    depth first. Does not enter a nested workflow's own steps: those are a
+    separate namespace with their own uniqueness rule."""
+    found: list[Any] = []
+    for step in steps:
+        found.append(step)
+        match step:
+            case ParallelStep():
+                found.extend(iter_steps(step.branches))
+            case BranchStep():
+                found.extend(iter_steps(tuple(case.step for case in step.cases)))
+                if step.otherwise is not None:
+                    found.extend(iter_steps((step.otherwise,)))
+            case ForEachStep() | LoopStep():
+                found.extend(iter_steps((step.body,)))
+            case _:
+                pass
+    return found
 
 
 class WorkflowSpec(_SpecModel):
@@ -1315,6 +1686,17 @@ class WorkflowSpec(_SpecModel):
     mcp_servers: tuple[McpServer, ...] = ()
     limits: Limits = Field(default_factory=Limits)
     suspension: SuspensionPolicy = Field(default_factory=SuspensionPolicy)
+    input_schema: dict[str, Any] | None = None
+    """A JSON Schema the Run's input must satisfy. Checked when the workflow
+    starts; a violation fails the Run before any step runs."""
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    """What ``state.<name>`` reads as before any ``set_state`` step ran."""
+    output: Mapping | None = None
+    """What the Run's output is. Unset, the output is every top-level step's
+    output by name, which is what a small pipeline wants; set, it is this
+    mapping resolved when the last step completes."""
+    retry: RetryPolicy = Field(default_factory=RetryPolicy)
+    """The default for every step that sets no ``retry`` of its own."""
 
     @field_validator("description")
     @classmethod
@@ -1325,8 +1707,10 @@ class WorkflowSpec(_SpecModel):
     @classmethod
     def _step_names_are_unique(cls, value: tuple[WorkflowStep, ...]) -> tuple[WorkflowStep, ...]:
         """Step ids derive from position, and a duplicate name makes a report
-        ambiguous about which step a record belongs to."""
-        _reject_duplicate_names(value, "steps")
+        ambiguous about which step a record belongs to. Checked across the
+        whole tree, including branches and loop bodies, because a ``ValuePath``
+        addresses a step by name from anywhere in the workflow."""
+        _reject_duplicate_names(tuple(iter_steps(value)), "steps")
         return value
 
     @field_validator("tools")
@@ -1405,3 +1789,19 @@ SubagentRef.model_rebuild()
 WorkflowStepRef.model_rebuild()
 AgentSpec.model_rebuild()
 WorkflowSpec.model_rebuild()
+
+
+# The step union is recursive (a branch holds steps, a step may be a nested
+# workflow holding steps), so the models that reference it are resolved once
+# every name exists.
+for _model in (
+    ParallelStep,
+    BranchCase,
+    BranchStep,
+    ForEachStep,
+    LoopStep,
+    WorkflowStepRef,
+    WorkflowSpec,
+    Condition,
+):
+    _model.model_rebuild()

@@ -9,6 +9,50 @@ and breaking changes are expected until the design survives a second consumer.
 
 ## Unreleased
 
+### Added
+
+- **Workflows with structure.** `WorkflowSpec.steps` may now hold nine more
+  step kinds beside `tool`, `agent` and `workflow`: `parallel`, `branch`
+  (data conditions, `first` or `all`, an `otherwise` arm), `foreach` (with
+  `concurrency`), `loop` (`until` or `while`, bounded by `max_iterations`),
+  `map`, `set_state`, `sleep`, `wait` (an event delivered by `resume()`) and
+  `human` (a question with no model in the loop). Every step takes `when`,
+  `retry`, `timeout_seconds`, `on_failure` and `output_schema`; the workflow
+  takes `input_schema`, `initial_state`, `output` and a default `retry`.
+  Steps read each other by reference (`ValuePath`: `input.`, `steps.<name>.output.`,
+  `state.`, `item`, `index`, `iteration`) and never by template. Composite
+  steps are steps in the log, so the tree is reconstructable without the Spec
+  and a finished parallel branch survives a crash in its sibling.
+- **Steps that wait hold no Worker.** A `sleep`, a retry backoff, a `wait`, a
+  `human` step and a tool step the `Policy` asks a person about all suspend
+  the Run with the step named on the record. Two new `SuspendReason` values:
+  `timer` (parked with a wake time, claimed again when it passes) and
+  `breakpoint`. `RunStatus` gains `pending_wait` and `suspended_step_id`;
+  `PendingApproval` and `PendingQuestion` carry `step_id` and allow
+  `call_id=None`.
+- **`psych_runtime.workflow_view()`**: the Run as a tree of `StepView`s with
+  status, attempts, input, output, failure, timing and children, plus the
+  step it is waiting on. **`psych_runtime.replay()`** starts a new Run from a
+  chosen step, copying the source's earlier results into its own log.
+  **`dispatch(breakpoints=, step_mode=)`** pauses a workflow before named
+  steps, or every step, and a resume payload toggles stepping.
+- **Retries** record each attempt as its own row (`will_retry`, `retry_at`),
+  back off by parking the Run, and never retry a denial or a composite whose
+  child already settled. `Limits.max_steps` now bounds a workflow's step
+  starts, iterations included.
+- The builder gained one method per step kind and `ref()`, `lit()`, `when()`,
+  `all_of()`, `any_of()`. `StepReport` and `SuspensionReport` carry the new
+  step fields. `WorkflowRequired` names a workflow-only operation asked of an
+  agent Run.
+
+### Changed
+
+- A workflow Run that fails now settles with the failing step's failure on
+  `run_settled`, so `status().failure_kind` says what failed instead of `None`.
+- An `AgentStep` with a mapped `input` delivers `input.message` to the nested
+  agent as the user message at that step, in both the model's conversation
+  and `thread()`.
+
 ### Security
 
 - **A deferred MCP server's tools bypassed approval.** Once a server's

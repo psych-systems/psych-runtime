@@ -345,6 +345,14 @@ async def _steps(
                     "failure": None,
                     "child_run_id": None,
                     "child": None,
+                    "path": record.path,
+                    "parent_step_id": record.parent_step_id,
+                    "iteration": record.iteration,
+                    "skipped": False,
+                    "will_retry": False,
+                    "replayed_from": record.replayed_from,
+                    "started_at": record.at,
+                    "completed_at": None,
                 }
             )
 
@@ -355,6 +363,9 @@ async def _steps(
                 output=record.output,
                 failure=record.failure,
                 child_run_id=record.child_run_id,
+                skipped=record.skipped,
+                will_retry=record.will_retry,
+                completed_at=record.at,
             )
 
     if child_depth > 0:
@@ -546,6 +557,9 @@ def _suspensions(records: Sequence[Record]) -> tuple[SuspensionReport, ...]:
                     "resumed_at": None,
                     "approved": None,
                     "payload": None,
+                    "step_id": record.step_id,
+                    "event": record.event,
+                    "wake_at": record.wake_at,
                 }
             )
 

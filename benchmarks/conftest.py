@@ -115,6 +115,23 @@ def benchmark(
                 )
             return
 
+        recorded_on = baselines.get("environment", {})
+        here = environment()
+        if (recorded_on.get("system"), recorded_on.get("machine")) != (
+            here.get("system"),
+            here.get("machine"),
+        ):
+            # A number measured on one box compared against a number measured
+            # on another is not a regression check; it is noise with a
+            # tolerance. The gate runs on the shape the baselines carry, so a
+            # developer's laptop skips rather than reporting a regression the
+            # code did not cause. A skip is missing evidence and says so.
+            pytest.skip(
+                f"baselines for {name} were measured on {recorded_on}; this run is on "
+                f"{here}. Compare on a matching machine, or record baselines for this one "
+                "with --benchmark-record."
+            )
+
         baseline = float(entry["value"])
         limit = baseline * (1 - tolerance) if higher_is_better else baseline * (1 + tolerance)
         regressed = value < limit if higher_is_better else value > limit

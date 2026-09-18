@@ -29,7 +29,11 @@ another Worker" and "shard the store".
 Every figure here belongs to the machine that produced it. The recorded
 baselines were measured on the shape named in `baselines.json` under
 `environment`, and a laptop, a shared CI runner and a dedicated box will
-disagree by more than the tolerances allow.
+disagree by more than the tolerances allow. So a run on a different operating
+system or CPU architecture from the recorded one **skips** the comparison and
+says why, rather than reporting a regression the code did not cause; the gate
+runs on the recorded shape and is where the comparison counts. Record your own
+baselines with `--benchmark-record` to compare locally.
 
 That is why the tolerances start wide. A shared CI runner is noisy, and a
 benchmark that fails on a noisy neighbour teaches people to rerun the job until

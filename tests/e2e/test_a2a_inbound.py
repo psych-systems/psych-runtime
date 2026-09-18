@@ -58,12 +58,19 @@ class _Harness:
         token: str,
         agent_id: str,
         account_id: str,
+        push: Any,
     ) -> None:
         self.client = client
         self.store = store
         self.token = token
         self.agent_id = agent_id
         self.account_id = account_id
+        self.push = push
+        """The deployment's ``PushSender``. A test that stands up a webhook
+        receiver stops this before closing the receiver: a post that connects
+        into a closing listener's backlog is never accepted, and on Windows
+        the proactor never releases that connection's transport, which
+        surfaces as an unclosed-transport warning at garbage collection."""
 
     def headers(self, *, token: str | None = None) -> dict[str, str]:
         """A conformant client's headers: a bearer token and a version (§3.6.1)."""
@@ -208,6 +215,7 @@ async def _harness(tmp_path: Path, model: FakeModel) -> AsyncIterator[_Harness]:
                 token=token,
                 agent_id=agent_id,
                 account_id=account.id,
+                push=sender,
             )
         finally:
             worker.stop()
@@ -450,6 +458,9 @@ class TestPushNotifications:
                     break
                 await asyncio.sleep(0.05)
         finally:
+            # Stop the watcher first, so no later event is posted into a
+            # listener that is closing. See ``_Harness.push``.
+            await harness.push.aclose()
             server.close()
             await server.wait_closed()
 

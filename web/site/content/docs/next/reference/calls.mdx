@@ -337,7 +337,7 @@ Args:
 *function*
 
 ```python
-async def resume(store: 'Store', run_id: 'RunId', *, payload: 'dict[str, Any] | None' = None, approved: 'bool | None' = None, by: 'str | None' = None) -> 'None'
+async def resume(store: 'Store', run_id: 'RunId', *, payload: 'dict[str, Any] | None' = None, approved: 'bool | None' = None, by: 'str | None' = None, scope: 'Scope | None' = None) -> 'None'
 ```
 
 Deliver a decision or payload to a suspended Run.
@@ -352,9 +352,14 @@ Args:
         identity out of the library) -- but an approval of a destructive
         call whose log cannot say who approved it is not an audit trail,
         so there has to be somewhere to put the answer.
+    scope: whose decision this is. Passing it refuses a Run belonging to
+        another tenant, the way every read entry point does. Approving
+        another tenant's destructive call is the write that most needs
+        the check.
 
 Raises:
     RunNotFound: no such Run.
+    AccessDenied: ``scope`` names a different tenant than the Run's.
     RunNotSuspended: the Run is not waiting for anything.
     SuspensionExpired: the decision arrived after the suspension's own
         expiry. The Run is settled ``ABANDONED`` first, so a stale approval
@@ -365,7 +370,7 @@ Raises:
 *function*
 
 ```python
-async def send(store: 'Store', run_id: 'RunId', *, message: 'dict[str, Any] | str', queue: 'QueueKind' = <QueueKind.STEER: 'steer'>) -> 'str'
+async def send(store: 'Store', run_id: 'RunId', *, message: 'dict[str, Any] | str', queue: 'QueueKind' = <QueueKind.STEER: 'steer'>, scope: 'Scope | None' = None) -> 'str'
 ```
 
 Put a message into a Run that is still executing.
@@ -378,15 +383,22 @@ after the first has already settled", this is not what you want; that is
 ``dispatch(continues=run_id, ...)``, which starts a fresh Run instead of
 trying to inject into one that is no longer there to receive it.
 
+Args:
+    scope: whose message this is. Passing it refuses a Run belonging to
+        another tenant.
+
 Returns:
     The queue entry's id.
+
+Raises:
+    AccessDenied: ``scope`` names a different tenant than the Run's.
 
 ### `interrupt`
 
 *function*
 
 ```python
-async def interrupt(store: 'Store', run_id: 'RunId', *, reason: 'str' = '', by: 'str | None' = None) -> 'None'
+async def interrupt(store: 'Store', run_id: 'RunId', *, reason: 'str' = '', by: 'str | None' = None, scope: 'Scope | None' = None) -> 'None'
 ```
 
 Stop a Run.
@@ -395,6 +407,13 @@ An abort is a Record, not a flag. A message sent immediately afterwards
 lands in the next-Run queue and both are visible in the log in order, which
 is what makes "stop and send another" a modelled transition rather than a
 race (DESIGN.md §9).
+
+Args:
+    scope: whose interrupt this is. Passing it refuses a Run belonging to
+        another tenant.
+
+Raises:
+    AccessDenied: ``scope`` names a different tenant than the Run's.
 
 ### `agent`
 

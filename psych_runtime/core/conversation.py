@@ -20,6 +20,15 @@ replaced records stay in the log and stay in the report; only what goes back to
 the model changes. So this walks the whole log and skips the compacted range,
 rather than the log being rewritten.
 
+## Whose tool calls reach the model
+
+Only the model's own. A ``run_code`` program can call tools too, and those
+calls are journalled with a ``parent_call_id`` naming the program's call; no
+assistant message here carries their ids, because the model never issued them.
+They are left out for that reason -- see ``_tool_result`` below -- and
+``psych_runtime.core.thread_view``, which serves a chat UI rather than a
+provider, deliberately keeps them.
+
 ## What the model is told about a failed or interrupted call
 
 ``_result_text`` below relays ``ToolCallFinished.failure.message`` for an error
@@ -70,7 +79,7 @@ from psych_runtime.core.records import (
     ToolOutcome,
 )
 
-__all__ = ["build_conversation"]
+__all__ = ["build_conversation", "child_finished_text"]
 
 
 def build_conversation(records: Iterable[Record]) -> list[Message]:
@@ -147,23 +156,44 @@ def build_conversation(records: Iterable[Record]) -> list[Message]:
                 # reject and the reducer refuses to write. A background child
                 # reporting back is new information arriving mid-conversation,
                 # which is exactly what a user message is.
-                messages.append(UserMessage(content=_child_finished_text(record)))
+                messages.append(UserMessage(content=child_finished_text(record)))
 
             case ToolCallStarted():
                 calls[record.call_id] = record
 
             case ToolCallFinished():
-                started = calls.get(record.call_id)
-                messages.append(
-                    ToolResultMessage(
-                        tool_call_id=record.call_id,
-                        name=started.tool if started is not None else "unknown",
-                        content=_result_text(record),
-                        is_error=record.outcome is not ToolOutcome.OK,
-                    )
-                )
+                messages.extend(_tool_result(record, calls.get(record.call_id)))
 
     return messages
+
+
+def _tool_result(
+    record: ToolCallFinished, started: ToolCallStarted | None
+) -> tuple[ToolResultMessage, ...]:
+    """The message answering ``record``, or nothing when the model never asked.
+
+    A ``run_code`` program can call tools of its own. Those calls are journalled
+    with a ``parent_call_id`` naming the program's call, and no assistant
+    message in this projection carries their ids: the model did not issue them.
+    Replaying one as a top-level tool result therefore answers a question that
+    was never asked, which providers reject outright -- so the *next* model call
+    fails wholesale, with a message about a call id nothing recognises.
+
+    Nothing is lost by leaving them out. What the program did with the result
+    already reaches the model inside the enclosing ``run_code`` result, and the
+    nested pair stays in the log and in the report, where ``parent_call_id`` is
+    what makes the call tree readable.
+    """
+    if started is not None and started.parent_call_id is not None:
+        return ()
+    return (
+        ToolResultMessage(
+            tool_call_id=record.call_id,
+            name=started.tool if started is not None else "unknown",
+            content=_result_text(record),
+            is_error=record.outcome is not ToolOutcome.OK,
+        ),
+    )
 
 
 def _compaction(records: Sequence[Record]) -> tuple[int, list[str]]:
@@ -317,7 +347,7 @@ def _stringify(result: Any) -> str:
         return repr(result)
 
 
-def _child_finished_text(record: SubagentFinished) -> str:
+def child_finished_text(record: SubagentFinished) -> str:
     """What the parent's model is told when a subagent it spawned finishes.
 
     Names the child the way the parent named it, because the parent addresses it

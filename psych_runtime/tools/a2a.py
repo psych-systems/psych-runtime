@@ -68,7 +68,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Final, Protocol, runtime_checkable
@@ -565,6 +565,24 @@ def _select_interface(peer: A2APeer, card: AgentCard) -> AgentInterface:
     )
 
 
+def a2a_task_ids(tool_results: Iterable[Any]) -> frozenset[str]:
+    """Every A2A task id a Run's settled tool calls have returned.
+
+    Read from the reducer's ``tool_results`` so it survives a crash and a
+    fresh attempt: the log, not the process, is what knows which tasks this
+    Run may continue. An ``A2ACallResult`` is recorded as its JSON dump, so
+    the shape looked for is a mapping with ``peer`` and ``task_id`` keys.
+    """
+    found: set[str] = set()
+    for settled in tool_results:
+        result = getattr(settled, "result", None)
+        if isinstance(result, Mapping) and "peer" in result:
+            task_id = result.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                found.add(task_id)
+    return frozenset(found)
+
+
 def _result_of(peer_name: str, response: SendMessageResponse) -> A2ACallResult:
     """Flatten a peer's answer into what the model reads.
 
@@ -863,14 +881,30 @@ class A2ATools:
         return card.description if card is not None else None
 
     async def call(
-        self, spec: AgentSpec, scope: Scope, name: str, arguments: dict[str, Any]
+        self,
+        spec: AgentSpec,
+        scope: Scope,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        known_task_ids: Collection[str] | None = None,
     ) -> A2ACallResult:
         """Run one peer-skill tool call.
+
+        Args:
+            known_task_ids: the task ids this Run has itself been handed by a
+                peer, from its own log. When given, a ``task_id`` outside the
+                set is refused: connections are pooled per tenant and
+                principal rather than per Run, so without this a
+                prompt-injected Run could continue any task the same tenant
+                ever opened with that peer. ``None`` skips the check, for a
+                caller with no Run to speak of.
 
         Raises:
             AccessDenied: no granted peer offers a callable skill of that
                 name. The model chose the name, so this is the same narrowing
-                check ``tools_for`` made when the name was offered.
+                check ``tools_for`` made when the name was offered. Also
+                raised for a ``task_id`` this Run never received.
             A2APeerUnreachable: the peer that offers it did not answer.
                 Propagated rather than folded into ``AccessDenied``, because
                 "that agent is down" and "no such tool" call for different
@@ -882,6 +916,12 @@ class A2ATools:
         task_id = arguments.get("task_id")
         if task_id is not None and not isinstance(task_id, str):
             raise ValueError(f"{name}'s task_id must be the string a previous call returned")
+        if task_id is not None and known_task_ids is not None and task_id not in known_task_ids:
+            raise AccessDenied(
+                f"task {task_id!r}",
+                "this run did not open or receive that task, so it may not continue it. "
+                "Use the task_id a previous call in this run returned, or start a new one.",
+            )
 
         unreachable: Exception | None = None
         for peer in spec.a2a_peers:
@@ -918,16 +958,24 @@ class A2ATools:
         permitted = await self._tenant_policy.permitted_tools(scope, peer)
         return list(permitted)
 
-    def caller(self, spec: AgentSpec, scope: Scope) -> Callable[..., Awaitable[Any]]:
+    def caller(
+        self,
+        spec: AgentSpec,
+        scope: Scope,
+        *,
+        known_task_ids: Callable[[], Collection[str]] | None = None,
+    ) -> Callable[..., Awaitable[Any]]:
         """``call`` bound to one Run, in the shape ``ToolExecutor`` expects.
 
         The Spec and Scope are closed over here for the reason
         ``McpTools.caller`` gives: both are fixed for a Run's life, and
         binding them per Run is what stops one Run's executor reaching
-        another's peers.
+        another's peers. ``known_task_ids`` is read at each call rather than
+        once, because the set grows as the Run's own calls return.
         """
 
         async def call(name: str, arguments: dict[str, Any]) -> Any:
-            return await self.call(spec, scope, name, arguments)
+            known = known_task_ids() if known_task_ids is not None else None
+            return await self.call(spec, scope, name, arguments, known_task_ids=known)
 
         return call

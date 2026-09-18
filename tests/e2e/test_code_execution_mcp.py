@@ -708,3 +708,60 @@ class TestBudgetsAndIsolation:
         assert "Bearer" not in rendered
         assert server.received_authorization_headers, "the call really was authorised"
         assert any(header and token in header for header in server.received_authorization_headers)
+
+
+class TestATypoAgainstALargeCatalogue:
+    """The reported case. A deployment binding a few hundred MCP tools, and a
+    program that calls a name it was not offered: the sandbox's own "available"
+    list outgrew the cap on a failure message, so building the report about the
+    typo raised a second error and the consumer described that one instead --
+    a mistyped tool name came back as a complaint about arguments."""
+
+    async def test_the_typo_is_reported_as_a_typo(
+        self, transport: HttpTransport, sandbox: Sandbox
+    ) -> None:
+        catalogue = [
+            wire_tool(f"get_orders_by_customer_and_status_{index:03d}", read_only=True)
+            for index in range(300)
+        ]
+        async with McpStubServer(catalogue) as server:
+            mcp = McpTools(McpPool(transport=transport, secrets=InMemorySecretResolver()))
+            program = (
+                "try:\n"
+                "    await call_tool('support__get_orders_by_customer', {})\n"
+                "except ToolError as err:\n"
+                "    return {'kind': err.kind, 'length': len(err.message)}\n"
+                "return {'kind': 'it ran'}"
+            )
+            _, report = await drive(
+                spec([make_server(server.url)]), _program(FakeModel(), program), mcp, sandbox
+            )
+
+        value = _run_code(report).result["value"]
+        assert value["kind"] == "binding_not_available"
+        assert value["length"] < 8192
+
+    async def test_an_uncaught_typo_reports_the_exception_not_the_arguments(
+        self, transport: HttpTransport, sandbox: Sandbox
+    ) -> None:
+        """The symptom as reported. An uncaught typo travels to the host as the
+        program's own failure, and a diagnostic too long to fit the cap on a
+        failure message used to raise *while that report was being built* --
+        which the consumer then described as the arguments not matching the
+        tool's schema, for arguments that were never wrong."""
+        catalogue = [
+            wire_tool(f"get_orders_by_customer_and_status_{index:03d}", read_only=True)
+            for index in range(300)
+        ]
+        async with McpStubServer(catalogue) as server:
+            mcp = McpTools(McpPool(transport=transport, secrets=InMemorySecretResolver()))
+            program = "await call_tool('support__get_orders_by_customer', {})"
+            _, report = await drive(
+                spec([make_server(server.url)]), _program(FakeModel(), program), mcp, sandbox
+            )
+
+        result = _run_code(report).result
+        assert result["ok"] is False
+        assert result["error"].startswith("no tool named")
+        assert len(result["error"]) < 8192
+        assert "more" in result["error"]

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Final, Protocol, runtime_checkable
 
@@ -174,4 +175,20 @@ def subscribe(
         async for record in stream(store, run_id):
             await on_record(record)
 
-    return asyncio.create_task(pump())
+    task = asyncio.create_task(pump())
+    # A task nobody awaits reports its exception at garbage collection, if
+    # ever. A ``CorruptLog`` or a raising callback here is a consumer's bridge
+    # silently going quiet, so it is logged the moment it happens.
+    task.add_done_callback(_report_subscription_end)
+    return task
+
+
+_LOG = logging.getLogger("psych.runtime.stream")
+
+
+def _report_subscription_end(task: asyncio.Task[None]) -> None:
+    if task.cancelled():
+        return
+    err = task.exception()
+    if err is not None:
+        _LOG.error("a stream subscription ended with an error", exc_info=err)

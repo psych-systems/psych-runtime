@@ -74,6 +74,7 @@ from psych_runtime.core.records import (
 )
 from psych_runtime.core.reducer import ToolResult, call_digest
 from psych_runtime.core.spec import AgentSpec, HttpTool, SpawnEnvelope
+from psych_runtime.core.tool_names import mcp_tool_name
 from psych_runtime.core.usage import Cost, Usage
 from psych_runtime.model.port import (
     ModelClient,
@@ -135,7 +136,7 @@ from psych_runtime.tools.code import (
 )
 from psych_runtime.tools.code import TOOL_NAME as RUN_CODE
 from psych_runtime.tools.code import digest as attachment_digest
-from psych_runtime.tools.deferred import DEFERRED_TOOL_NAMES, DeferredDiscovery
+from psych_runtime.tools.deferred import CALL_TOOL, DEFERRED_TOOL_NAMES, DeferredDiscovery
 from psych_runtime.tools.guidance import (
     describe_argument_errors,
     failure_guidance,
@@ -254,6 +255,16 @@ class ToolExecutor:
         a secret instead of an interface.
         """
         return self._registry
+
+    @property
+    def discovery(self) -> DeferredDiscovery | None:
+        """The deferred-catalogue executor, when any server is deferred.
+
+        Public because the approval gate has to classify a ``call_tool`` by the
+        tool it reaches, not by the wrapper, and the discovery is what knows
+        which tool that is.
+        """
+        return self._discovery
 
     def with_code_caller(self, code_caller: Any) -> ToolExecutor:
         """A copy of this executor that also runs ``run_code``.
@@ -1651,7 +1662,7 @@ class AgentLoop:
         offered_names = {definition.name for definition in offered}
 
         for index, call in enumerate(calls):
-            call_id = call.id if call.id is not None else new_tool_call_id()
+            call_id, duplicate_of = self._fresh_call_id(call.id)
             name = call.name or ""
 
             arguments, parse_failure = _parse_arguments(call.arguments_json)
@@ -1665,6 +1676,29 @@ class AgentLoop:
                 interruptible=_interruptible(self._spec, name),
                 safe_to_retry=self._safe_to_retry(name),
             )
+
+            if duplicate_of is not None:
+                # A repeated id is the one malformed input the reducer treats
+                # as corruption rather than as a mistake, because two starts
+                # under one id leave the model unable to tell the results
+                # apart. Handled here the way malformed JSON is: recorded
+                # under a fresh id as a failed call the model can read, rather
+                # than written as-is and abandoning the Run with no terminal
+                # record when the fold refuses it.
+                await self._journal.append(
+                    type="tool_call_finished",
+                    call_id=call_id,
+                    outcome=ToolOutcome.ERROR,
+                    failure=ToolFailure(
+                        kind="duplicate_call_id",
+                        message=failure_guidance(
+                            "duplicate_call_id",
+                            f"Tool call id {duplicate_of!r} was already used by an earlier "
+                            "call in this run, so this call was not executed.",
+                        ),
+                    ),
+                )
+                continue
 
             if parse_failure is not None:
                 # A malformed tool call is the model's mistake and the model can
@@ -1763,6 +1797,23 @@ class AgentLoop:
                 await self._answer_unstarted(calls[index + 1 :], "aborted")
                 break
 
+    def _fresh_call_id(self, proposed: ToolCallId | None) -> tuple[ToolCallId, ToolCallId | None]:
+        """The id to record a call under, and the one it collided with, if any.
+
+        The model's own id is kept whenever it is new to this Run: it is how
+        the result is addressed back in the model's context. An id already
+        started (open or settled) is replaced by a minted one, because the
+        reducer rightly refuses a second ``tool_call_started`` under one id.
+        """
+        if proposed is None:
+            return new_tool_call_id(), None
+        state = self._journal.state
+        if proposed in state.open_tool_calls or any(
+            result.call_id == proposed for result in state.tool_results
+        ):
+            return new_tool_call_id(), proposed
+        return proposed, None
+
     async def _answer_unstarted(self, remaining: Sequence[_AssembledCall], why: str) -> None:
         """Record a result for every call this turn will not run.
 
@@ -1774,7 +1825,7 @@ class AgentLoop:
         unstarted.
         """
         for call in remaining:
-            call_id = call.id if call.id is not None else new_tool_call_id()
+            call_id, _ = self._fresh_call_id(call.id)
             name = call.name or "<unnamed>"
             arguments, _ = _parse_arguments(call.arguments_json)
             await self._journal.append(
@@ -1929,6 +1980,16 @@ class AgentLoop:
             )
             return _Gate.DENIED
 
+        definition = next((d for d in offered if d.name == name), None)
+        if name == CALL_TOOL:
+            # The wrapper's own annotations say nothing about the tool being
+            # reached. Gate on the target: its qualified name for the Policy
+            # and the name-keyed overrides, its annotations for the selectors,
+            # exactly as if its catalogue had been preloaded. A target this Run
+            # cannot resolve is graded destructive so the wrapper fails closed
+            # rather than open; the executor refuses it anyway.
+            name, definition = await self._resolve_call_tool_target(arguments)
+
         try:
             decision = await self._policy.allow_tool(self._journal.scope, name, arguments)
         except Exception as err:
@@ -1936,7 +1997,6 @@ class AgentLoop:
             # it through, and must not take the Run's log with it.
             decision = Decision.deny(f"the policy check failed: {err}")
 
-        definition = next((d for d in offered if d.name == name), None)
         needs_human = decision.requires_approval or (
             decision.allowed
             and definition is not None
@@ -1977,6 +2037,31 @@ class AgentLoop:
             return _Gate.DENIED
 
         return _Gate.ALLOWED
+
+    async def _resolve_call_tool_target(
+        self, arguments: dict[str, Any]
+    ) -> tuple[str, ToolDefinition]:
+        """What a ``call_tool`` invocation should be gated as.
+
+        The target's qualified name and its own definition when this Run can
+        reach it; otherwise the qualified name the model asked for with a
+        synthetic ``destructive`` definition, so a selector that would have
+        caught the real tool still catches the attempt.
+        """
+        server = str(arguments.get("server", ""))
+        target = str(arguments.get("tool", ""))
+        qualified = mcp_tool_name(server or "unknown", target or "unknown")
+        discovery = self._executor.discovery
+        resolved = None
+        if discovery is not None:
+            resolved = await discovery.resolve_target(self._spec, arguments)
+        if resolved is not None:
+            return resolved.name, resolved
+        return qualified, ToolDefinition(
+            name=qualified,
+            description="an MCP tool this Run could not resolve",
+            annotations=frozenset({"destructive"}),
+        )
 
     async def _execute_and_record(
         self, call_id: ToolCallId, name: str, arguments: dict[str, Any]

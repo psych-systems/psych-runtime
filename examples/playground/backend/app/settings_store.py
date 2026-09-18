@@ -363,8 +363,10 @@ class RuntimeSettings(BaseModel):
     """Further profiles by name: a container image, or a remote service."""
     egress_allow: tuple[str, ...] = ()
     """Hostnames, or ``*.example.com`` patterns, this account's Runs may reach.
-    Empty allows everything. Applies to every outbound call Psych makes for
-    this account: the model, MCP, HTTP tools and A2A peers alike."""
+    Empty allows every public host and loopback; link-local, private (RFC
+    1918) and cloud-metadata addresses need an explicit, wildcard-free entry.
+    Applies to every outbound call Psych makes for this account: the model,
+    MCP, HTTP tools and A2A peers alike."""
     denied_tools: tuple[str, ...] = ()
     """Tool names the ``Policy`` port refuses for this account, whatever any
     Spec grants. The refusal reaches the model as the tool's result."""

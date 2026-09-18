@@ -23,7 +23,10 @@ layer for what is, at Psych's scale, an occasional large write.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -67,9 +70,14 @@ class FilesystemBlobStore:
     ) -> None:
         content_path = self._content_path(key)
         content_path.parent.mkdir(parents=True, exist_ok=True)
-        content_path.write_bytes(content)
-        self._meta_path(key).write_text(
-            json.dumps({"content_type": content_type, "metadata": metadata}), encoding="utf-8"
+        # Content first, then the sidecar, each landing whole or not at all.
+        # This adapter targets shared filesystems where a concurrent reader
+        # is ordinary, and a plain write let it see a half-written result or
+        # content with no metadata.
+        _replace_atomically(content_path, content)
+        _replace_atomically(
+            self._meta_path(key),
+            json.dumps({"content_type": content_type, "metadata": metadata}).encode("utf-8"),
         )
 
     async def get(self, key: BlobKey, *, offset: int = 0, length: int | None = None) -> bytes:
@@ -104,3 +112,22 @@ class FilesystemBlobStore:
     def _delete_sync(self, key: BlobKey) -> None:
         self._content_path(key).unlink(missing_ok=True)
         self._meta_path(key).unlink(missing_ok=True)
+
+
+def _replace_atomically(path: Path, data: bytes) -> None:
+    """Write ``data`` to a temporary file beside ``path`` and rename it over.
+
+    ``os.replace`` is atomic on every filesystem this adapter targets, so a
+    reader sees either the old file or the new one, never a prefix.
+    """
+    handle, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        Path(tmp).replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            Path(tmp).unlink()
+        raise

@@ -168,6 +168,7 @@ async def resume(
     payload: dict[str, Any] | None = None,
     approved: bool | None = None,
     by: str | None = None,
+    scope: Scope | None = None,
 ) -> None:
     """Deliver a decision or payload to a suspended Run.
 
@@ -181,14 +182,20 @@ async def resume(
             identity out of the library) -- but an approval of a destructive
             call whose log cannot say who approved it is not an audit trail,
             so there has to be somewhere to put the answer.
+        scope: whose decision this is. Passing it refuses a Run belonging to
+            another tenant, the way every read entry point does. Approving
+            another tenant's destructive call is the write that most needs
+            the check.
 
     Raises:
         RunNotFound: no such Run.
+        AccessDenied: ``scope`` names a different tenant than the Run's.
         RunNotSuspended: the Run is not waiting for anything.
         SuspensionExpired: the decision arrived after the suspension's own
             expiry. The Run is settled ``ABANDONED`` first, so a stale approval
             never executes (DESIGN.md §11).
     """
+    await _check_run_scope(store, run_id, scope)
     await _resume(store, run_id, payload=payload, approved=approved, by=by)
 
 
@@ -198,6 +205,7 @@ async def send(
     *,
     message: dict[str, Any] | str,
     queue: QueueKind = QueueKind.STEER,
+    scope: Scope | None = None,
 ) -> str:
     """Put a message into a Run that is still executing.
 
@@ -209,14 +217,27 @@ async def send(
     ``dispatch(continues=run_id, ...)``, which starts a fresh Run instead of
     trying to inject into one that is no longer there to receive it.
 
+    Args:
+        scope: whose message this is. Passing it refuses a Run belonging to
+            another tenant.
+
     Returns:
         The queue entry's id.
+
+    Raises:
+        AccessDenied: ``scope`` names a different tenant than the Run's.
     """
+    await _check_run_scope(store, run_id, scope)
     return await _send(store, run_id, message=message, queue=queue)
 
 
 async def interrupt(
-    store: Store, run_id: RunId, *, reason: str = "", by: str | None = None
+    store: Store,
+    run_id: RunId,
+    *,
+    reason: str = "",
+    by: str | None = None,
+    scope: Scope | None = None,
 ) -> None:
     """Stop a Run.
 
@@ -224,7 +245,15 @@ async def interrupt(
     lands in the next-Run queue and both are visible in the log in order, which
     is what makes "stop and send another" a modelled transition rather than a
     race (DESIGN.md §9).
+
+    Args:
+        scope: whose interrupt this is. Passing it refuses a Run belonging to
+            another tenant.
+
+    Raises:
+        AccessDenied: ``scope`` names a different tenant than the Run's.
     """
+    await _check_run_scope(store, run_id, scope)
     await _interrupt(store, run_id, reason=reason, by=by)
 
 
@@ -370,6 +399,20 @@ def _check_scope(owner: Scope, asked: Scope | None, run_id: RunId) -> None:
             f"run {run_id}",
             f"belongs to tenant {owner.tenant!r}, not {asked.tenant!r}",
         )
+
+
+async def _check_run_scope(store: Store, run_id: RunId, asked: Scope | None) -> None:
+    """``_check_scope`` for a write entry point that has only a ``run_id``.
+
+    Resolves the Run's owner first. Skipped entirely when no Scope was passed,
+    so a caller that has not adopted the parameter pays no extra read.
+    """
+    if asked is None:
+        return
+    header = await store.get_run(run_id)
+    if header is None:
+        raise RunNotFound(run_id)
+    _check_scope(header.scope, asked, run_id)
 
 
 async def records(

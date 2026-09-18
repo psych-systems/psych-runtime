@@ -74,6 +74,17 @@ class ClientIdentityConfig(BaseModel):
     redirect_uris: tuple[str, ...] = ()
     """Required (non-empty) for the authorization code grant; ignored for
     client credentials, which has no redirect."""
+    token_endpoint_auth_method: Literal["none", "client_secret_basic", "client_secret_post"] = (
+        "none"
+    )
+    """What Dynamic Client Registration asks the server for.
+
+    ``none`` registers a public client, which is right for the native,
+    embedded case this package defaults to, and any ``client_secret`` the
+    server returns anyway is discarded rather than kept unused. A server-side
+    deployment that can keep a secret sets ``client_secret_basic`` (the
+    method the token path prefers when it holds one) and the issued secret is
+    then carried on the identity and used at the token endpoint."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +160,7 @@ async def _register_dynamically(
         "client_name": config.client_name,
         "application_type": config.application_type,
         "grant_types": list(grant_types),
-        "token_endpoint_auth_method": "none",
+        "token_endpoint_auth_method": config.token_endpoint_auth_method,
     }
     if "authorization_code" in grant_types:
         if not config.redirect_uris:
@@ -192,4 +203,11 @@ async def _register_dynamically(
             f"Dynamic Client Registration at {registration_endpoint!r} returned a response "
             "with no usable client_id"
         ) from err
-    return ClientIdentity(client_id=parsed.client_id, client_secret=parsed.client_secret, via="dcr")
+    return ClientIdentity(
+        client_id=parsed.client_id,
+        # A public client has no secret to present, whatever the server sent.
+        client_secret=(
+            parsed.client_secret if config.token_endpoint_auth_method != "none" else None
+        ),
+        via="dcr",
+    )

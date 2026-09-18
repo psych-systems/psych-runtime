@@ -569,7 +569,7 @@ def reduce(  # noqa: PLR0912, PLR0915
     consumed_entry_ids: set[str] = set()
 
     for record in ordered:
-        _check_belongs(record, resolved_run_id)
+        _check_belongs(record, resolved_run_id, state.scope)
         _check_sequence(record, expected_seq, resolved_run_id)
         expected_seq = record.seq + 1
 
@@ -658,6 +658,7 @@ def reduce(  # noqa: PLR0912, PLR0915
                         record.seq,
                         "a model call started outside any turn.",
                     )
+                _check_turn(record, record.turn, state.turn, resolved_run_id, "a model call")
                 if state.model_call_open:
                     raise CorruptLog(
                         CorruptionReason.MULTIPLE_OPEN_OPERATIONS,
@@ -670,6 +671,9 @@ def reduce(  # noqa: PLR0912, PLR0915
 
             case ModelCallFinished():
                 _require_open_model_call(state, record.seq, resolved_run_id, "finished")
+                _check_turn(
+                    record, record.turn, state.turn, resolved_run_id, "a finished model call"
+                )
                 state.model_calls += 1
                 state.usage = state.usage + record.usage
                 if not record.usage_reported:
@@ -687,6 +691,7 @@ def reduce(  # noqa: PLR0912, PLR0915
 
             case ModelCallFailed():
                 _require_open_model_call(state, record.seq, resolved_run_id, "failed")
+                _check_turn(record, record.turn, state.turn, resolved_run_id, "a failed model call")
                 state.failed_model_calls += 1
                 if record.will_retry:
                     state.transient_retries_used += 1
@@ -704,6 +709,10 @@ def reduce(  # noqa: PLR0912, PLR0915
                         "unable to tell the results apart.",
                     )
                 started_call_ids.add(record.call_id)
+                # ``max(..., 1)``: a tool call has ``turn >= 1`` by schema, and
+                # a call recorded before any turn opened (a resumed approval
+                # executing on a fresh attempt) is stamped 1.
+                _check_turn(record, record.turn, max(state.turn, 1), resolved_run_id, "a tool call")
                 if record.tool == RUN_CODE_TOOL_NAME:
                     state.program_call_ids.add(record.call_id)
                 elif (
@@ -1156,7 +1165,7 @@ def _continue_from(prior: RunStateView) -> RunStateView:
 # ---------------------------------------------------------------------------
 
 
-def _check_belongs(record: Record, run_id: RunId) -> None:
+def _check_belongs(record: Record, run_id: RunId, scope: Scope) -> None:
     if record.run_id != run_id:
         raise CorruptLog(
             CorruptionReason.UNKNOWN_OPERATION,
@@ -1165,6 +1174,38 @@ def _check_belongs(record: Record, run_id: RunId) -> None:
             f"this record belongs to run {record.run_id}. A log holds one Run's "
             "records, and mixing two would let one tenant's state derive from "
             "another's records.",
+        )
+    if record.scope.tenant != scope.tenant:
+        # The same rule for the other half of a record's address, on the
+        # tenant only: a child Run's records may carry a different principal
+        # or labels than its admission, but never another tenant. A record
+        # with the right run id under another tenant is either a writer bug
+        # or a store that mixed two tenants' rows, and folding it would derive
+        # one tenant's state from another's record.
+        raise CorruptLog(
+            CorruptionReason.UNKNOWN_OPERATION,
+            run_id,
+            record.seq,
+            f"this record carries scope tenant {record.scope.tenant!r}; the Run's tenant is "
+            f"{scope.tenant!r}. A log holds one tenant's records.",
+        )
+
+
+def _check_turn(record: Record, turn: int, state_turn: int, run_id: RunId, what: str) -> None:
+    """A record that says which turn it belongs to must name the open one.
+
+    ``TurnStarted`` is checked against ``state.turn + 1``; everything inside a
+    turn must match ``state.turn`` exactly. Without this a model call could
+    start in turn 1 and finish in turn 2, and the report, which joins the two
+    by turn, would fail or attribute the call to the wrong step. The log is
+    the truth and nothing downstream repairs it (DESIGN.md §6).
+    """
+    if turn != state_turn:
+        raise CorruptLog(
+            CorruptionReason.UNKNOWN_OPERATION,
+            run_id,
+            record.seq,
+            f"{what} is stamped turn {turn} while turn {state_turn} is the current one.",
         )
 
 

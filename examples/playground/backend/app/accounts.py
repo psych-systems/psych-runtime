@@ -347,7 +347,11 @@ class AccountsFile(BaseModel):
         pruned it yet.
         """
         token_hash = hash_session_token(token)
-        session = next((s for s in self.sessions if s.token_hash == token_hash), None)
+        # compare_digest, as the password check does: a digest comparison
+        # that short-circuits leaks how much of a guess matched.
+        session = next(
+            (s for s in self.sessions if secrets.compare_digest(s.token_hash, token_hash)), None
+        )
         if session is None or not session.is_live(now):
             return None
         return self.by_id(session.account_id)

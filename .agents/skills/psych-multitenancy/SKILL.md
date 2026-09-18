@@ -34,7 +34,7 @@ it authorised.
 
 Psych records `principal` and passes it to `Policy`. It never interprets it.
 
-## Pass `scope=` on every read
+## Pass `scope=` on every read, and on every write
 
 ```python
 await psych_runtime.status(store, run_id, scope=scope)
@@ -44,7 +44,15 @@ await psych_runtime.thread(store, run_id, scope=scope)
 await psych_runtime.stream(store, run_id, scope=scope)
 await psych_runtime.records(store, run_id, scope=scope)
 await psych_runtime.state(store, run_id, scope=scope)
+
+await psych_runtime.resume(store, run_id, approved=True, by=who, scope=scope)
+await psych_runtime.send(store, run_id, message="...", scope=scope)
+await psych_runtime.interrupt(store, run_id, reason="...", scope=scope)
 ```
+
+The three writes matter at least as much as the reads: without `scope=`,
+anyone holding a run id can approve another tenant's destructive call, steer
+their conversation, or stop their Run.
 
 The parameter is optional so existing callers keep working while they add it.
 **A consumer serving end users should always pass it**: without it, one leaked
@@ -158,6 +166,21 @@ site bypasses the seam and is rejected by the egress tests.
 Passing an `httpx` client with `follow_redirects=True` raises. A redirect is a
 second request to a host the policy never saw, which turns one allowed URL into
 an arbitrary one.
+
+Bodies are bounded as well as routed. `HttpTransport.request` reads a response
+incrementally and refuses it past `DEFAULT_MAX_RESPONSE_BYTES` (16 MiB) with
+`ResponseTooLarge`; pass `max_bytes=` per call when a route has reason to
+differ. That covers every complete response a remote party controls: Agent
+Cards, A2A replies, OAuth discovery documents, HTTP tool answers. Streamed
+routes have their own ceilings: the model adapter reads at most 64 KiB of an
+error page and stops a server-sent-event stream past 256 MiB, and the MCP
+client caps one event at 16 MiB (`psych-mcp`).
+
+Internal addresses are the policy's job, and the seam gives it the final URL
+including the query string. The Playground's `AccountEgressPolicy` is the
+worked example: public hosts and loopback are open by default, and link-local,
+private (RFC 1918) and cloud-metadata addresses need an explicit,
+wildcard-free entry.
 
 The sandbox is the fourth route: granted network access is not a bound HTTP
 client handed to the program. Anything it fetches goes through a binding that

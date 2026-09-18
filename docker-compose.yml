@@ -24,7 +24,7 @@ services:
     environment:
       # The one line that swaps the in-memory store for a real one. Everything
       # else about the image is identical, which is the point of a Store port.
-      PSYCH_PLAYGROUND_POSTGRES_DSN: postgresql://psych:psych@postgres:5432/psych
+      PSYCH_PLAYGROUND_POSTGRES_DSN: postgresql://psych:${PSYCH_POSTGRES_PASSWORD:?set PSYCH_POSTGRES_PASSWORD in .env or the environment}@postgres:5432/psych
       # Turns tracing on. Unset in the plain `docker run`, where the no-op
       # `Telemetry` keeps the quick look a single command with no collector to
       # stand up. Psych opens the spans either way; this decides whether
@@ -45,7 +45,10 @@ services:
     image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
     environment:
       POSTGRES_USER: psych
-      POSTGRES_PASSWORD: psych
+      # Required rather than defaulted: this is the file people copy, and a
+      # shipped password becomes a deployed one. Put it in .env (see
+      # .env.example) or the environment.
+      POSTGRES_PASSWORD: ${PSYCH_POSTGRES_PASSWORD:?set PSYCH_POSTGRES_PASSWORD in .env or the environment}
       POSTGRES_DB: psych
     volumes:
       - psych-postgres:/var/lib/postgresql/data

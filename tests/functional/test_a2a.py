@@ -504,6 +504,34 @@ class TestCalling:
             assert isinstance(params, dict)
             assert params["message"]["taskId"] == "peer-task-1"
 
+    async def test_a_task_this_run_never_received_cannot_be_continued(self) -> None:
+        """Connections are pooled per tenant and principal, not per Run, so a
+        prompt-injected Run could otherwise continue any task the same tenant
+        ever opened with the peer. The runtime hands ``call`` the task ids its
+        own log shows, and anything else is refused before the peer is asked."""
+        from psych_runtime.core.errors import AccessDenied
+
+        async with A2AStubPeer() as peer, HttpTransport() as transport:
+            pool = A2APool(transport=transport, secrets=_secrets())
+            spec_peer = _peer(peer.url)
+            with pytest.raises(AccessDenied, match="did not open or receive"):
+                await A2ATools(pool).call(
+                    _spec(spec_peer),
+                    TENANT_A,
+                    "research__summarise",
+                    {"message": "more", "task_id": "someone-elses-task"},
+                    known_task_ids=frozenset({"peer-task-1"}),
+                )
+            assert peer.calls == [], "the peer must not be asked"
+            result = await A2ATools(pool).call(
+                _spec(spec_peer),
+                TENANT_A,
+                "research__summarise",
+                {"message": "more", "task_id": "peer-task-1"},
+                known_task_ids=frozenset({"peer-task-1"}),
+            )
+            assert result.task_id == "peer-task-1"
+
     async def test_a_peer_needing_input_is_reported_with_its_state(self) -> None:
         """The model needs the state to know it must answer, not just prose."""
         async with A2AStubPeer(state=TaskState.INPUT_REQUIRED) as peer, HttpTransport() as t:

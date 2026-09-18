@@ -58,7 +58,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from psych_runtime.core.code_execution import Enforcement, IsolationLevel
 from psych_runtime.core.errors import PsychError
@@ -307,6 +307,18 @@ class SandboxDescription(BaseModel):
     notes: tuple[str, ...] = ()
 
 
+def _clamped(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters, saying so where it was cut.
+
+    The marker is part of the budget, so the result is never longer than
+    ``limit`` however long the input was.
+    """
+    if len(text) <= limit:
+        return text
+    marker = "... [truncated]"
+    return text[: max(limit - len(marker), 0)] + marker
+
+
 class SandboxFailure(BaseModel):
     """A sandboxed program's failure, as data the model can read.
 
@@ -333,6 +345,24 @@ class SandboxFailure(BaseModel):
     raise ``SandboxSetupError`` instead."""
     message: str = Field(max_length=8192)
     traceback: str | None = Field(default=None, max_length=65_536)
+
+    @field_validator("message", "traceback", mode="before")
+    @classmethod
+    def _clamp(cls, value: object, info: ValidationInfo) -> object:
+        """Cut an over-long message or traceback to the cap instead of refusing it.
+
+        A failure report must be constructible from whatever actually went
+        wrong. Rejecting one for length turns a plain "no tool named X"
+        into a validation error raised while describing the first error,
+        which the consumer then reports as something else entirely -- the
+        real failure is lost and the reported one never happened. The caps
+        stay where they are, because this text is replayed to a model and
+        the bound is on what the model is handed; only the response to
+        exceeding them changes, from a refusal to a marked truncation.
+        """
+        if not isinstance(value, str):
+            return value
+        return _clamped(value, 8192 if info.field_name == "message" else 65_536)
 
 
 class SandboxArtifact(BaseModel):

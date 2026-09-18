@@ -36,6 +36,9 @@ def run_template(project: Path) -> subprocess.CompletedProcess[str]:
     """Execute a generated project's ``main.py`` with no provider configured."""
     environment = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
     environment["PYTHONPATH"] = str(REPO)
+    # The scaffold identifies callers from headers and refuses to boot unless
+    # told this is local development; the test is exactly that.
+    environment["PSYCH_DEV_HEADER_AUTH"] = "1"
     return subprocess.run(
         [sys.executable, "main.py"],
         cwd=project,
@@ -204,6 +207,7 @@ class TestTheFastapiTemplateServesRuns:
         """The in-process template must not inherit a developer's provider key."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("PSYCH_POSTGRES_DSN", raising=False)
+        monkeypatch.setenv("PSYCH_DEV_HEADER_AUTH", "1")
 
     @staticmethod
     def generate(tmp_path: Path) -> Path:
@@ -274,6 +278,7 @@ class TestTheFastapiTemplateServesRuns:
         project = self.generate(tmp_path)
         environment = {k: v for k, v in os.environ.items() if k != "PSYCH_POSTGRES_DSN"}
         environment["PYTHONPATH"] = str(REPO)
+        environment["PSYCH_DEV_HEADER_AUTH"] = "1"
 
         result = subprocess.run(
             [sys.executable, "worker.py"],

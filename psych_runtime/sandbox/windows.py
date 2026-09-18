@@ -693,11 +693,13 @@ def _grade(ready: ReadyFrame, *, network_granted: bool) -> SandboxGuarantees:
     network = unavailable
     if not network_granted and ready.network_denied:
         network = enforced
-    filesystem = unavailable
-    if ready.canary_readable is False:
-        filesystem = enforced
+    # Always unavailable, whatever the canary said. This backend mounts no
+    # filesystem view of its own: a canary that happened to be unreadable
+    # (an antivirus lock, an ACL quirk) is not containment, and grading it
+    # ``enforced`` is what the profiles and the execution attachment would
+    # then trust. The module docstring makes the same promise.
     return SandboxGuarantees(
-        filesystem=filesystem,
+        filesystem=unavailable,
         network=network,
         process_tree=enforced,
         identity=unavailable,

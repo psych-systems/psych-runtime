@@ -9,11 +9,13 @@ the Worker that resumes need not be the Worker that asked.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 import psych_runtime
+from psych_runtime.core.ids import ToolCallId
 from psych_runtime.core.records import (
     Suspended,
     SuspendReason,
@@ -21,7 +23,14 @@ from psych_runtime.core.records import (
     ToolOutcome,
 )
 from psych_runtime.core.scope import Scope
-from psych_runtime.core.spec import AgentSpec, CodeTool, Limits, ModelRef, SubagentRef
+from psych_runtime.core.spec import (
+    AgentSpec,
+    CodeTool,
+    Limits,
+    ModelRef,
+    SubagentRef,
+    SuspensionPolicy,
+)
 from psych_runtime.runtime.abort import AbortSignal
 from psych_runtime.runtime.execute import Runtime
 from psych_runtime.runtime.journal import Journal
@@ -33,7 +42,7 @@ from psych_runtime.runtime.subagent import (
     resolve_child_depth,
 )
 from psych_runtime.store.memory import InMemoryStore
-from psych_runtime.testing.fake_model import FakeModel
+from psych_runtime.testing.fake_model import FakeModel, ToolCallScript
 from psych_runtime.tools.policy import Decision
 from psych_runtime.tools.registry import ToolRegistry
 
@@ -134,6 +143,56 @@ class TestPolicyDenial:
         )
         await run_agent(store, agent(), model, build_registry(calls), policy=DenyRefunds())
         assert calls == ["looked up A1"]
+
+
+class TestDuplicateCallIds:
+    async def test_a_repeated_call_id_fails_that_call_and_the_run_settles(self) -> None:
+        """A provider or proxy that reuses a tool-call id used to leave a Run
+        with no terminal record: the reducer refused the second start as
+        corruption and the Worker gave up. The second call is failed under a
+        fresh id instead, and the Run settles normally."""
+        store = InMemoryStore()
+        calls: list[str] = []
+        same = ToolCallId("call_dup")
+        model = (
+            FakeModel()
+            .turn(
+                tool_calls=[
+                    ToolCallScript("lookup", {"order_id": "A1"}, call_id=same),
+                    ToolCallScript("lookup", {"order_id": "B2"}, call_id=same),
+                ]
+            )
+            .turn(text="done")
+        )
+        dispatched, _ = await run_agent(store, agent(), model, build_registry(calls))
+
+        state = await psych_runtime.state(store, dispatched.run_id)
+        assert state.settled
+        assert state.terminal_state is TerminalState.COMPLETED
+        assert calls == ["looked up A1"], "only the first call under the id ran"
+        outcomes = {r.call_id: r for r in state.tool_results}
+        assert outcomes[same].outcome is ToolOutcome.OK
+        (failed,) = [r for r in state.tool_results if r.call_id != same]
+        assert failed.outcome is ToolOutcome.ERROR
+        assert failed.failure is not None
+        assert failed.failure.kind == "duplicate_call_id"
+
+    async def test_an_id_from_an_earlier_turn_is_also_refused(self) -> None:
+        store = InMemoryStore()
+        calls: list[str] = []
+        same = ToolCallId("call_again")
+        model = (
+            FakeModel()
+            .turn(tool_calls=[ToolCallScript("lookup", {"order_id": "A1"}, call_id=same)])
+            .turn(tool_calls=[ToolCallScript("lookup", {"order_id": "B2"}, call_id=same)])
+            .turn(text="done")
+        )
+        dispatched, _ = await run_agent(store, agent(), model, build_registry(calls))
+        state = await psych_runtime.state(store, dispatched.run_id)
+        assert state.terminal_state is TerminalState.COMPLETED
+        assert calls == ["looked up A1"]
+        kinds = [r.failure.kind for r in state.tool_results if r.failure is not None]
+        assert kinds == ["duplicate_call_id"]
 
 
 class TestApprovals:
@@ -242,6 +301,49 @@ class TestApprovals:
         records = await store.read(dispatched.run_id)
         suspension = next(r for r in records if isinstance(r, Suspended))
         assert suspension.expires_at > suspension.at
+
+    async def test_resuming_from_another_tenant_is_refused(self) -> None:
+        """The write entry points take a Scope like the reads do. A leaked run
+        id must not let one tenant approve another's destructive call."""
+        store = InMemoryStore()
+        model = FakeModel().turn(tool_calls=[("refund", {"order_id": "A1"})])
+        dispatched, _ = await run_agent(
+            store, agent(), model, build_registry([]), approval_selectors=("@destructive",)
+        )
+        other = Scope(tenant="globex", principal="user-1")
+        with pytest.raises(psych_runtime.AccessDenied):
+            await psych_runtime.resume(store, dispatched.run_id, approved=True, scope=other)
+        with pytest.raises(psych_runtime.AccessDenied):
+            await psych_runtime.interrupt(store, dispatched.run_id, scope=other)
+        with pytest.raises(psych_runtime.AccessDenied):
+            await psych_runtime.send(store, dispatched.run_id, message="hi", scope=other)
+        state = await psych_runtime.state(store, dispatched.run_id)
+        assert state.suspended, "nothing about the Run changed"
+        # The owning tenant is not affected.
+        await psych_runtime.resume(store, dispatched.run_id, approved=True, scope=SCOPE)
+
+    async def test_a_decision_after_expiry_abandons_the_run(self) -> None:
+        """DESIGN.md §11: a stale approval never executes. The Run is settled
+        ``ABANDONED`` with a failure the consumer can read, and the decision is
+        refused as ``SuspensionExpired``."""
+        store = InMemoryStore()
+        calls: list[str] = []
+        model = FakeModel().turn(tool_calls=[("refund", {"order_id": "A1"})])
+        spec = agent(suspension=SuspensionPolicy(approval_expires_seconds=0.01))
+        dispatched, _ = await run_agent(
+            store, spec, model, build_registry(calls), approval_selectors=("@destructive",)
+        )
+        await asyncio.sleep(0.05)
+
+        with pytest.raises(psych_runtime.SuspensionExpired):
+            await psych_runtime.resume(store, dispatched.run_id, approved=True)
+
+        state = await psych_runtime.state(store, dispatched.run_id)
+        assert state.settled
+        assert state.terminal_state is TerminalState.ABANDONED
+        assert state.failure is not None
+        assert state.failure.kind == "suspension_expired"
+        assert calls == [], "the stale approval must not run the tool"
 
     async def test_resuming_a_run_that_is_not_suspended_is_refused(self) -> None:
         store = InMemoryStore()

@@ -41,7 +41,7 @@ spec = psych_runtime.AgentSpec(
 | `description` | `""` | Shown to a caller choosing between agents, including a parent's delegation tool. |
 | `instructions` | `""` | The system prompt body. May reference a skill with `[[skill:name]]`. |
 | `model` | required | A `ModelRef`. No default: there is no model Psych could pick that would not surprise someone. |
-| `tools` | `()` | `CodeTool` and `HttpTool` grants, by name. |
+| `tools` | `()` | `CodeTool` and `HttpTool` grants, by name. A tool name is at most 64 characters of `[A-Za-z0-9_-]`, the provider's own constraint. |
 | `mcp_servers` | `()` | See `psych-mcp`. |
 | `a2a_peers` | `()` | See `psych-a2a`. |
 | `skills` | `()` | Instruction packs loaded on demand. See `psych-agent-skills`. |
@@ -195,6 +195,10 @@ and one left alone produce the same hash, but a `""` and a `None` may not.
   `update_tasks`, `show_component`, `run_code`, plus the delegation and
   discovery tools. The model would see two tools with one name and could address
   neither.
+- **A tool name that looks minted for a connected server is refused.**
+  `CodeTool(name="github__search_issues")` beside `McpServer(name="github")`
+  (or an `A2APeer` of that name) fails at publish, because the resolver would
+  refuse the collision at every turn once the server exposes that tool.
 - **A `SubagentRef` description must be at least 20 characters.** Bad routing
   traces back to vague descriptions more often than to anything else.
 - **Never put a function in a Spec.** Register it and put the name in.

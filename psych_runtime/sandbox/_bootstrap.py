@@ -95,8 +95,18 @@ def _connect(spec):
     if kind == "fd":
         return socket.socket(fileno=int(rest))
     if kind == "unix":
+        # ``unix:<path>`` or ``unix:<path>:<token>``. The token, when the
+        # adapter minted one, is the first line on the wire, and the host
+        # drops a connection that does not present it: the socket node has
+        # to be connectable by a uid that is not the worker's, so the token
+        # is what keeps another local account from taking the program's place.
+        path, sep, token = rest.rpartition(":")
+        if not sep:
+            path, token = rest, ""
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(rest)
+        sock.connect(path)
+        if token:
+            sock.sendall((token + "\\n").encode())
         return sock
     if kind == "tcp":
         host, _, port_and_token = rest.partition(":")
@@ -362,6 +372,35 @@ async def _amain():
 
     offered = set(binding_names)
 
+    def _offered_list():
+        # Bounded on purpose. A deployment binding a large MCP catalogue can
+        # offer thousands of names, and an unbounded join would decide by its
+        # own length whether this diagnostic is even constructible: the host
+        # caps a failure message, so a long enough list would replace "no tool
+        # named X" with a validation error about the report itself. Names are
+        # taken in sorted order until the budget is spent, and the count of
+        # what was left out is stated rather than silently dropped.
+        names = sorted(offered)
+        if not names:
+            return "none"
+        budget = 4096
+        shown = []
+        spent = 0
+        for candidate in names:
+            cost = len(candidate) + (2 if shown else 0)
+            if spent + cost > budget:
+                break
+            shown.append(candidate)
+            spent += cost
+        if len(shown) == len(names):
+            return ", ".join(shown)
+        left = len(names) - len(shown)
+        if not shown:
+            # One name longer than the whole budget. Say how many there are
+            # rather than returning an empty list that reads as "none".
+            return str(len(names)) + " tools, none of whose names fit here"
+        return ", ".join(shown) + ", and " + str(left) + " more"
+
     async def call_tool(name, arguments=None):
         # The one way to reach every tool, including the many whose names are
         # not usable as Python names: an MCP server may offer "list-repos",
@@ -373,7 +412,7 @@ async def _amain():
                 "binding_not_available",
                 name,
                 "no tool named " + repr(name) + " is available to this program. "
-                "Available: " + (", ".join(sorted(offered)) or "none"),
+                "Available: " + _offered_list(),
             )
         return await _dispatch(name, dict(arguments or {}))
 

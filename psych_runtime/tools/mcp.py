@@ -1324,6 +1324,11 @@ class McpPool:
             McpProtocolError: no connection exists yet and the server's
                 handshake was invalid.
         """
+        # Again, not only at import: ``install_event_source`` patches the
+        # ``mcp.*`` modules imported at the time, and an SDK submodule that
+        # is imported lazily later would keep the SDK's own 1 MB ceiling.
+        # Idempotent, and cheap next to a connection.
+        install_event_source()
         credential = await self._resolve_credential(scope, server)
         oauth_identity, oauth_grant = await self._oauth_config_for(scope, server)
         pre_auth_key = McpPoolKey.from_scope(

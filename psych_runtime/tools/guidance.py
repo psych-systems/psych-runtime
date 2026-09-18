@@ -212,6 +212,14 @@ class FailureKind(StrEnum):
     """``AgentLoop._check_stop_conditions``: the turn or step budget ran out.
     Also a ``RunSettled`` failure for the same reason as above."""
 
+    DUPLICATE_CALL_ID = "duplicate_call_id"
+    """``AgentLoop._run_tool_calls``: the model (or a proxy in front of it)
+    emitted a tool call whose id this Run has already started. The id
+    addresses the call in the model's context, so the log refuses a second
+    start under it as corruption. Rather than let that abandon the Run with no
+    terminal record, the call is given a fresh id and failed with this kind,
+    which the model can read and act on."""
+
     NOT_EXECUTED = "not_executed"
     """``AgentLoop._answer_unstarted``: the model asked for this call, and the
     turn stopped before reaching it -- a suspension, an abort, or the
@@ -494,6 +502,12 @@ def _known_failure_text(kind: FailureKind, message: str) -> str:  # noqa: PLR091
                 "attempted on the user's behalf. Retrying is reasonable once the "
                 "server is reachable or the connection is marked optional; nothing "
                 "here needs to be checked for a partial side effect."
+            )
+        case FailureKind.DUPLICATE_CALL_ID:
+            text = (
+                f"{message}\n\n"
+                "Nothing about this call ran, so retrying is safe. Ask for it again "
+                "as a new tool call with an id you have not used in this conversation."
             )
         case FailureKind.NOT_EXECUTED:
             text = (

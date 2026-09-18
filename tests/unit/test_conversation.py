@@ -14,7 +14,7 @@ import json
 import pytest
 
 from psych_runtime.core.conversation import build_conversation
-from psych_runtime.core.messages import ToolResultMessage
+from psych_runtime.core.messages import AssistantMessage, ToolResultMessage
 from psych_runtime.core.records import TerminalState, ToolFailure
 from psych_runtime.testing.logs import LogBuilder
 
@@ -117,3 +117,67 @@ class TestASubagentReportingBack:
         )[-1]
         assert "failed" in content
         assert "It ran out of turns." in content
+
+
+class TestAProgramsOwnToolCalls:
+    """A ``run_code`` program can call tools of its own. Those calls are
+    journalled with a ``parent_call_id`` naming the ``run_code`` call, and the
+    model never issued them: no assistant message carries their ids in
+    ``tool_calls``. Replaying them as top-level tool results puts an answer in
+    the conversation to a question that was never asked, which providers reject
+    outright -- so the whole next model call fails, not just the nested part."""
+
+    @staticmethod
+    def _log() -> LogBuilder:
+        return (
+            LogBuilder()
+            .admitted()
+            .attempt()
+            .turn()
+            .model_started()
+            .model_finished(text="", tool_calls=("call-program",))
+            .tool_started("call-program", "run_code")
+            .tool_started("call-nested", "orders__list_orders", parent_call_id="call-program")
+            .tool_finished("call-nested", result={"orders": []})
+            .tool_finished("call-program", result={"value": "done"})
+        )
+
+    def _messages(self) -> list[object]:
+        return list(build_conversation(self._log().records))
+
+    def test_every_tool_result_answers_a_call_the_model_actually_made(self) -> None:
+        messages = self._messages()
+        issued = {
+            call.id
+            for message in messages
+            if isinstance(message, AssistantMessage)
+            for call in message.tool_calls
+        }
+        answered = {m.tool_call_id for m in messages if isinstance(m, ToolResultMessage)}
+        assert answered <= issued
+        assert answered == {"call-program"}
+
+    def test_the_programs_own_result_is_not_replayed_as_a_top_level_result(self) -> None:
+        assert not any(
+            isinstance(message, ToolResultMessage) and message.tool_call_id == "call-nested"
+            for message in self._messages()
+        )
+
+    def test_the_enclosing_run_code_result_still_reaches_the_model(self) -> None:
+        results = [m for m in self._messages() if isinstance(m, ToolResultMessage)]
+        assert len(results) == 1
+        assert results[0].name == "run_code"
+
+    def test_a_call_the_model_made_itself_is_untouched(self) -> None:
+        log = (
+            LogBuilder()
+            .admitted()
+            .attempt()
+            .turn()
+            .model_started()
+            .model_finished(text="", tool_calls=("call-1",))
+            .tool_started("call-1", "lookup")
+            .tool_finished("call-1", result="ok")
+        )
+        results = [m for m in build_conversation(log.records) if isinstance(m, ToolResultMessage)]
+        assert [m.tool_call_id for m in results] == ["call-1"]

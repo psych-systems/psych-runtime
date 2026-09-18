@@ -92,6 +92,13 @@ For a caller who wants the whole thing rather than to iterate. The timeout is
 the caller's own bound; the Run's deadline is the real one. `psych_runtime.session()`'s
 `ask()` and `wait()` use this.
 
+`subscribe(store, run_id, on_record)` returns a task that pumps records into a
+callback, for a websocket or SSE bridge. A task nobody awaits would otherwise
+report its exception at garbage collection, if ever, so a pump that dies — a
+`CorruptLog`, a raising callback — is logged under `psych.runtime.stream` the
+moment it happens. Keep a reference to the task and check `task.exception()`
+when the bridge closes.
+
 ## Just the words: `stream_text()`
 
 A chat UI that renders only assistant text should not write the record switch at

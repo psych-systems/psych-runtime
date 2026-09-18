@@ -302,14 +302,20 @@ class MySQLStore:
                 # contains an emoji is not exotic.
                 charset="utf8mb4",
                 use_unicode=True,
+                # READ COMMITTED rather than MySQL's REPEATABLE READ default.
+                # The Store does conditional writes and no multi-statement
+                # transactions, so it needs no snapshot, and REPEATABLE READ
+                # takes gap locks on range scans, which is what claim() and
+                # expired_leases() do. Under contention those gap locks turn
+                # independent Workers into a queue.
+                #
+                # As ``init_command`` rather than a statement run on one
+                # acquired connection: the pool opens further connections
+                # lazily, and a SET SESSION on the first one left every other
+                # connection (up to maxsize) at REPEATABLE READ. Tests at low
+                # concurrency never grow the pool and so never noticed.
+                init_command="SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED",
             )
-            # READ COMMITTED rather than MySQL's REPEATABLE READ default. The
-            # Store does conditional writes and no multi-statement transactions,
-            # so it needs no snapshot, and REPEATABLE READ takes gap locks on
-            # range scans, which is what claim() and expired_leases() do. Under
-            # contention those gap locks turn independent Workers into a queue.
-            async with self._pool.acquire() as conn, conn.cursor() as cur:
-                await cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
             return self._pool
 
     async def _fetch_run(

@@ -258,9 +258,11 @@ class TestCleanupCannotOutliveTheExecution:
         ipc_dir = Path(tempfile.mkdtemp(prefix="psych-sandbox-ipc-"))
         try:
             socket_path = ipc_dir / "ipc.sock"
-            server, connected, accepted = await _listen_for_one_connection(socket_path)
+            server, connected, accepted = await _listen_for_one_connection(socket_path, "tok")
             _, client_writer = await asyncio.open_unix_connection(str(socket_path))
             try:
+                client_writer.write(b"tok\n")
+                await client_writer.drain()
                 await asyncio.wait_for(connected, timeout=5.0)
 
                 await asyncio.wait_for(_close_listener(server, connected, accepted), timeout=10.0)

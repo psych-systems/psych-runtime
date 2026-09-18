@@ -73,6 +73,13 @@ a write. Reading it as a write would let someone who narrowed their selectors to
 Beyond the selectors, `always` and `never` name individual tools. `never` is
 checked last, so an explicit exemption beats a selector. Use it sparingly.
 
+**A deferred MCP tool is judged as itself, not as `call_tool`.** When a
+server's catalogue is deferred out of the prompt (`psych-mcp`), the model
+reaches its tools through the `call_tool` wrapper. The gate resolves the tool
+the call names and applies the selectors, `always`, `never` and your `Policy`
+to that tool's qualified name (`github__delete_repo`) and annotations. A
+target the Run cannot resolve is treated as destructive.
+
 ## The Policy port
 
 Selectors decide *what class* needs review. `Policy` decides *whether this
@@ -130,7 +137,12 @@ next fold cheap; use `status()` unless you are extending the runtime.
 
 `SuspensionPolicy.approval_expires_seconds` defaults to 24 hours. A decision
 arriving after that raises `SuspensionExpired`, and the Run is settled
-`ABANDONED` **first**, so a stale approval never executes.
+`ABANDONED` **first**, so a stale approval never executes. The settlement
+carries a `suspension_expired` failure, and a parent waiting on that Run as a
+child is notified like any other ending.
+
+Pass `scope=` to `resume()` when serving end users; a Run belonging to another
+tenant is refused with `AccessDenied` before anything is decided.
 
 ## Approvals and code execution
 

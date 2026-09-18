@@ -459,9 +459,16 @@ class ContainerSandbox:
         ipc_dir.chmod(0o711)
         socket_path = ipc_dir / "ipc.sock"
         name = f"psych-sandbox-{secrets.token_hex(8)}"
+        # Presented by the container's bootstrap as its first line. The socket
+        # below is 0666 so a uid that is not the worker's can connect, and
+        # ``/tmp`` itself can be listed, so the directory's unguessable name
+        # is not the secret it was once taken for: any local account that
+        # finds the socket could connect first and answer as the program. The
+        # token is what makes the first connection provably the container's.
+        token = secrets.token_hex(16)
 
         try:
-            server, connected, accepted = await _listen_for_one_connection(socket_path)
+            server, connected, accepted = await _listen_for_one_connection(socket_path, token)
             # The container runs as `--user` (65534:65534 by default), which is
             # deliberately not this process's uid, and connect(2) on a Unix
             # socket needs write permission on the node. The socket lands at
@@ -476,9 +483,8 @@ class ContainerSandbox:
             # refuses by default and for the same reason, or chowning to the
             # container's uid, which needs the worker to be root and so fails
             # exactly where this failed. What the mode gives away is bounded by
-            # the directory above -- an unguessable name that cannot be listed
-            # -- and by this server accepting a single connection and closing,
-            # which the container's own bootstrap is already racing to take.
+            # the per-execution token above: a connection that does not present
+            # it is dropped, and only the first one that does is the program.
             socket_path.chmod(0o666)
             try:
                 argv = _build_run_argv(
@@ -494,6 +500,7 @@ class ContainerSandbox:
                     extra_run_args=self._extra_run_args,
                     workspace=workspace,
                     canary=canary,
+                    token=token,
                 )
                 try:
                     proc = await asyncio.create_subprocess_exec(
@@ -535,12 +542,19 @@ class ContainerSandbox:
 
 async def _listen_for_one_connection(
     socket_path: Path,
+    token: str,
 ) -> tuple[
     asyncio.AbstractServer,
     asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
     list[asyncio.StreamWriter],
 ]:
     """Start listening before the container exists, so its connect() never races a bind().
+
+    Hands over the first connection whose first line is ``token`` and drops
+    every other one: a client that presents the wrong token, or the right one
+    after the program has already connected, is closed rather than collected.
+    The socket node is connectable by other local accounts by necessity (see
+    the caller), so this check is what makes the accepted peer the container.
 
     Every accepted connection is recorded, not just the first one that wins
     the future. A container that connects back after the adapter has stopped
@@ -553,11 +567,19 @@ async def _listen_for_one_connection(
         loop.create_future()
     )
     accepted: list[asyncio.StreamWriter] = []
+    expected = (token + "\n").encode()
 
     async def _on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         accepted.append(writer)
-        if not connected.done():
-            connected.set_result((reader, writer))
+        try:
+            first = await asyncio.wait_for(reader.readline(), timeout=_CONNECT_TIMEOUT_SECONDS)
+        except (TimeoutError, OSError):
+            writer.close()
+            return
+        if not secrets.compare_digest(first, expected) or connected.done():
+            writer.close()
+            return
+        connected.set_result((reader, writer))
 
     server = await asyncio.start_unix_server(_on_client, path=str(socket_path))
     return server, connected, accepted
@@ -610,6 +632,7 @@ def _build_run_argv(
     extra_run_args: Sequence[str],
     workspace: Path | None = None,
     canary: Canary | None = None,
+    token: str = "",
 ) -> list[str]:
     fsize_blocks = max(1, (limits.file_size_bytes + 511) // 512)
     cpu_seconds = max(1, int(limits.cpu_seconds))
@@ -676,7 +699,7 @@ def _build_run_argv(
         "psych-sandbox",  # conventional $0; the wrapper never reads it
         container_python_bin,
         BOOTSTRAP_SOURCE,
-        f"unix:{_CONTAINER_IPC_DIR}/ipc.sock",
+        f"unix:{_CONTAINER_IPC_DIR}/ipc.sock:{token}",
     ]
     return argv
 

@@ -388,6 +388,38 @@ class DeferredDiscovery:
         self._catalog = catalog
         self._scope = scope
 
+    async def resolve_target(
+        self, spec: AgentSpec, arguments: dict[str, Any]
+    ) -> ToolDefinition | None:
+        """The tool a ``call_tool`` invocation is really about, as this Run sees it.
+
+        The approval gate classifies a call by the definition of the tool
+        named in it, and for ``call_tool`` that definition is the wrapper's:
+        hard-coded ``write``, whatever the target is. Gating on the wrapper
+        let a ``@destructive`` selector that suspended a preloaded tool wave
+        the same tool through once its server's catalogue grew past the
+        deferral budget. This returns the target's own definition, renamed to
+        the qualified name the MCP caller will resolve it by, so the gate and
+        any name-keyed override see exactly what a preloaded catalogue would
+        have shown them.
+
+        ``None`` when the server or tool is not one this Run may reach. The
+        caller fails closed on that rather than letting the wrapper's
+        annotations stand in.
+        """
+        server = str(arguments.get("server", ""))
+        target = str(arguments.get("tool", ""))
+        if not server or not target:
+            return None
+        try:
+            tools = await self._catalog.list_for(spec, self._scope, server)
+        except Exception:
+            return None
+        found = next((tool for tool in tools if tool.name == target), None)
+        if found is None:
+            return None
+        return found.model_copy(update={"name": mcp_tool_name(server, target)})
+
     async def call(self, spec: AgentSpec, name: str, arguments: dict[str, Any]) -> Any:
         server = str(arguments.get("server", ""))
         match name:

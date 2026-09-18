@@ -573,7 +573,7 @@ of the Spec, so they version and pin with it.
 *model*
 
 ```python
-class CodeTool(*, kind: Literal['code'] = 'code', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], interruptible: bool = True)
+class CodeTool(*, kind: Literal['code'] = 'code', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$')], interruptible: bool = True)
 ```
 
 A Python function the consumer registered at boot, referenced by name.
@@ -593,7 +593,7 @@ registry rather than here; duplicating it would let the two drift.
 *model*
 
 ```python
-class HttpTool(*, kind: Literal['http'] = 'http', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$')], description: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], url: Annotated[str, MinLen(min_length=1), MaxLen(max_length=2048)], method: Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] = 'POST', input_schema: dict[str, typing.Any] = <factory>, headers: dict[str, str] = <factory>, credential: Annotated[str | None, MaxLen(max_length=256)] = None, timeout_seconds: Annotated[float, Gt(gt=0), Le(le=600)] = 30.0, interruptible: bool = True)
+class HttpTool(*, kind: Literal['http'] = 'http', name: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$')], description: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], url: Annotated[str, MinLen(min_length=1), MaxLen(max_length=2048)], method: Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] = 'POST', input_schema: dict[str, typing.Any] = <factory>, headers: dict[str, str] = <factory>, credential: Annotated[str | None, MaxLen(max_length=256)] = None, timeout_seconds: Annotated[float, Gt(gt=0), Le(le=600)] = 30.0, interruptible: bool = True)
 ```
 
 A tool that is entirely data, so an end user can create one at runtime.

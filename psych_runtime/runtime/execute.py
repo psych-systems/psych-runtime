@@ -47,7 +47,7 @@ from psych_runtime.runtime.journal import Journal
 from psych_runtime.runtime.notify import notify_parent
 from psych_runtime.runtime.subagent import SpawnRequest, child_input, compose_child_spec
 from psych_runtime.runtime.thread import load_thread_history
-from psych_runtime.runtime.workflow import WorkflowEngine
+from psych_runtime.runtime.workflow import StepFailed, WorkflowEngine
 from psych_runtime.sandbox.port import Sandbox, SandboxDescription
 from psych_runtime.sandbox.profiles import (
     DEFAULT_PROFILE,
@@ -65,7 +65,7 @@ from psych_runtime.telemetry.port import (
     Telemetry,
     TelemetrySpan,
 )
-from psych_runtime.tools.a2a import A2ATools
+from psych_runtime.tools.a2a import A2ATools, a2a_task_ids
 from psych_runtime.tools.bindings import BindingCounter, EffectiveBindings
 from psych_runtime.tools.builtins import MemoryPort, register_builtins
 from psych_runtime.tools.code import HostCall, make_run_code, run_code_definition
@@ -79,21 +79,6 @@ from psych_runtime.tools.resolver import ToolResolver
 __all__ = ["HttpCaller", "Runtime", "StepFailed"]
 
 _LOG: Final = logging.getLogger("psych.runtime.execute")
-
-
-class StepFailed(Exception):
-    """A workflow step's agent ended in a failure, carried whole.
-
-    The engine records ``ToolFailure(kind=type(err).__name__, ...)`` for a step
-    that raised, so re-raising a nested agent's failure as a bare
-    ``RuntimeError`` renamed every kind to ``RuntimeError`` and dropped the
-    traceback the agent had already built. This carries the original so the
-    step's record says what actually failed.
-    """
-
-    def __init__(self, failure: ToolFailure) -> None:
-        self.failure = failure
-        super().__init__(failure.message)
 
 
 def _accepts_execution_options(sandbox: object) -> bool:
@@ -519,7 +504,17 @@ class Runtime:
         discovery = DeferredDiscovery(self.mcp, journal.scope) if self.mcp is not None else None
         # Bound per Run for the same reason the MCP caller is: the model sends
         # a tool name, and which peer that reaches is a tenancy decision.
-        a2a_caller = self.a2a.caller(spec, journal.scope) if self.a2a is not None else None
+        a2a_caller = (
+            self.a2a.caller(
+                spec,
+                journal.scope,
+                # Only tasks this Run's own log shows it was handed may be
+                # continued; the pool is per tenant, the tasks are per Run.
+                known_task_ids=lambda: a2a_task_ids(journal.state.tool_results),
+            )
+            if self.a2a is not None
+            else None
+        )
         executor = ToolExecutor(
             registry,
             mcp_caller=mcp_caller,

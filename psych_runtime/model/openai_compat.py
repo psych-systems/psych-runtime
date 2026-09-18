@@ -48,7 +48,7 @@ from psych_runtime.core.messages import (
 )
 from psych_runtime.core.scope import Scope
 from psych_runtime.core.usage import Cost, Usage
-from psych_runtime.model.egress import HttpTransport
+from psych_runtime.model.egress import HttpTransport, ResponseTooLarge, read_capped
 from psych_runtime.model.port import (
     ModelRequest,
     ReasoningDelta,
@@ -69,6 +69,15 @@ __all__ = ["OpenAICompatibleClient"]
 _CONNECT_TIMEOUT: Final = 30.0
 _WRITE_TIMEOUT: Final = 30.0
 _POOL_TIMEOUT: Final = 30.0
+
+
+_MAX_ERROR_BODY_BYTES: Final = 64 * 1024
+"""How much of an error response is read before giving up on it. The message
+keeps 2000 characters; nothing past this could reach them."""
+
+MAX_STREAM_BYTES: Final = 256 * 1024 * 1024
+"""Total bytes one model response stream may deliver. A generous bound for a
+real completion and a hard stop for a provider that streams without end."""
 
 _ERROR_BODY_TRUNCATE: Final = 2000
 """How much of an error response body to keep in the raised message. Enough to
@@ -142,7 +151,14 @@ class OpenAICompatibleClient:
                 timeout=timeout,
             ) as response:
                 if response.status_code >= 400:
-                    body = (await response.aread()).decode("utf-8", errors="replace")
+                    # Bounded: only the first 2000 characters are kept, and a
+                    # gateway's multi-gigabyte error page must not be held in
+                    # memory to find them.
+                    try:
+                        raw = await read_capped(response, _MAX_ERROR_BODY_BYTES)
+                    except ResponseTooLarge:
+                        raw = b"<error body too large to read>"
+                    body = raw.decode("utf-8", errors="replace")
                     raise _error_for_status(response.status_code, body, response.headers)
                 async for data in _iter_sse_events(response, request.idle_timeout_seconds):
                     text = data.strip()
@@ -567,7 +583,9 @@ class _SseLineBuffer:
 
 
 async def _iter_sse_events(
-    response: httpx.Response, idle_timeout_seconds: float
+    response: httpx.Response,
+    idle_timeout_seconds: float,
+    max_bytes: int = MAX_STREAM_BYTES,
 ) -> AsyncIterator[str]:
     """Yield each SSE event's ``data:`` payload, one event per yield.
 
@@ -579,10 +597,17 @@ async def _iter_sse_events(
     performs the network read. Nothing else in this function awaits, so a
     consumer that is slow to pull events never extends or resets a timer that
     was never running while it was thinking.
+
+    ``max_bytes`` is the other bound: a provider that never stops sending,
+    fast enough to beat the idle timeout, would otherwise be read forever.
+
+    Raises:
+        ResponseTooLarge: the stream passed ``max_bytes``.
     """
     decoder = codecs.getincrementaldecoder("utf-8")()
     parser = _SseLineBuffer()
     byte_iter = response.aiter_bytes()
+    total = 0
 
     while True:
         try:
@@ -597,6 +622,10 @@ async def _iter_sse_events(
             raise TransientError(
                 f"model stream idle for more than {idle_timeout_seconds}s"
             ) from err
+
+        total += len(chunk)
+        if total > max_bytes:
+            raise ResponseTooLarge(str(response.url), max_bytes)
 
         for event in parser.feed(decoder.decode(chunk)):
             yield event

@@ -23,12 +23,47 @@ from typing import Any, Final, Protocol, Self, runtime_checkable
 import httpx
 import httpx2
 
-from psych_runtime.core.errors import AccessDenied
+from psych_runtime.core.errors import AccessDenied, PsychError
 from psych_runtime.core.scope import Scope
 
-__all__ = ["DEFAULT_TIMEOUT", "AllowAll", "DenyAll", "EgressPolicy", "HttpTransport"]
+__all__ = [
+    "DEFAULT_MAX_RESPONSE_BYTES",
+    "DEFAULT_TIMEOUT",
+    "AllowAll",
+    "DenyAll",
+    "EgressPolicy",
+    "HttpTransport",
+    "ResponseTooLarge",
+]
 
 DEFAULT_TIMEOUT: Final = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+
+DEFAULT_MAX_RESPONSE_BYTES: Final = 16 * 1024 * 1024
+"""How much of a complete response ``HttpTransport.request`` will buffer.
+
+Every body read through ``request`` is chosen by a remote party: an Agent
+Card, an A2A reply, an OAuth discovery document a hostile MCP server pointed
+us at, an HTTP tool's answer. Reading any of them whole with no ceiling is a
+worker that can be taken down by one response. Sixteen MiB matches the MCP
+event ceiling in ``psych_runtime.tools.sse_events``, and a caller with a
+reason to differ passes ``max_bytes`` per request.
+"""
+
+
+class ResponseTooLarge(PsychError):
+    """A response body passed the ceiling before it finished arriving.
+
+    Not transient: the same request will get the same body. The message names
+    the URL and the ceiling so the failure is legible without a debugger, and
+    carries none of the body.
+    """
+
+    def __init__(self, url: str, limit: int) -> None:
+        self.url = url
+        self.limit = limit
+        super().__init__(f"response from {url} exceeded {limit} bytes and was not read")
+
+
 """What every request through this seam is bounded by unless a caller says
 otherwise.
 
@@ -194,11 +229,17 @@ class HttpTransport:
         content: bytes | None = None,
         params: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | float | None = None,
+        max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
     ) -> httpx.Response:
         """Make one request and return the complete response.
 
+        The body is read incrementally and refused once it passes
+        ``max_bytes``, so a remote party that controls the body cannot make
+        this process hold an unbounded one.
+
         Raises:
             AccessDenied: the policy refused ``url`` for ``scope``.
+            ResponseTooLarge: the body exceeded ``max_bytes``.
         """
         await self._check(method, url, scope, params)
         kwargs: dict[str, Any] = {"headers": headers, "json": json, "content": content}
@@ -206,7 +247,15 @@ class HttpTransport:
             kwargs["params"] = params
         if timeout is not None:
             kwargs["timeout"] = timeout
-        return await self._client.request(method, url, **kwargs)
+        async with self._client.stream(method, url, **kwargs) as response:
+            body = await read_capped(response, max_bytes)
+            return httpx.Response(
+                status_code=response.status_code,
+                headers=response.headers,
+                content=body,
+                request=response.request,
+                extensions=response.extensions,
+            )
 
     @asynccontextmanager
     async def stream(
@@ -248,3 +297,23 @@ class HttpTransport:
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.aclose()
+
+
+async def read_capped(response: httpx.Response, max_bytes: int) -> bytes:
+    """Read a streamed response's body, refusing it past ``max_bytes``.
+
+    Shared by ``HttpTransport.request`` and by callers that stream through
+    ``HttpTransport.stream`` and then need one bounded read of the body, such
+    as the model adapter reading an error page.
+
+    Raises:
+        ResponseTooLarge: more than ``max_bytes`` arrived.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > max_bytes:
+            raise ResponseTooLarge(str(response.url), max_bytes)
+        chunks.append(chunk)
+    return b"".join(chunks)

@@ -233,6 +233,10 @@ class TestTwoChildrenInTheBackground:
             # The parent suspends on its children rather than spinning or
             # holding its lease while they work (DESIGN.md §11).
             await _wait_until(lambda: _is_waiting_on_children(store, run.run_id))
+            # The log says suspended a moment before the header does: the
+            # attempt writes the record, then releases its lease. Wait on the
+            # header rather than asserting it the instant the record lands.
+            await _wait_until(lambda: _header_is(store, run.run_id, RunState.SUSPENDED))
             header = await store.get_run(run.run_id)
             assert header is not None
             assert header.state is RunState.SUSPENDED
@@ -527,6 +531,11 @@ class TestCrashWithChildrenInFlight:
         # And the parent really was picked up a second time.
         state = await psych_runtime.state(store, run.run_id)
         assert state.attempt_count >= 2
+
+
+async def _header_is(store: InMemoryStore, run_id: Any, state: RunState) -> bool:
+    header = await store.get_run(run_id)
+    return header is not None and header.state is state
 
 
 async def _is_waiting_on_children(store: InMemoryStore, run_id: RunId) -> bool:

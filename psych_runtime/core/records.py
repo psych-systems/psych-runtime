@@ -34,7 +34,15 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from psych_runtime.core.components import Component
 from psych_runtime.core.ids import (
@@ -158,6 +166,18 @@ class ToolOutcome(StrEnum):
     ambiguous, and 'unknown' is the only truthful value."""
 
 
+def _clamped(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters, saying so where it was cut.
+
+    The marker is part of the budget, so the result is never longer than
+    ``limit`` however long the input was.
+    """
+    if len(text) <= limit:
+        return text
+    marker = "... [truncated]"
+    return text[: max(limit - len(marker), 0)] + marker
+
+
 class ToolFailure(BaseModel):
     """A tool failure, as data the model can read.
 
@@ -192,6 +212,25 @@ class ToolFailure(BaseModel):
     So the default is False and the log still keeps the traceback. Only the
     code-execution path sets this True, which is exactly the case the design
     asks for."""
+
+    @field_validator("message", "traceback", mode="before")
+    @classmethod
+    def _clamp(cls, value: object, info: ValidationInfo) -> object:
+        """Cut an over-long message or traceback to the cap instead of refusing it.
+
+        A failure has already happened by the time this is built, and the
+        report about it has to be constructible from whatever that failure
+        said. Refusing one for length raises a second error *while
+        describing the first*, and the consumer then reports the second --
+        so the real failure never reaches the model and the one it is told
+        about never happened. The caps do not move: this text is replayed
+        into a prompt and the bound is on what the model is handed. Only
+        the response to exceeding them changes, from a refusal to a
+        truncation that says where it cut.
+        """
+        if not isinstance(value, str):
+            return value
+        return _clamped(value, 8192 if info.field_name == "message" else 65_536)
 
 
 class ResultAttachment(BaseModel):

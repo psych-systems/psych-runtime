@@ -92,3 +92,16 @@ receives a result; it has no way to ask for a credential and nothing to ask.
 - Use registered client credentials plus an explicit issuer for service access.
 - Keep the token store isolated by `Scope`; never pool by URL alone.
 - Treat `AuthorizationRedirectPort` as a host application boundary.
+- **`https://` only, except loopback.** The resource URI, the metadata URL a 401
+  challenge names, the authorization servers a resource document lists and
+  every endpoint an authorization server advertises must be `https://`.
+  A plain `http://` anywhere in that chain is `InvalidCanonicalUri` or
+  `DiscoveryError`, never a request carrying a token. `localhost` and loopback
+  addresses are exempt for development servers and test stubs.
+- **Dynamic Client Registration asks for `token_endpoint_auth_method="none"`
+  by default** (`ClientIdentityConfig.token_endpoint_auth_method`), registering
+  a public client and discarding any secret the server returns anyway. A
+  server-side deployment that can keep a secret sets `client_secret_basic` and
+  the issued secret is then used at the token endpoint.
+- **Discovery documents are bounded.** Everything read through
+  `HttpTransport.request` is refused past 16 MiB; see `psych-multitenancy`.

@@ -11,6 +11,13 @@
 -- round two distinct instants to the same second and break every ordering
 -- assumption claim() and renew() depend on.
 --
+-- No CHECK constraint on `state`, unlike the PostgreSQL schema. MySQL before
+-- 8.0.16 and MariaDB in some modes parse a CHECK and silently ignore it, so a
+-- constraint here would be a promise kept on some servers and dropped on
+-- others without a word. That is also why PostgreSQL's 0004_nested_run_state
+-- migration has no MySQL twin: there is no constraint to widen. The adapter
+-- and the reducer are what refuse a state outside the enum.
+--
 -- IF NOT EXISTS makes this file safe to apply repeatedly against a
 -- long-lived test database, since nothing here ever runs against a
 -- consumer's database automatically (psych.store never provisions one).

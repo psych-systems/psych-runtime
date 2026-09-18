@@ -396,6 +396,10 @@ class Worker:
                         traceback=format_traceback(err),
                     ),
                 )
+                # Every terminal write wakes the parent. This one used to be
+                # missed, and a parent suspended on CHILDREN waited out its
+                # whole expiry for a child the runtime already knew had died.
+                await notify_parent(self.store, attempt.run_id, journal.state)
 
     async def _release(self, attempt: ActiveAttempt) -> None:
         if attempt.abort.reason is AbortReason.LEASE_LOST:

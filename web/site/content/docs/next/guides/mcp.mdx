@@ -123,6 +123,13 @@ depending on which model an agent named.
 
 Discovery narrows exactly as an ordinary call does. It is a door, not a bypass.
 
+Approvals go through the door too. A `call_tool` invocation is gated on the
+**target** tool's own name and annotations, exactly as if its catalogue had
+been preloaded: a `@destructive` selector that suspends `github__delete_repo`
+when preloaded suspends the same call made through `call_tool`, and a `Policy`
+is asked about `github__delete_repo`, never about `call_tool`. A target the Run
+cannot resolve is graded destructive, so the wrapper fails closed.
+
 ## Unreachable servers
 
 By default an unreachable server **fails the Run**. Set `optional=True` to omit
@@ -218,3 +225,10 @@ waits — the model is told to make that call itself.
 - **Unannotated MCP tools are treated as `write` for approvals,** and a
   partially annotated one reads `destructiveHint`'s own default of true. See
   `psych-approvals`.
+- **A static tool may not wear a server's prefix.** A `CodeTool` named
+  `github__search_issues` beside a server named `github` is refused at
+  publish; otherwise the two collide at run time once the server exposes
+  `search_issues`.
+- **The bounded SSE event source is installed on every connection,** not only
+  at import, so an SDK module imported lazily cannot keep the SDK's 1 MB
+  default.

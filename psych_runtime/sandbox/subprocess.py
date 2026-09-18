@@ -1048,7 +1048,11 @@ def _grade(
         cpu=enforced,
         memory=enforced if sys.platform == "linux" else unavailable,
         file_size=enforced,
-        process_count=unavailable if child_is_root else enforced,
+        # RLIMIT_NPROC binds a uid, and means nothing for root. When the
+        # child never reported its uid the drop is unverified and so is this.
+        process_count=(
+            unavailable if child_is_root else (unverified if identity is unverified else enforced)
+        ),
         wall_clock=enforced,
         environment=enforced,
     )

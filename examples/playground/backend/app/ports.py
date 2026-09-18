@@ -16,6 +16,7 @@ for itself.
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import logging
 import os
 import sys
@@ -58,7 +59,13 @@ class AccountEgressPolicy:
     Consulted by the one ``HttpTransport`` every outbound call goes through,
     which is the property DESIGN.md §14 asks for: a control that covered the
     model but not MCP, or MCP but not an HTTP tool, would be worse than none.
-    An empty list allows everything, which is what a fresh account wants.
+    An empty list allows every public host, and loopback, which is what a
+    fresh account wants: a local model behind ``127.0.0.1`` is the ordinary
+    case. Link-local, private (RFC 1918) and cloud-metadata addresses are the
+    exception: self-signup is open, and an account that could point an MCP
+    server or an HTTP tool at ``169.254.169.254`` or at another service on
+    the compose network would reach what the platform itself can reach. Those
+    need an explicit, wildcard-free entry.
     """
 
     def __init__(self, settings: SettingsStore) -> None:
@@ -66,15 +73,55 @@ class AccountEgressPolicy:
 
     async def allow(self, scope: Scope, url: str) -> bool:
         patterns = (await self._settings.load(scope.tenant)).runtime.egress_allow
+        host = httpx.URL(url).host.lower()
+        matching = [pattern for pattern in patterns if fnmatch.fnmatchcase(host, pattern.lower())]
+        if _is_internal_host(host):
+            allowed = any(_is_exact(pattern) for pattern in matching)
+            if not allowed:
+                _LOG.info(
+                    "egress refused for tenant %s: %s is an internal address and is not "
+                    "explicitly allowed",
+                    scope.tenant,
+                    host,
+                )
+            return allowed
         if not patterns:
             return True
-        host = httpx.URL(url).host.lower()
-        allowed = any(fnmatch.fnmatchcase(host, pattern.lower()) for pattern in patterns)
+        allowed = bool(matching)
         if not allowed:
             _LOG.info(
                 "egress refused for tenant %s: %s is not on the allow-list", scope.tenant, host
             )
         return allowed
+
+
+_INTERNAL_NAMES = frozenset({"metadata.google.internal", "metadata"})
+
+
+def _is_exact(pattern: str) -> bool:
+    return not any(char in pattern for char in "*?[")
+
+
+def _is_internal_host(host: str) -> bool:
+    """Whether ``host`` names a private network, a link-local address or a
+    cloud metadata service. Loopback is deliberately not internal here.
+    Literal addresses and the well-known names only: a DNS name that resolves
+    privately is the deployment's own firewall's job."""
+    if host in _INTERNAL_NAMES or host.endswith((".internal", ".local")):
+        return True
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return False
+    return (
+        address.is_private
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
 
 
 class AccountToolPolicy:

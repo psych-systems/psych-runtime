@@ -44,7 +44,24 @@ from psych_runtime.core.spec import AgentSpec, AgentStep, ToolStep, WorkflowSpec
 from psych_runtime.runtime.journal import Journal
 from psych_runtime.tools.guidance import failure_guidance
 
-__all__ = ["StepOutcome", "WorkflowEngine", "WorkflowRunner"]
+__all__ = ["StepFailed", "StepOutcome", "WorkflowEngine", "WorkflowRunner"]
+
+
+class StepFailed(Exception):
+    """A workflow step's agent ended in a failure, carried whole.
+
+    The engine records ``ToolFailure(kind=type(err).__name__, ...)`` for a step
+    that raised, so re-raising a nested agent's failure as a bare
+    ``RuntimeError`` renamed every kind to ``RuntimeError`` and dropped the
+    traceback the agent had already built. This carries the original so the
+    step's record says what actually failed -- and ``WorkflowRunner`` catches
+    it by type, because catching it generically reproduced the same bug one
+    layer up with ``kind="StepFailed"``.
+    """
+
+    def __init__(self, failure: ToolFailure) -> None:
+        self.failure = failure
+        super().__init__(failure.message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +161,12 @@ class WorkflowEngine:
 
         try:
             output = await self._execute(step, path, step_input)
+        except StepFailed as err:
+            # The nested agent's own failure: its kind, its message, its
+            # traceback. Nothing about this frame is what the reader needs.
+            failure = err.failure
+            await self._journal.append(type="step_completed", step_id=step_id, failure=failure)
+            return StepOutcome(name=step.name, output=None, failure=failure, memoised=False)
         except Exception as err:
             failure = ToolFailure(
                 kind=type(err).__name__,

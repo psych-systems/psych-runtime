@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from psych_runtime.core.conversation import build_conversation
+from psych_runtime.core.messages import ToolResultMessage
 from psych_runtime.core.records import QueueKind, Record, SuspendReason, ToolOutcome
 from psych_runtime.core.reducer import reduce
 from psych_runtime.core.status import Lifecycle, status_of
@@ -50,7 +51,32 @@ def _busy_log() -> list[Record]:
     return builder.records
 
 
+def _log_with_a_finished_child() -> list[Record]:
+    """A background child reporting back: the one record the thread view used
+    to drop, leaving the next assistant reply reacting to a message the person
+    could not see."""
+    builder = LogBuilder().admitted(input={"message": "ask alpha"}).attempt()
+    builder.turn().model_started().model_finished(text="", tool_calls=("call-spawn",))
+    builder.tool_started("call-spawn", "spawn_subagent")
+    builder.tool_finished("call-spawn", result={"child_run_id": "run_child"})
+    builder.spawned("run_child", name="alpha", call_id="call-spawn")
+    builder.child_finished("run_child", name="alpha", output={"answer": "42"})
+    builder.turn().model_started().model_finished(text="Alpha says 42.")
+    return builder.records
+
+
 class TestItAgreesWithWhatTheModelSaw:
+    def test_a_finished_child_is_shown_as_the_model_saw_it(self) -> None:
+        log = _log_with_a_finished_child()
+        views = message_views(log)
+        messages = build_conversation(log)
+        assert len(views) == len(messages)
+        child = [v for v in views if v.role == "user" and "finished" in v.content]
+        assert len(child) == 1
+        assert "42" in child[0].content
+        assert views[-1].role == "assistant"
+        assert views[-1].content == "Alpha says 42."
+
     def test_the_same_messages_in_the_same_order(self) -> None:
         views = message_views(_busy_log())
         messages = build_conversation(_busy_log())
@@ -154,3 +180,40 @@ class TestStatusIsWhatAScreenNeeds:
         assert before.deadline_at is not None
         assert after.deadline_at is not None
         assert after.deadline_at >= before.deadline_at
+
+
+class TestAProgramsOwnCallsAreKeptHere:
+    """The one rule the two projections do not share. A `run_code` program's
+    own calls are left out of the model's conversation -- the model never
+    issued them, and a provider rejects a result answering a call it cannot
+    find -- but a person scrolling back is better served seeing what the
+    program did than seeing a `run_code` result appear out of nothing."""
+
+    @staticmethod
+    def _log() -> list[Record]:
+        return (
+            LogBuilder()
+            .admitted(input={"message": "how many orders?"})
+            .attempt()
+            .turn()
+            .model_started()
+            .model_finished(text="", tool_calls=("call-program",))
+            .tool_started("call-program", "run_code")
+            .tool_started("call-nested", "get_orders", parent_call_id="call-program")
+            .tool_finished("call-nested", result={"orders": 3})
+            .tool_finished("call-program", result={"value": 3})
+            .records
+        )
+
+    def test_the_nested_call_is_rendered(self) -> None:
+        shown = {view.tool_call_id for view in message_views(self._log())}
+        assert "call-nested" in shown
+        assert "call-program" in shown
+
+    def test_the_model_was_not_shown_it(self) -> None:
+        answered = {
+            message.tool_call_id
+            for message in build_conversation(self._log())
+            if isinstance(message, ToolResultMessage)
+        }
+        assert answered == {"call-program"}

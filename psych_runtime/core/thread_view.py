@@ -22,6 +22,18 @@ exactly as it is -- the prompt path must not change to serve a UI -- and this
 walks the same records with the same rules, returning what it emitted along
 with where it came from.
 
+## One rule the two projections do not share
+
+A ``run_code`` program's own tool calls -- the ones journalled with a
+``parent_call_id`` -- are left out of ``build_conversation``, because the model
+never issued them and a provider rejects a result answering a call it cannot
+find. They are kept here. This projection is read by a person, who is better
+served seeing what the program actually did than seeing a ``run_code`` result
+appear out of nothing, and nothing downstream of a chat UI validates call ids.
+So the walk is the same and the emission rules are the same but for this one,
+which is stated here rather than left for a reader to discover by diffing the
+two.
+
 ## A thread is a chain of Runs
 
 ``psych_runtime.runtime.thread`` explains why a conversation is several Runs rather
@@ -39,7 +51,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from psych_runtime.core.conversation import build_conversation
+from psych_runtime.core.conversation import build_conversation, child_finished_text
 from psych_runtime.core.ids import RunId, ToolCallId
 from psych_runtime.core.messages import AssistantMessage, ToolResultMessage, UserMessage
 from psych_runtime.core.records import (
@@ -49,6 +61,7 @@ from psych_runtime.core.records import (
     QueueEnqueued,
     Record,
     RunAdmitted,
+    SubagentFinished,
     ToolCallFinished,
     ToolOutcome,
 )
@@ -88,7 +101,7 @@ class ThreadView(BaseModel):
     messages: tuple[MessageView, ...]
 
 
-def message_views(records: Iterable[Record]) -> list[MessageView]:
+def message_views(records: Iterable[Record]) -> list[MessageView]:  # noqa: PLR0912 - one arm per record kind
     """One Run's conversation, each message carrying its own position.
 
     The same messages ``build_conversation`` produces, in the same order, for
@@ -152,6 +165,21 @@ def message_views(records: Iterable[Record]) -> list[MessageView]:
                             at=record.at,
                         )
                     )
+            case SubagentFinished():
+                # A background child reporting back reaches the model as a
+                # user message (``build_conversation`` says why), so the thread
+                # shows it the same way. Dropping it here left the next
+                # assistant reply reacting to information the person could not
+                # see.
+                views.append(
+                    MessageView(
+                        role="user",
+                        content=child_finished_text(record),
+                        run_id=run_id,
+                        seq=record.seq,
+                        at=record.at,
+                    )
+                )
             case ToolCallFinished():
                 views.append(
                     MessageView(

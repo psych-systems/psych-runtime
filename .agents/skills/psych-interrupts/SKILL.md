@@ -112,6 +112,12 @@ Every Run reaches exactly one:
 
 - **`interrupt()` on a settled Run raises `RunAlreadySettled`.** Check
   `psych_runtime.status()` first if that is a normal path for you.
+- **`interrupt()` and `send()` take `scope=`.** A Run belonging to another
+  tenant is refused with `AccessDenied`; without it, a leaked run id lets
+  anyone stop or steer the Run. See `psych-multitenancy`.
+- **A tool-call id the model has already used is not a corrupt log.** A
+  provider or proxy that repeats an id gets that call failed with
+  `duplicate_call_id` under a fresh id, and the Run continues.
 - **A steer on a Run whose Worker already stopped goes nowhere useful.** The
   message is recorded; nothing drains it. Dispatch a continuation instead.
 - **Aborting does not roll anything back.** Psych has no compensation model. A

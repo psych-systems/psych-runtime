@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from psych_runtime.core.scope import Scope
 from psych_runtime.tools.oauth.errors import DiscoveryError
+from psych_runtime.tools.oauth.pkce import is_tls_or_loopback
 from psych_runtime.tools.oauth.transport import OAuthTransport
 
 __all__ = [
@@ -126,6 +127,14 @@ async def fetch_protected_resource_metadata(
     attempted: list[str] = []
     for url in candidates:
         attempted.append(url)
+        if not is_tls_or_loopback(url):
+            # The 401 challenge chose this URL. Fetching it over plain HTTP
+            # would hand whoever sits on the path the document that decides
+            # which authorization server gets this client's credentials.
+            raise DiscoveryError(
+                f"Protected Resource Metadata URL {url!r} is not https://; OAuth 2.1 "
+                "requires TLS for anything but loopback"
+            )
         result = await _get_json(transport, scope, url)
         if result is None or result[1] is None:
             continue
@@ -137,6 +146,14 @@ async def fetch_protected_resource_metadata(
         if not metadata.authorization_servers:
             raise DiscoveryError(
                 f"Protected Resource Metadata at {url!r} lists no authorization_servers"
+            )
+        insecure = [
+            server for server in metadata.authorization_servers if not is_tls_or_loopback(server)
+        ]
+        if insecure:
+            raise DiscoveryError(
+                f"Protected Resource Metadata at {url!r} names authorization server(s) "
+                f"{insecure} without TLS; OAuth 2.1 requires https:// for anything but loopback"
             )
         return metadata
     raise DiscoveryError(
@@ -230,9 +247,24 @@ async def fetch_authorization_server_metadata(
             mismatched.append(f"{url} declared issuer {found!r}")
             continue
         try:
-            return AuthorizationServerMetadata.model_validate(payload)
+            metadata = AuthorizationServerMetadata.model_validate(payload)
         except ValidationError as err:
             raise DiscoveryError(f"authorization server metadata at {url!r} is malformed") from err
+        for what, endpoint in (
+            ("authorization_endpoint", metadata.authorization_endpoint),
+            ("token_endpoint", metadata.token_endpoint),
+            ("registration_endpoint", metadata.registration_endpoint),
+        ):
+            if endpoint is not None and not is_tls_or_loopback(endpoint):
+                # The token path would send client credentials and codes to
+                # this endpoint. OAuth 2.1 requires TLS; a document naming a
+                # plain http:// endpoint is a misconfiguration to name, not a
+                # server to talk to.
+                raise DiscoveryError(
+                    f"authorization server metadata at {url!r} names a {what} without "
+                    f"TLS ({endpoint!r}); OAuth 2.1 requires https:// for anything but loopback"
+                )
+        return metadata
     if mismatched:
         raise DiscoveryError(
             f"no authorization server metadata declares issuer {issuer!r}: " + "; ".join(mismatched)

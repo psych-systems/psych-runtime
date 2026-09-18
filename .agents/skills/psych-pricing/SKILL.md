@@ -203,3 +203,7 @@ your own code, and refuse the next `dispatch()`.
 - **Prompt assembly order is fixed** so a mid-conversation change invalidates the
   shortest prefix. Changing that order is a performance change and gets reviewed
   as one.
+- **A model stream has a ceiling as well as an idle timeout.** The
+  OpenAI-compatible client stops a response past 256 MiB with
+  `ResponseTooLarge` and reads at most 64 KiB of an error body; usage reported
+  before the cut is not recorded, because the call failed.

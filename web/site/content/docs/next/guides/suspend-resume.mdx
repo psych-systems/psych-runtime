@@ -82,6 +82,10 @@ if status.suspend_reason == "approval":
 record and interpreted by nothing. It exists because an approval whose log
 cannot say who approved it is not an audit trail.
 
+`scope=` is whose decision it is. Like every read entry point, `resume()`
+refuses a Run belonging to another tenant with `AccessDenied`. It is optional
+so existing callers keep working; a consumer serving end users should pass it.
+
 ## Waiting on something external
 
 Suspend for `EXTERNAL`, park your correlation id, and resume from your webhook
@@ -122,6 +126,7 @@ psych_runtime.SuspensionPolicy(
 | Raised | Means |
 |---|---|
 | `RunNotFound` | No such Run. |
+| `AccessDenied` | `scope=` names a different tenant than the Run's. |
 | `RunNotSuspended` | The Run is not waiting for anything. |
 | `SuspensionExpired` | The decision arrived too late; the Run is already ABANDONED. |
 

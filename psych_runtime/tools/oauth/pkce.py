@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import secrets
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
@@ -21,6 +22,7 @@ __all__ = [
     "canonicalize_resource_uri",
     "generate_pkce_pair",
     "generate_state",
+    "is_tls_or_loopback",
     "s256_challenge",
     "union_scopes",
 ]
@@ -74,6 +76,29 @@ def generate_state() -> str:
     return _b64url(secrets.token_bytes(32))
 
 
+def is_tls_or_loopback(url: str) -> bool:
+    """Whether ``url`` may carry a credential: ``https://``, or ``http://`` to
+    the local machine.
+
+    OAuth 2.1 requires TLS for every endpoint and for the protected resource.
+    The one exception the specs themselves make is loopback, which is where a
+    development server and this package's own test stubs live.
+    """
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        return True
+    if scheme != "http":
+        return False
+    host = (parsed.hostname or "").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def canonicalize_resource_uri(uri: str) -> str:
     """The RFC 8707 canonical URI for an MCP server, for the ``resource``
     parameter sent on every authorization and token request.
@@ -97,6 +122,12 @@ def canonicalize_resource_uri(uri: str) -> str:
         raise InvalidCanonicalUri(uri, "contains a fragment")
     if not parsed.hostname:
         raise InvalidCanonicalUri(uri, "missing a host")
+    if not is_tls_or_loopback(uri):
+        raise InvalidCanonicalUri(
+            uri,
+            "uses http:// to a host that is not loopback; OAuth 2.1 requires TLS, and a "
+            "token sent in clear is a token given away",
+        )
 
     scheme = parsed.scheme.lower()
     netloc = parsed.hostname.lower()

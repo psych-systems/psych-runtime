@@ -98,6 +98,12 @@ payloads, headers and retry schedule.
 ## Rules the package enforces
 
 - **A `taskId` is server-generated. A client may never mint one** (§3.4.2).
+- **A Run continues only tasks it was handed.** Connections are pooled per
+  tenant and principal, not per Run, so the runtime gives the client the task
+  ids its own log shows this Run received, and a `task_id` outside that set is
+  refused with `AccessDenied` before the peer is asked. A prompt-injected Run
+  cannot continue a task another Run of the same tenant opened. The set is read
+  from the log, so it survives a crash and a fresh Attempt.
 - **A `contextId` and `taskId` that contradict each other are rejected, not
   reconciled** (§3.4.3). `resolve_message` is where that happens, once, for both
   bindings.
@@ -141,3 +147,5 @@ check here would be a second control that disagrees with the configured one.
   `McpServer`. Marking a peer optional omits its skills and says so.
 - **A peer skill call goes through the same approval selectors** as any other
   tool.
+- **Agent Cards and replies are bounded** at 16 MiB by the egress seam; a
+  peer answering with more is `ResponseTooLarge`, not a worker out of memory.

@@ -3,8 +3,9 @@
 DESIGN.md §7: partition key ``run_id``, sort key ``seq`` on the records table,
 ``ConditionExpression="attribute_not_exists(seq)"`` turned into ``SeqConflict``
 on ``ConditionalCheckFailedException``. Leases are a conditional ``UpdateItem``
-on the run header item. No transactions, no joins, no ``SELECT ... FOR
-UPDATE``: every write below is exactly one conditional ``PutItem`` or
+on the run header item. One transaction (``create_run`` with an idempotency
+key, so the key and the header land together), no joins, no ``SELECT ... FOR
+UPDATE``: every other write below is exactly one conditional ``PutItem`` or
 ``UpdateItem`` against one item.
 
 ## Four tables, not one
@@ -97,10 +98,12 @@ conditioned on what was read, is still exactly one conditional write.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import aioboto3
+from boto3.dynamodb.types import TypeSerializer  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
 
 from psych_runtime.core.errors import RunNotFound, SeqConflict, StoreError
@@ -201,6 +204,18 @@ def _gsi_attrs_for_header(header: RunHeader) -> dict[str, Any]:
         attrs["deadline_gsi_pk"] = _DEADLINE_GSI_PK_VALUE
         attrs["deadline_gsi_sk"] = _micros(header.deadline_at)
     return attrs
+
+
+_SERIALIZER: Final = TypeSerializer()
+
+
+def _serialize(item: Mapping[str, Any]) -> dict[str, Any]:
+    """A resource-style item in the wire shape the low-level client wants.
+
+    ``Table.put_item`` does this conversion itself; ``transact_write_items``
+    is a client call and does not.
+    """
+    return {key: _SERIALIZER.serialize(value) for key, value in item.items()}
 
 
 def _header_to_item(header: RunHeader) -> dict[str, Any]:
@@ -508,9 +523,7 @@ class DynamoDBStore:
     async def create_run(self, header: RunHeader) -> RunHeader:
         resource = await self._ensure_resource()
         if header.idempotency_key is not None:
-            existing = await self._claim_idempotency_key(resource, header)
-            if existing is not None:
-                return existing
+            return await self._create_run_idempotent(resource, header)
         runs_table = await resource.Table(self._runs_table_name)
         try:
             await runs_table.put_item(
@@ -530,6 +543,55 @@ class DynamoDBStore:
             return existing_header
         return header
 
+    async def _create_run_idempotent(self, resource: Any, header: RunHeader) -> RunHeader:
+        """Claim the idempotency key and write the header in one atomic call.
+
+        Two separate conditional puts left a window: a crash between claiming
+        the key and writing the header stranded a key whose ``run_id`` had no
+        header, and every later ``create_run`` with that key found the
+        pointer, read no header, and raised ``RunNotFound`` forever.
+        ``TransactWriteItems`` makes the pair all-or-nothing. Still no joins,
+        no reads inside the transaction, and one round trip.
+        """
+        try:
+            await resource.meta.client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Put": {
+                            "TableName": self._idempotency_table_name,
+                            "Item": _serialize(
+                                {
+                                    "idempotency_key": self._idempotency_id(header),
+                                    "run_id": str(header.run_id),
+                                }
+                            ),
+                            "ConditionExpression": "attribute_not_exists(idempotency_key)",
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": self._runs_table_name,
+                            "Item": _serialize(_header_to_item(header)),
+                            "ConditionExpression": "attribute_not_exists(run_id)",
+                        }
+                    },
+                ]
+            )
+        except ClientError as err:
+            if _error_code(err) != "TransactionCanceledException":
+                raise
+            # Either the key is already claimed (the ordinary losing-writer
+            # case) or, far less likely, the run id is. Resolve the key first
+            # because that is what the caller's retry is keyed on.
+            existing = await self._run_for_idempotency_key(resource, header)
+            if existing is not None:
+                return existing
+            existing_header = await self.get_run(header.run_id)
+            if existing_header is None:
+                raise RunNotFound(header.run_id) from err
+            return existing_header
+        return header
+
     @staticmethod
     def _idempotency_id(header: RunHeader) -> str:
         """The idempotency table's key: the tenant and the consumer's key.
@@ -541,41 +603,25 @@ class DynamoDBStore:
         """
         return f"{header.scope.tenant}\x00{header.idempotency_key}"
 
-    async def _claim_idempotency_key(self, resource: Any, header: RunHeader) -> RunHeader | None:
-        """Try to become the writer for ``header.idempotency_key``.
+    async def _run_for_idempotency_key(self, resource: Any, header: RunHeader) -> RunHeader | None:
+        """The Run an earlier ``create_run`` admitted under this key, if any.
 
-        Returns ``None`` when this call won the key and should proceed to
-        create the Run header; returns the existing header when a previous
-        call already used this key.
+        A consistent read: the transaction that claimed the key also wrote
+        the header, so a key that is present always points at a header that
+        is present too.
         """
         idempotency_table = await resource.Table(self._idempotency_table_name)
-        try:
-            await idempotency_table.put_item(
-                Item={
-                    "idempotency_key": self._idempotency_id(header),
-                    "run_id": str(header.run_id),
-                },
-                ConditionExpression="attribute_not_exists(idempotency_key)",
-            )
-        except ClientError as err:
-            if _error_code(err) != "ConditionalCheckFailedException":
-                raise
-            response = await idempotency_table.get_item(
-                Key={"idempotency_key": self._idempotency_id(header)}, ConsistentRead=True
-            )
-            item = response.get("Item")
-            if item is None:
-                # The winner's write landed between our failed conditional put
-                # and this read. Never observed against DynamoDB Local, which
-                # applies a PutItem before returning the conflict to the
-                # loser, but a correct caller must not fabricate a Run here.
-                raise RunNotFound(header.run_id) from err
-            existing_run_id = RunId(item["run_id"])
-            existing_header = await self.get_run(existing_run_id)
-            if existing_header is None:
-                raise RunNotFound(existing_run_id) from err
-            return existing_header
-        return None
+        response = await idempotency_table.get_item(
+            Key={"idempotency_key": self._idempotency_id(header)}, ConsistentRead=True
+        )
+        item = response.get("Item")
+        if item is None:
+            return None
+        existing_run_id = RunId(item["run_id"])
+        existing_header = await self.get_run(existing_run_id)
+        if existing_header is None:
+            raise RunNotFound(existing_run_id)
+        return existing_header
 
     async def get_run(self, run_id: RunId) -> RunHeader | None:
         resource = await self._ensure_resource()

@@ -283,7 +283,13 @@ or a missing image is a configuration error you learn about from
 - **Windows** runs the child as the worker's own account: there is no drop to a
   lesser identity, so `guarantees.identity` is `UNAVAILABLE` and the level is
   `PROCESS`. Containment of the process tree, memory, CPU and process count is
-  a Job Object and is `ENFORCED`.
+  a Job Object and is `ENFORCED`. `filesystem` is always `UNAVAILABLE`: an
+  unreadable canary on this backend is an antivirus lock or an ACL quirk, not
+  containment, and is never graded as such.
+- **`process_count` follows the identity grade** on the POSIX subprocess
+  backend. `RLIMIT_NPROC` binds a uid and means nothing for root, so when the
+  child never reported its uid (`identity` is `UNVERIFIED`) the process-count
+  guarantee is `UNVERIFIED` too.
 
 ### Container
 
@@ -301,6 +307,13 @@ ContainerSandbox(
 
 Prefer an image digest (`python@sha256:…`) where a deployment needs to be
 reproducible.
+
+The channel between worker and container is a Unix socket the container's uid
+must be able to connect to, in a directory under `/tmp` that other local
+accounts can find. The worker mints a token per execution, the bootstrap
+presents it as its first line, and the listener drops any connection that does
+not and refuses a second one. Another local account cannot take the program's
+place or answer as it.
 
 ### A sandbox service of your own
 

@@ -98,3 +98,6 @@ workflow step.
   needing a model is an `AgentStep`.
 - **`steps` must be non-empty.** A workflow with no steps is refused at
   validation rather than completing instantly.
+- **An `AgentStep` keeps its agent's own failure kind.** A nested agent that
+  ends on its turn budget records the step's failure as `budget_exhausted`
+  with the agent's traceback, never as `StepFailed` with the engine's.

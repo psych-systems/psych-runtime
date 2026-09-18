@@ -43,6 +43,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     global VERSION
 
+    if os.environ.get("PSYCH_DEV_HEADER_AUTH") != "1":
+        # The `caller` dependency below trusts X-Tenant and X-User headers,
+        # which is not authentication. A scaffold that boots and looks
+        # complete with no auth gets deployed that way, so it refuses until
+        # you either replace `caller` or say, for local development, that
+        # you know.
+        raise RuntimeError(
+            "this scaffold identifies callers from X-Tenant/X-User headers, which is not "
+            "authentication. Replace caller() in main.py with your real middleware, or set "
+            "PSYCH_DEV_HEADER_AUTH=1 to run it as-is for local development only."
+        )
+
     if hasattr(STORE, "migrate"):
         await STORE.migrate()
 
@@ -75,6 +87,8 @@ app = FastAPI(title="__PROJECT__", lifespan=lifespan)
 # Your auth, not Psych's. Psych models no users, orgs or roles: it takes a Scope
 # and asks your Policy. This is where your real middleware turns a token into
 # one, and the placeholder below is the only line in this file to delete first.
+# Until you do, the app refuses to start unless PSYCH_DEV_HEADER_AUTH=1 is set
+# (see lifespan above); remove that check along with this placeholder.
 # ---------------------------------------------------------------------------
 def caller(x_tenant: str = Header(default="acme"), x_user: str = Header(default="anon")) -> psych_runtime.Scope:
     return psych_runtime.Scope(tenant=x_tenant, principal=x_user)

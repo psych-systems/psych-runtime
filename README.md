@@ -142,6 +142,7 @@ Limitations worth knowing before you build on it:
 
 ```sh
 git clone https://github.com/psych-systems/psych-runtime && cd psych-runtime
+cp .env.example .env             # set PSYCH_POSTGRES_PASSWORD; compose refuses to start without it
 docker compose up --build        # then http://localhost:3000
 ```
 

@@ -86,7 +86,7 @@ def restore_ceiling() -> Iterator[None]:
 
 class TestACatalogueLargerThanOneMebibyte:
     async def test_the_dependency_default_reproduces_the_reported_failure(
-        self, transport: HttpTransport
+        self, transport: HttpTransport, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The control: the same response through the dependency's one-mebibyte
         source becomes the SDK's -32000 stream-ended error. This proves the
@@ -99,6 +99,12 @@ class TestACatalogueLargerThanOneMebibyte:
         assert len(json.dumps(tools)) > ONE_MEBIBYTE
         original_event_source = cast("Any", sse_events_module).EventSource
         cast("Any", streamable).EventSource = original_event_source
+        # The pool re-installs the bounded source on every connect precisely so
+        # a lazily imported SDK module cannot keep the default; the control has
+        # to hold that off to show the default failing.
+        import psych_runtime.tools.mcp as mcp_module
+
+        monkeypatch.setattr(mcp_module, "install_event_source", lambda: ())
         try:
             async with McpStubServer(tools, sse_responses=True) as stub:
                 pool = McpPool(transport=transport, secrets=InMemorySecretResolver())

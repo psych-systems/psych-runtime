@@ -267,6 +267,14 @@ async def resume(
             ),
         )
         await store.release(run_id, _RESUME_ACTOR, RunState.SETTLED)
+        # A settlement is a settlement whichever path wrote it: a child that
+        # was abandoned here has a parent that must hear so, or it waits out
+        # ``children_expires_seconds`` for news that already exists. Imported
+        # here because ``notify`` wakes a parent through this module's
+        # ``resume``, and the two cannot import each other at module level.
+        from psych_runtime.runtime.notify import notify_parent  # noqa: PLC0415
+
+        await notify_parent(store, run_id, journal.state)
         raise SuspensionExpired(run_id, str(journal.state.suspend_reason))
 
     await journal.append(type="resumed", payload=payload or {}, approved=approved, resumed_by=by)

@@ -49,7 +49,10 @@ The model sends one flat JSON object. Three rules, applied in order:
 1. **Path parameters.** Every `{name}` token in `url` is filled from
    `arguments[name]`, URL-escaped, and removed from what is left. A token with
    no matching argument is a permanent failure rather than a retry, because
-   sending the identical incomplete call again will not fix it.
+   sending the identical incomplete call again will not fix it. A token may
+   template the path or the query only: `https://{region}.api.example.com/...`
+   is refused at publish, because the model would be choosing the host the
+   credential is sent to. The URL must start with `http://` or `https://`.
 2. **GET and DELETE.** Everything left becomes query string parameters.
 3. **POST, PUT and PATCH.** Everything left becomes the JSON request body, as
    one object.
@@ -123,3 +126,9 @@ anything the three argument-placement rules cannot express.
 - **`interruptible=False` for anything with a side effect that must not be
   half-done,** the same rule as code tools.
 - **`timeout_seconds` caps at 600 and `url` at 2048 characters.**
+- **`name` is at most 64 characters of `[A-Za-z0-9_-]`,** the constraint the
+  provider applies, and may not wear a connected MCP server's or A2A peer's
+  prefix (`github__…`). Both are refused at publish rather than at the first
+  turn.
+- **A response body is bounded** by the egress seam (16 MiB by default); a
+  larger one is a tool failure rather than a worker out of memory.

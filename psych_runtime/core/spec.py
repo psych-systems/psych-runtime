@@ -27,6 +27,7 @@ collections do not, and line endings normalise. By the time
 from __future__ import annotations
 
 from typing import Annotated, Any, Final, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -79,6 +80,16 @@ _NAME_PATTERN: Final = r"^[a-zA-Z_][a-zA-Z0-9_.-]{0,127}$"
 """Tool, skill, step and subagent names. Restrictive on purpose: these names
 reach a model as JSON schema property names and reach a log as identifiers, and
 a name with a newline or a quote in it is a problem in both places."""
+
+_TOOL_NAME_PATTERN: Final = r"^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$"
+"""A static tool's name, as the provider will accept it.
+
+Tighter than ``_NAME_PATTERN``: a ``CodeTool`` or ``HttpTool`` name goes to
+the model verbatim, and providers cap tool names at 64 characters of
+``[A-Za-z0-9_-]`` -- the same constraint ``psych_runtime.core.tool_names``
+sanitises MCP-minted names to. A static name that would fail there used to
+publish cleanly and fail at the first turn, against DESIGN.md §4's rule that
+validation happens at publish."""
 
 MIN_SUBAGENT_DESCRIPTION: Final = 20
 """DESIGN.md §17: the validator rejects a subagent whose description is missing
@@ -164,7 +175,7 @@ class CodeTool(_SpecModel):
     """
 
     kind: Literal["code"] = "code"
-    name: str = Field(pattern=_NAME_PATTERN)
+    name: str = Field(pattern=_TOOL_NAME_PATTERN)
     interruptible: bool = True
     """DESIGN.md §9: on abort an interruptible tool is cancelled and recorded as
     aborted, while a non-interruptible one is allowed to finish and its result
@@ -176,7 +187,7 @@ class HttpTool(_SpecModel):
     """A tool that is entirely data, so an end user can create one at runtime."""
 
     kind: Literal["http"] = "http"
-    name: str = Field(pattern=_NAME_PATTERN)
+    name: str = Field(pattern=_TOOL_NAME_PATTERN)
     description: str = Field(min_length=1, max_length=4096)
     url: str = Field(min_length=1, max_length=2048)
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
@@ -189,6 +200,30 @@ class HttpTool(_SpecModel):
     this name, never a secret (DESIGN.md §10.4)."""
     timeout_seconds: float = Field(default=30.0, gt=0, le=600)
     interruptible: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def _placeholders_stay_out_of_the_authority(cls, value: str) -> str:
+        """A ``{name}`` may template the path or the query, never the host.
+
+        The executor substitutes anywhere in the URL, so a Spec written as
+        ``https://{region}.api.example.com/...`` would let the model pick the
+        host the resolved credential is sent to. Refused here, at publish,
+        where DESIGN.md §4 says validation happens.
+        """
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in ("http", "https"):
+            raise ValueError(
+                f"HttpTool url {value!r} must start with http:// or https://; a placeholder "
+                "cannot stand in for the scheme"
+            )
+        if "{" in parsed.netloc or "}" in parsed.netloc:
+            raise ValueError(
+                f"HttpTool url {value!r} has a placeholder in its host; placeholders may "
+                "template the path or query only, or the model could choose where the "
+                "credential is sent"
+            )
+        return value
 
     @field_validator("headers")
     @classmethod
@@ -1162,6 +1197,23 @@ class AgentSpec(_SpecModel):
             raise ValueError(
                 f"tool name(s) {clashes} are reserved for Psych built-ins; the model "
                 "would see two tools with one name and could not address either"
+            )
+        # A static tool may not wear the name an MCP server or A2A peer of
+        # this Spec would mint for one of its own tools. The resolver refuses
+        # the collision per turn once the server exposes that tool, which is
+        # loud but late; the owner prefix is knowable here.
+        owners = [server.name for server in self.mcp_servers] + [
+            peer.name for peer in self.a2a_peers
+        ]
+        addressed = sorted(
+            f"{tool.name!r} (addressed to {qualified_owner(tool.name, owners)!r})"
+            for tool in self.tools
+            if qualified_owner(tool.name, owners) is not None
+        )
+        if addressed:
+            raise ValueError(
+                f"tool name(s) {addressed} look like tools minted for a connected MCP "
+                "server or A2A peer; rename the tool so the two cannot collide at run time"
             )
         return self
 

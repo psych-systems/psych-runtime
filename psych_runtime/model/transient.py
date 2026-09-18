@@ -32,7 +32,6 @@ __all__ = [
 RETRYABLE_STATUS_CODES: Final[frozenset[int]] = frozenset(
     {
         408,  # request timeout
-        409,  # conflict: some proxies use it for a transient lock
         425,  # too early
         429,  # rate limited
         500,
@@ -43,6 +42,11 @@ RETRYABLE_STATUS_CODES: Final[frozenset[int]] = frozenset(
     }
 )
 """Everything else is permanent as far as retrying goes.
+
+409 is deliberately absent. Some proxies use it for a transient lock, but
+gateways also use it for an idempotency conflict, where a retry re-submits
+the same request and the model call is charged and executed twice. A Run that
+double-submits is worse than one that reports the conflict.
 
 403 is deliberately absent even though it is sometimes transient behind a proxy
 whose credentials are being rotated. Treating it as retryable means a genuinely
@@ -176,6 +180,7 @@ def is_context_overflow(error: BaseException) -> bool:
 
 _BASE_DELAY: Final = 0.5
 _MAX_DELAY: Final = 30.0
+_MAX_EXPONENT: Final = 16
 
 
 def retry_delay_seconds(attempt: int, retry_after: float | None = None) -> float:
@@ -191,5 +196,7 @@ def retry_delay_seconds(attempt: int, retry_after: float | None = None) -> float
     """
     if retry_after is not None and retry_after >= 0:
         return min(retry_after, _MAX_DELAY)
-    growth = float(2 ** max(attempt - 1, 0))
+    # Clamped so the arithmetic cannot depend on the caller bounding
+    # ``attempt``; past this exponent ``_MAX_DELAY`` wins anyway.
+    growth = float(2 ** min(max(attempt - 1, 0), _MAX_EXPONENT))
     return min(_BASE_DELAY * growth, _MAX_DELAY)

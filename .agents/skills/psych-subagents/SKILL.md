@@ -168,3 +168,11 @@ exists.
   the header stays `NESTED` for good and disagrees with its own log.
 - **A workflow's `AgentStep` is a third thing.** It runs a nested agent as a
   deterministic step; see `psych-workflows`.
+- **Every ending wakes the parent.** A child that completes, fails, is
+  force-settled, exhausts its attempts, raises past every handler, or expires
+  while suspended writes `subagent_finished` into the parent's log and resumes
+  a parent waiting on `CHILDREN`. A parent never waits out
+  `children_expires_seconds` for news the runtime already has.
+- **`psych_runtime.thread()` shows a finished child as the model saw it:** a
+  user-role message naming the child and its result, so a chat screen never
+  shows the assistant reacting to information the person cannot see.

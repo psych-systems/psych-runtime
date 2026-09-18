@@ -122,7 +122,10 @@ prevent.
 A finished child tells its parent with a **Record**, not a callback, so a parent
 that is suspended, on another machine, or not running at all still gets the
 news. A parent about to suspend reconciles its children first and does not
-suspend at all if they have already finished.
+suspend at all if they have already finished. Each child that finishes wakes a
+suspended parent once: a parent woken while a sibling is still running gets a
+turn, and suspends again if it has nothing else to do. A scripted model for a
+parent therefore has to answer from the conversation rather than count turns.
 
 The whole tree is reconstructable from the log: a child's spawn, every message
 its parent sent it, and its ending are all Records. Nothing about a running tree

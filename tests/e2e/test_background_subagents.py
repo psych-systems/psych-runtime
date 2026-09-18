@@ -62,11 +62,11 @@ class RoutedModel:
     silently repeating a turn.
     """
 
-    def __init__(self, routes: dict[str, FakeModel], default: FakeModel) -> None:
+    def __init__(self, routes: dict[str, FakeModel], default: FakeModel | _ParentModel) -> None:
         self._routes = routes
         self._default = default
 
-    def _pick(self, request: ModelRequest) -> FakeModel:
+    def _pick(self, request: ModelRequest) -> FakeModel | _ParentModel:
         prompt = request.messages[0].content if request.messages else ""
         for marker, model in self._routes.items():
             if marker in prompt:
@@ -149,6 +149,61 @@ async def _wait_until(predicate: Any, timeout: float = 5.0) -> None:
     raise AssertionError("condition never became true")
 
 
+class _ParentModel:
+    """The parent's model, answering by what its children have reported.
+
+    Each child that finishes writes a ``subagent_finished`` record and wakes a
+    suspended parent, so how many turns the parent takes depends on timing:
+    when beta finishes before the parent suspends there is one wake, and when
+    it finishes after -- which is what happens under load -- there are two,
+    each getting the parent a turn. A fixed script of four turns therefore
+    passed alone and ran out under ``xdist``. This model scripts the turns that
+    are deterministic (spawn, steer, first wait) and then answers each wake
+    from the conversation: "waiting" while a child is still out, the summary
+    once both have reported.
+    """
+
+    def __init__(self, scripted: FakeModel) -> None:
+        self._scripted = scripted
+        self._calls = 0
+        self.final_turns = 0
+
+    @staticmethod
+    def _both_finished(request: ModelRequest) -> bool:
+        seen = set()
+        for message in request.messages:
+            content = getattr(message, "content", "")
+            if isinstance(content, str) and "finished:" in content:
+                for name in ("alpha", "beta"):
+                    if f"{name!r}" in content:
+                        seen.add(name)
+        return seen == {"alpha", "beta"}
+
+    def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self._calls += 1
+        if self._both_finished(request):
+            self.final_turns += 1
+            final = FakeModel().turn(
+                text="Alpha and beta are both back; here is the summary.",
+                usage=Usage(input=260, output=30),
+            )
+            return final.stream(request)
+        if self._calls <= _SCRIPTED_PARENT_TURNS:
+            return self._scripted.stream(request)
+        # Woken by one child while the other is still running: nothing to do
+        # but say so, which suspends the parent again.
+        waiting = FakeModel().turn(text="Still waiting.", usage=Usage(input=200, output=8))
+        return waiting.stream(request)
+
+    async def known_models(self) -> list[str]:
+        return ["fake-standard"]
+
+
+_SCRIPTED_PARENT_TURNS = 3
+"""Spawn both, steer alpha, then wait: the turns whose order does not depend on
+when the children finish."""
+
+
 def _two_children_scripted() -> RoutedModel:
     """The script for the headline case: a parent, and the two children it writes.
 
@@ -185,12 +240,9 @@ def _two_children_scripted() -> RoutedModel:
             ]
         )
         # Nothing left to do while the children work: this turn is what makes
-        # the Run suspend rather than complete over them.
+        # the Run suspend rather than complete over them. What the parent says
+        # when woken is decided by ``_ParentModel`` from the conversation.
         .turn(text="Waiting for both of them.", usage=Usage(input=200, output=8))
-        .turn(
-            text="Alpha and beta are both back; here is the summary.",
-            usage=Usage(input=260, output=30),
-        )
     )
     alpha = (
         FakeModel()
@@ -204,7 +256,8 @@ def _two_children_scripted() -> RoutedModel:
         text="Order A1 is shipped and arrives Tuesday.", usage=Usage(input=90, output=15)
     )
     return RoutedModel(
-        {"Price part 88-B": alpha, "Check the delivery status": beta}, default=parent
+        {"Price part 88-B": alpha, "Check the delivery status": beta},
+        default=_ParentModel(parent),
     )
 
 

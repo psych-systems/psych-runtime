@@ -98,12 +98,10 @@ conditioned on what was read, is still exactly one conditional write.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import aioboto3
-from boto3.dynamodb.types import TypeSerializer  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
 
 from psych_runtime.core.errors import RunNotFound, SeqConflict, StoreError
@@ -204,18 +202,6 @@ def _gsi_attrs_for_header(header: RunHeader) -> dict[str, Any]:
         attrs["deadline_gsi_pk"] = _DEADLINE_GSI_PK_VALUE
         attrs["deadline_gsi_sk"] = _micros(header.deadline_at)
     return attrs
-
-
-_SERIALIZER: Final = TypeSerializer()
-
-
-def _serialize(item: Mapping[str, Any]) -> dict[str, Any]:
-    """A resource-style item in the wire shape the low-level client wants.
-
-    ``Table.put_item`` does this conversion itself; ``transact_write_items``
-    is a client call and does not.
-    """
-    return {key: _SERIALIZER.serialize(value) for key, value in item.items()}
 
 
 def _header_to_item(header: RunHeader) -> dict[str, Any]:
@@ -552,6 +538,10 @@ class DynamoDBStore:
         pointer, read no header, and raised ``RunNotFound`` forever.
         ``TransactWriteItems`` makes the pair all-or-nothing. Still no joins,
         no reads inside the transaction, and one round trip.
+
+        Items are plain Python values: the resource's client carries the same
+        document transformation ``Table.put_item`` uses, so a pre-serialised
+        item would be wrapped twice and refused as an invalid attribute type.
         """
         try:
             await resource.meta.client.transact_write_items(
@@ -559,19 +549,17 @@ class DynamoDBStore:
                     {
                         "Put": {
                             "TableName": self._idempotency_table_name,
-                            "Item": _serialize(
-                                {
-                                    "idempotency_key": self._idempotency_id(header),
-                                    "run_id": str(header.run_id),
-                                }
-                            ),
+                            "Item": {
+                                "idempotency_key": self._idempotency_id(header),
+                                "run_id": str(header.run_id),
+                            },
                             "ConditionExpression": "attribute_not_exists(idempotency_key)",
                         }
                     },
                     {
                         "Put": {
                             "TableName": self._runs_table_name,
-                            "Item": _serialize(_header_to_item(header)),
+                            "Item": _header_to_item(header),
                             "ConditionExpression": "attribute_not_exists(run_id)",
                         }
                     },

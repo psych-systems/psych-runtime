@@ -15,6 +15,9 @@ import type {
   A2APeerPreset,
   CreateWorkflowRequest,
   CreateWorkflowResponse,
+  DeliverEventRequest,
+  ReplayRequest,
+  WorkflowView,
   LocalPeerRequest,
   RuntimeSettingsIn,
   SendRequest,
@@ -560,6 +563,66 @@ export function getWorkflow(workflowId: string, signal?: AbortSignal): Promise<W
 
 export function createWorkflow(body: CreateWorkflowRequest): Promise<CreateWorkflowResponse> {
   return request<CreateWorkflowResponse>("/api/workflows", { method: "POST", body: json(body) });
+}
+
+/** The runs of one workflow, newest first, optionally narrowed to a state. */
+export function listWorkflowRuns(
+  workflowId: string,
+  state?: string,
+  signal?: AbortSignal,
+): Promise<RunSummary[]> {
+  const query = state ? `?state=${encodeURIComponent(state)}` : "";
+  return request<RunSummary[]>(
+    `/api/workflows/${encodeURIComponent(workflowId)}/runs${query}`,
+    { signal },
+  );
+}
+
+/**
+ * One workflow run, definition and progress together.
+ *
+ * The step tree rather than the record log: a `foreach` over forty items
+ * writes forty `step_started` records with no structure, and this is the
+ * projection that says which body they belong to and which turn each one is.
+ * Answers 409 for a run that is not a workflow, which is how a caller knows
+ * not to offer the view at all.
+ */
+export function getWorkflowView(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<WorkflowView> {
+  return request<WorkflowView>(
+    `/api/runs/${encodeURIComponent(runId)}/workflow`,
+    { signal },
+  );
+}
+
+/**
+ * Run this workflow again from one step, keeping everything before it.
+ *
+ * A new run, not a mutation of this one: the original stays readable, and the
+ * new one records which run and which step it came from. That is what makes a
+ * replay safe to do repeatedly while fixing the input to a step that failed.
+ */
+export function replayRun(
+  runId: string,
+  body: ReplayRequest,
+): Promise<DispatchResponse> {
+  return request<DispatchResponse>(
+    `/api/runs/${encodeURIComponent(runId)}/replay`,
+    { method: "POST", body: json(body) },
+  );
+}
+
+/** Hand a parked `wait` step the event it is listening for. */
+export function deliverEvent(
+  runId: string,
+  body: DeliverEventRequest,
+): Promise<OkResponse> {
+  return request<OkResponse>(`/api/runs/${encodeURIComponent(runId)}/events`, {
+    method: "POST",
+    body: json(body),
+  });
 }
 
 export function deleteWorkflow(workflowId: string): Promise<OkResponse> {

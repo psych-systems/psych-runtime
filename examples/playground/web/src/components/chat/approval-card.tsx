@@ -15,6 +15,8 @@ const WAITING_COPY: Record<ApprovalItem["reason"], string> = {
   question: "Waiting for an answer.",
   external: "Waiting on something outside this conversation.",
   children: "Waiting on the subagents it started.",
+  timer: "Sleeping until its timer is up.",
+  breakpoint: "Paused before the next step.",
 };
 
 /**
@@ -86,8 +88,10 @@ export function ApprovalCard({
         <ShieldQuestionMarkIcon className="mt-0.5 size-4 shrink-0 text-status-waiting" aria-hidden />
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <div className="flex flex-col gap-1">
+            {/* A workflow's `human` step approves the step itself rather
+                than a tool call, and arrives with no tool to name. */}
             <p className="text-body font-medium">
-              Approve {toolLabel(pending.tool)}?
+              {pending.tool ? `Approve ${toolLabel(pending.tool)}?` : "Approve this step?"}
             </p>
             <p className="text-caption text-muted-foreground">
               {item.question ??

@@ -64,7 +64,13 @@ export type TerminalState =
   | "aborted"
   | "abandoned"
   | "force_settled";
-export type SuspendReason = "approval" | "question" | "external" | "children";
+export type SuspendReason =
+  | "approval"
+  | "question"
+  | "external"
+  | "children"
+  | "timer"
+  | "breakpoint";
 export type QueueKind = "steer" | "follow_up" | "next_run";
 
 export interface ToolFailure {
@@ -218,9 +224,17 @@ export interface StepStartedRecord extends RecordBase {
   type: "step_started";
   step_id: string;
   name: string;
-  kind: "agent" | "tool" | "workflow" | "subagent";
+  kind: string;
   attempt_number: number;
   input: Record<string, unknown>;
+  /** Where this step sits in the definition tree: step names and the indices
+   *  of the branch, case or iteration that reached it. */
+  path?: (string | number)[];
+  parent_step_id?: string | null;
+  /** Which turn of a `foreach` or `loop` body this is, or null outside one. */
+  iteration?: number | null;
+  /** The step id in an earlier run this one was copied forward from. */
+  replayed_from?: string | null;
 }
 
 export interface StepCompletedRecord extends RecordBase {
@@ -229,6 +243,10 @@ export interface StepCompletedRecord extends RecordBase {
   output: Record<string, unknown> | null;
   failure: ToolFailure | null;
   child_run_id: string | null;
+  /** The step's `when` was false, so nothing ran. */
+  skipped?: boolean;
+  will_retry?: boolean;
+  retry_at?: string | null;
 }
 
 export interface AbortRequestedRecord extends RecordBase {
@@ -261,6 +279,12 @@ export interface SuspendedRecord extends RecordBase {
   expires_at: string;
   pending_call_id: string | null;
   question: string | null;
+  /** The workflow step that parked, or null when the agent itself did. */
+  step_id?: string | null;
+  /** For `reason: "external"`: the event name a `wait` step is listening for. */
+  event?: string | null;
+  /** For `reason: "timer"`: when a `sleep` step wakes on its own. */
+  wake_at?: string | null;
 }
 
 export interface ResumedRecord extends RecordBase {
@@ -851,6 +875,14 @@ export interface DispatchRequest {
   /** A prior run this message continues, for a second turn in the same
    * conversation, omitted for a thread's first message. */
   continues_run_id?: string | null;
+  /** Structured input for a workflow, checked against its `input_schema`
+   *  and readable from every step as `input.<field>`. */
+  input?: Record<string, unknown> | null;
+  /** Step names to park before, so a person can look at the state the step
+   *  is about to see. */
+  breakpoints?: string[];
+  /** Park before every step, not only the named ones. */
+  step_mode?: boolean;
 }
 
 /** A new branch of an existing conversation, asked from one of its messages.
@@ -932,7 +964,7 @@ export interface ResumeRequest {
   approved?: boolean;
   /** The person's answer, for a Run waiting on `ask_question`. `answers` keys
    *  by each question's header when several were asked at once. */
-  payload?: { answer?: string; answers?: Record<string, string> } | null;
+  payload?: ({ answer?: string; answers?: Record<string, string> } & Record<string, unknown>) | null;
   /** Who decided. Recorded on the run's log: an approval of a destructive
    *  call whose log cannot say who approved it is not an audit trail. */
   by?: string | null;
@@ -953,26 +985,208 @@ export interface SendResponse {
 // Workflows
 // ---------------------------------------------------------------------------
 
-export interface ToolStepIn {
+/** A value a step reads out of the run: the input it started with, an
+ *  earlier step's output, the shared state, or -- inside a `foreach` or
+ *  `loop` body -- the item, its index, or the iteration number.
+ *
+ *  Roots are `input.`, `steps.<name>.output.`, `state.`, `item`, `index` and
+ *  `iteration`, followed by any number of `.field` and `[0]` segments. */
+export interface ValuePath {
+  kind: "path";
+  path: string;
+}
+
+/** A value written down in the definition rather than read from the run. */
+export interface LiteralValue {
+  kind: "literal";
+  value: unknown;
+}
+
+export type MappingValue = ValuePath | LiteralValue;
+
+/** Field name to where its value comes from. What an `arguments_from`, an
+ *  `input`, a `map` output or a `set_state` is made of. */
+export type Mapping = Record<string, MappingValue>;
+
+export type ConditionOp =
+  | "eq"
+  | "ne"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "in"
+  | "contains"
+  | "exists"
+  | "truthy"
+  | "matches";
+
+/** A test on the run so far. Exactly one of `path`, `all_of` and `any_of` is
+ *  set: a leaf compares one value, the other two combine conditions. */
+export interface Condition {
+  path?: string | null;
+  op?: ConditionOp;
+  value?: unknown;
+  all_of?: Condition[];
+  any_of?: Condition[];
+  negate?: boolean;
+}
+
+export interface RetryPolicy {
+  max_attempts: number;
+  backoff_seconds: number;
+  multiplier: number;
+  max_backoff_seconds: number;
+  /** Failure kinds worth another attempt. Empty means every transient one. */
+  retry_on: string[];
+}
+
+export type StepKind =
+  | "tool"
+  | "agent"
+  | "workflow"
+  | "parallel"
+  | "branch"
+  | "foreach"
+  | "loop"
+  | "map"
+  | "set_state"
+  | "sleep"
+  | "wait"
+  | "human";
+
+export type BranchFailureMode = "fail_fast" | "wait_all";
+export type ItemFailureMode = "fail_fast" | "wait_all";
+export type BranchMode = "first" | "all";
+
+/** What every step carries, whatever it does. */
+export interface StepCommon {
+  name: string;
+  description: string;
+  /** Run this step only when the test passes. Null always runs it. */
+  when: Condition | null;
+  retry: RetryPolicy | null;
+  timeout_seconds: number | null;
+  /** Whether a failure here stops the workflow or is recorded and stepped
+   *  over. */
+  on_failure: "fail" | "continue";
+  output_schema: Record<string, unknown> | null;
+}
+
+export interface ToolStep extends StepCommon {
   kind: "tool";
-  name: string;
   tool: string;
+  /** Arguments written down here, used as they are. */
   arguments: Record<string, unknown>;
+  /** Arguments read out of the run, merged over the written ones. */
+  arguments_from: Mapping;
 }
 
-export interface AgentStepIn {
+export interface AgentStep extends StepCommon {
   kind: "agent";
-  name: string;
   agent_id: string;
+  input: Mapping;
+  /** Only on a published definition: the child version this one pins. */
+  version_hash?: string | null;
 }
 
-export interface NestedWorkflowStepIn {
+export interface NestedWorkflowStep extends StepCommon {
   kind: "workflow";
-  name: string;
   workflow_id: string;
+  input: Mapping;
+  version_hash?: string | null;
 }
 
-export type WorkflowStepIn = ToolStepIn | AgentStepIn | NestedWorkflowStepIn;
+export interface ParallelStep extends StepCommon {
+  kind: "parallel";
+  branches: Step[];
+  on_branch_failure: BranchFailureMode;
+}
+
+export interface BranchCase {
+  name: string;
+  when: Condition;
+  step: Step;
+}
+
+export interface BranchStep extends StepCommon {
+  kind: "branch";
+  cases: BranchCase[];
+  otherwise: Step | null;
+  /** `first` takes the first case that matches; `all` takes every one. */
+  mode: BranchMode;
+}
+
+export interface ForeachStep extends StepCommon {
+  kind: "foreach";
+  items: ValuePath;
+  body: Step;
+  concurrency: number;
+  on_item_failure: ItemFailureMode;
+}
+
+export interface LoopStep extends StepCommon {
+  kind: "loop";
+  body: Step;
+  until: Condition | null;
+  while: Condition | null;
+  max_iterations: number;
+}
+
+export interface MapStep extends StepCommon {
+  kind: "map";
+  output: Mapping;
+}
+
+export interface SetStateStep extends StepCommon {
+  kind: "set_state";
+  values: Mapping;
+}
+
+export interface SleepStep extends StepCommon {
+  kind: "sleep";
+  seconds: number | null;
+  until: ValuePath | null;
+}
+
+export interface WaitStep extends StepCommon {
+  kind: "wait";
+  event: string;
+  payload_schema: Record<string, unknown>;
+  timeout_seconds: number | null;
+}
+
+export interface HumanStep extends StepCommon {
+  kind: "human";
+  prompt: string;
+  questions: AskedQuestion[];
+  expires_seconds: number | null;
+}
+
+/** One step of a workflow. The same shape going in and coming back out, so
+ *  loading a definition into the editor and publishing it again is lossless.
+ *  Recursive: a `parallel`, `branch`, `foreach` or `loop` holds more of
+ *  these. */
+export type Step =
+  | ToolStep
+  | AgentStep
+  | NestedWorkflowStep
+  | ParallelStep
+  | BranchStep
+  | ForeachStep
+  | LoopStep
+  | MapStep
+  | SetStateStep
+  | SleepStep
+  | WaitStep
+  | HumanStep;
+
+/** The authoring shape. Identical to `Step`: what the editor holds is what
+ *  is published, and what comes back loads straight back into the editor. */
+export type WorkflowStepIn = Step;
+/** What a published definition reports. `version_hash` is filled in on the
+ *  agent and workflow steps. */
+export type WorkflowStepOut = Step;
 
 export interface CreateWorkflowRequest {
   workflow_id?: string | null;
@@ -980,17 +1194,14 @@ export interface CreateWorkflowRequest {
   description?: string;
   steps: WorkflowStepIn[];
   limits?: Record<string, number> | null;
-}
-
-export interface WorkflowStepOut {
-  kind: "tool" | "agent" | "workflow";
-  name: string;
-  tool: string | null;
-  arguments: Record<string, unknown>;
-  agent_id: string | null;
-  workflow_id: string | null;
-  /** For an embedded agent or workflow: the child hash this version pins. */
-  version_hash: string | null;
+  /** JSON Schema the run's starting input is checked against. */
+  input_schema?: Record<string, unknown> | null;
+  /** What `state.` holds before the first step runs. */
+  initial_state?: Record<string, unknown> | null;
+  /** What the workflow returns, read out of the finished run. */
+  output?: Mapping | null;
+  /** The default retry every step inherits unless it sets its own. */
+  retry?: RetryPolicy | null;
 }
 
 export interface WorkflowSummary {
@@ -1001,6 +1212,10 @@ export interface WorkflowSummary {
   steps: WorkflowStepOut[];
   tools: string[];
   limits: Record<string, number>;
+  input_schema: Record<string, unknown> | null;
+  initial_state: Record<string, unknown>;
+  output: Mapping | null;
+  retry: RetryPolicy | null;
   published_at: string;
   created_at: string;
   updated_at: string;
@@ -1204,7 +1419,10 @@ export type Lifecycle =
 /** The call a waiting run needs a decision on. Everything an approval prompt
  *  needs, so nothing has to be parsed back out of the question text. */
 export interface PendingApproval {
-  call_id: string;
+  /** Null when a workflow's `human` step is asking rather than a tool call. */
+  call_id: string | null;
+  /** The workflow step that is asking, or null for an agent's tool call. */
+  step_id?: string | null;
   tool: string;
   arguments: Record<string, unknown>;
   question: string | null;
@@ -1231,10 +1449,28 @@ export interface AskedQuestion {
  *  `PendingApproval`: both are a Run waiting on a person, but an approval
  *  takes yes or no and this takes words. */
 export interface PendingQuestion {
-  call_id: string;
+  /** Null when a workflow's `human` step is asking. */
+  call_id: string | null;
+  /** The workflow step that is asking, or null for an agent's own question. */
+  step_id?: string | null;
   questions: AskedQuestion[];
   /** The same thing as one line, for anywhere that will not render options. */
   summary: string;
+  expires_at: string;
+}
+
+/** A workflow waiting on something other than a person's words: a `wait`
+ *  step's event, a `sleep` step's timer, or a breakpoint the run was asked to
+ *  park on. */
+export interface PendingWait {
+  step_id: string;
+  step_name: string;
+  reason: SuspendReason;
+  /** The event name a `wait` step is listening for, else null. */
+  event: string | null;
+  payload_schema: Record<string, unknown>;
+  /** When a timer wakes on its own, else null. */
+  wake_at: string | null;
   expires_at: string;
 }
 
@@ -1255,6 +1491,11 @@ export interface RunStatus {
   suspend_expires_at: string | null;
   pending_approval: PendingApproval | null;
   pending_question: PendingQuestion | null;
+  /** A workflow parked on something that is not a person: an event it is
+   *  listening for, a timer, or a breakpoint. */
+  pending_wait: PendingWait | null;
+  /** Which step parked the run, for any of the reasons above. */
+  suspended_step_id: string | null;
   /** The agent's plan as it stands now, so a long job is readable while it
    *  runs rather than only once it has finished. */
   tasks: Task[];
@@ -1340,6 +1581,16 @@ export interface StepReport {
   failure: ToolFailure | null;
   child_run_id: string | null;
   child: RunReport | null;
+  /** Where this step sits in the definition tree. */
+  path?: (string | number)[];
+  parent_step_id?: string | null;
+  iteration?: number | null;
+  /** Its `when` was false, so nothing ran. */
+  skipped?: boolean;
+  will_retry?: boolean;
+  replayed_from?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
 }
 
 export interface FailureStreakTrip {
@@ -1354,6 +1605,10 @@ export interface SuspensionReport {
   reason: SuspendReason;
   question: string | null;
   pending_call_id: string | null;
+  /** The workflow step that parked, or null when the agent itself did. */
+  step_id?: string | null;
+  event?: string | null;
+  wake_at?: string | null;
   suspended_at: string;
   expires_at: string;
   resumed_at: string | null;
@@ -1722,4 +1977,97 @@ export interface SubagentRetryResult {
   run_id: string;
   retried_from: string;
   version_hash: string;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/runs/{id}/workflow -- one workflow run, definition and progress
+// ---------------------------------------------------------------------------
+
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "retrying"
+  | "skipped"
+  | "replayed";
+
+/** One step of a running workflow: where it is in the definition and what has
+ *  happened to it. `children` holds a `parallel`'s branches, a `branch`'s
+ *  taken arms, and one entry per turn of a `foreach` or `loop` body. */
+export interface StepView {
+  step_id: string;
+  name: string;
+  kind: string;
+  /** Step names and the indices of the branch, case or iteration that
+   *  reached this one. */
+  path: (string | number)[];
+  status: StepStatus;
+  attempts: number;
+  input: Record<string, unknown> | null;
+  output: Record<string, unknown> | null;
+  failure: ToolFailure | null;
+  started_at: string | null;
+  completed_at: string | null;
+  /** When a retrying step gets its next attempt. */
+  retry_at: string | null;
+  /** Which turn of a `foreach` or `loop` body this is, else null. */
+  iteration: number | null;
+  /** The step in the replayed-from run whose result was carried over. */
+  replayed_from: string | null;
+  /** The run an agent or workflow step started. */
+  child_run_id: string | null;
+  children: StepView[];
+  /** For a `branch`: the case names that matched. */
+  cases: string[];
+}
+
+/** What a parked workflow needs before it can carry on. */
+export interface WaitingStep {
+  step_id: string;
+  name: string;
+  reason: SuspendReason;
+  /** The words a `human` step is asking, else null. */
+  question: string | null;
+  /** The event a `wait` step is listening for, else null. */
+  event: string | null;
+  /** When a `sleep` step wakes on its own, else null. */
+  wake_at: string | null;
+  expires_at: string | null;
+}
+
+export interface WorkflowView {
+  run_id: string;
+  workflow: string;
+  steps: StepView[];
+  waiting: WaitingStep | null;
+  state: Record<string, unknown>;
+  input: Record<string, unknown>;
+  output: Record<string, unknown> | null;
+  terminal_state: TerminalState | null;
+  step_starts: number;
+  completed: number;
+  failed: number;
+  /** The run this one was replayed from, else null. */
+  replays_run_id: string | null;
+  replay_from_step: string | null;
+  breakpoints: string[];
+  step_mode: boolean;
+}
+
+/** `POST /api/runs/{run_id}/replay`: start a new run that carries this one's
+ *  results forward up to `from_step` and does that step again. */
+export interface ReplayRequest {
+  from_step: string;
+  input?: Record<string, unknown> | null;
+  breakpoints?: string[];
+  step_mode?: boolean;
+}
+
+/** `POST /api/runs/{run_id}/events`: hand a parked `wait` step its event. */
+export interface DeliverEventRequest {
+  event: string;
+  payload: Record<string, unknown>;
+  by?: string;
 }

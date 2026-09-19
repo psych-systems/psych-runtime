@@ -77,6 +77,7 @@ from app.schemas import (
     CreateAgentResponse,
     CreateWorkflowRequest,
     CreateWorkflowResponse,
+    DeliverEventRequest,
     DemoSeedResponse,
     DispatchRequest,
     DispatchResponse,
@@ -103,6 +104,7 @@ from app.schemas import (
     ProblemResponse,
     ProviderOut,
     ProviderTestResponse,
+    ReplayRequest,
     ResumeRequest,
     RunSummary,
     RuntimeSettingsIn,
@@ -198,6 +200,7 @@ from psych_runtime.core.errors import (
     SpecValidationError,
     SuspensionExpired,
     TransientError,
+    WorkflowRequired,
 )
 from psych_runtime.core.ids import RunId, VersionHash
 from psych_runtime.core.messages import UserMessage
@@ -1648,6 +1651,9 @@ async def _start_run(
     agent_id: str,
     branch_id: str,
     conversation_id: str,
+    input: dict[str, Any] | None = None,  # noqa: A002 - the runtime's own name for it
+    breakpoints: tuple[str, ...] = (),
+    step_mode: bool = False,
 ) -> DispatchResponse:
     """Admit a Run and record it in this backend's own index.
 
@@ -1675,8 +1681,10 @@ async def _start_run(
             # so a trace says whose memories a Run was reading. A consumer
             # whose agent serves *their* customers passes the customer's id in
             # exactly this position. See `app.memory_store`.
-            input={"message": message, "end_user_id": account.id},
+            input={**(input or {}), "message": message, "end_user_id": account.id},
             continues=continues,
+            breakpoints=breakpoints,
+            step_mode=step_mode,
         )
     except RunNotFound as err:
         raise ApiProblem(404, f"no run {continues!r} to continue") from err
@@ -1742,6 +1750,9 @@ async def create_run(body: DispatchRequest, request: Request) -> DispatchRespons
         conversation_id=(
             new_conversation_id() if continues is None else tree.conversation_of(continues)
         ),
+        input=body.input,
+        breakpoints=tuple(body.breakpoints),
+        step_mode=body.step_mode,
     )
 
 
@@ -1856,11 +1867,16 @@ async def fork_run(run_id: str, body: ForkRequest, request: Request) -> Dispatch
     )
 
 
-@app.get("/api/runs", response_model=list[RunSummary])
-async def list_runs(request: Request) -> list[RunSummary]:
-    state = _state(request)
-    account = await _account(request)
-    entries = await state.index.list_runs(account.id)
+async def _run_summaries(
+    state: AppState, account: Account, entries: Sequence[RunEntry]
+) -> list[RunSummary]:
+    """``entries`` as the console reads them, in the order given.
+
+    Extracted from ``GET /api/runs`` rather than copied into
+    ``GET /api/workflows/{id}/runs``: the settled-at back-fill below is a write
+    as well as a read, and two copies of it would be two places for a Run to
+    stop caching the one timestamp ``RunHeader`` does not carry.
+    """
     # One fold, for the conversation ids: a Run recorded before conversations
     # had them is read as the root of its own chain, which needs the tree.
     tree = await _read_tree(state, account)
@@ -1903,6 +1919,13 @@ async def list_runs(request: Request) -> list[RunSummary]:
             )
         )
     return summaries
+
+
+@app.get("/api/runs", response_model=list[RunSummary])
+async def list_runs(request: Request) -> list[RunSummary]:
+    state = _state(request)
+    account = await _account(request)
+    return await _run_summaries(state, account, await state.index.list_runs(account.id))
 
 
 @app.get("/api/runs/{run_id}/stream")
@@ -1957,6 +1980,146 @@ async def stream_run(run_id: str, request: Request, after: int = 0) -> Streaming
         # response and the "stream" arrives at once, when the Run ends.
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/runs/{run_id}/workflow")
+async def get_run_workflow(run_id: str, request: Request) -> JSONResponse:
+    """The Run as a tree of steps, from ``psych_runtime.workflow_view``.
+
+    The library's own projection, serialised as it stands rather than
+    re-shaped here: a console graph and a library test assert against one
+    model, so the two cannot come to disagree about whether a branch arm was
+    taken. ``GET /api/runs/{id}/status`` stays the answer for "what is it
+    doing"; this is "where in the workflow is it".
+    """
+    state = _state(request)
+    await _require_run(state, run_id, await _account(request))
+    try:
+        view = await psych_runtime.workflow_view(state.store, RunId(run_id))
+    except WorkflowRequired as err:
+        # 409 rather than 404: the Run exists and is this account's, it is
+        # simply an agent Run, which has no workflow to show.
+        raise ApiProblem(409, str(err)) from err
+    return JSONResponse(jsonable_encoder(view))
+
+
+@app.post("/api/runs/{run_id}/replay", status_code=201, response_model=DispatchResponse)
+async def replay_run(run_id: str, body: ReplayRequest, request: Request) -> DispatchResponse:
+    """Run this workflow again from one step, keeping everything before it.
+
+    A new Run, not a mutation of this one: every step the source settled
+    before ``from_step`` is copied in as ``replayed`` and execution starts
+    there, so the eight side effects before the step that failed do not
+    happen twice. The source Run is left exactly as it was, which is what
+    makes this safe to do to a Run somebody is still reading.
+
+    Recorded in this backend's index like any dispatch, under the same
+    workflow and a conversation of its own: a replay is a new attempt at the
+    same pipeline, not another turn of a chat.
+    """
+    state = _state(request)
+    account = await _account(request)
+    header = await _require_run(state, run_id, account)
+    source = await state.index.get_run(RunId(run_id))
+    try:
+        dispatched = await psych_runtime.replay(
+            state.store,
+            RunId(run_id),
+            from_step=body.from_step,
+            input=body.input,
+            breakpoints=tuple(body.breakpoints),
+            step_mode=body.step_mode,
+            scope=scope_for(account),
+        )
+    except WorkflowRequired as err:
+        raise ApiProblem(409, str(err)) from err
+    except RunNotFound as err:
+        raise ApiProblem(404, str(err)) from err
+    except AccessDenied as err:
+        raise ApiProblem(403, str(err)) from err
+    await state.index.put_run(
+        RunEntry(
+            run_id=dispatched.run_id,
+            agent_id="",
+            workflow_id=source.workflow_id if source is not None else "",
+            branch_id="",
+            conversation_id=new_conversation_id(),
+            name=source.name if source is not None else body.from_step,
+            tenant=account.id,
+            started_at=datetime.now(UTC),
+            version_hash=header.version_hash,
+            approval_selectors=(
+                source.approval_selectors
+                if source is not None
+                else state.settings.default_approval_selectors
+            ),
+            message=(
+                source.message
+                if source is not None and source.message
+                else f"replay of {run_id} from {body.from_step}"
+            ),
+        )
+    )
+    return DispatchResponse(run_id=dispatched.run_id)
+
+
+@app.get("/api/workflows/{workflow_id}/runs", response_model=list[RunSummary])
+async def list_workflow_runs(
+    workflow_id: str, request: Request, state: str | None = None
+) -> list[RunSummary]:
+    """This account's Runs of one workflow, newest first.
+
+    ``?state=`` filters on the Store's own ``RunState`` -- ``running``,
+    ``suspended``, ``settled`` -- rather than on a projection of it, so the
+    filter a console offers and the state it displays are the same word.
+    """
+    app_state = _state(request)
+    account = await _account(request)
+    if await app_state.index.get_workflow(account.id, workflow_id) is None:
+        raise ApiProblem(404, f"no workflow {workflow_id!r}")
+    entries = [
+        entry
+        for entry in await app_state.index.list_runs(account.id)
+        if entry.workflow_id == workflow_id
+    ]
+    summaries = await _run_summaries(app_state, account, entries)
+    if state is None:
+        return summaries
+    return [summary for summary in summaries if summary.state == state]
+
+
+@app.post("/api/runs/{run_id}/events", response_model=OkResponse)
+async def deliver_run_event(run_id: str, body: DeliverEventRequest, request: Request) -> OkResponse:
+    """Deliver the payload a ``wait`` step is suspended on.
+
+    The event name is checked against the suspension before anything is
+    resumed. A workflow with two wait steps would otherwise complete whichever
+    one happened to be waiting, with a payload meant for the other, and the
+    log would show nothing wrong -- so a mismatch is a 409 saying which event
+    the Run is actually waiting on.
+    """
+    state = _state(request)
+    await _require_run(state, run_id, await _account(request))
+    status = await psych_runtime.status(state.store, RunId(run_id))
+    waiting = status.pending_wait
+    if waiting is None or waiting.event is None or waiting.event != body.event:
+        # A breakpoint and a sleep are both `pending_wait` with no event, so
+        # "waiting on event None" would be the message for a Run that is not
+        # waiting on an event at all. Those read the same as not waiting here,
+        # because for this route they are.
+        raise ApiProblem(
+            409,
+            f"run {run_id!r} is waiting on event {waiting.event!r}"
+            if waiting is not None and waiting.event is not None
+            else f"run {run_id!r} is not waiting on an event",
+        )
+    try:
+        await psych_runtime.resume(state.store, RunId(run_id), payload=body.payload, by=body.by)
+    except RunNotSuspended as err:
+        raise ApiProblem(409, str(err)) from err
+    except SuspensionExpired as err:
+        raise ApiProblem(410, str(err)) from err
+    return OkResponse()
 
 
 @app.get("/api/runs/{run_id}/report")
@@ -2049,6 +2212,10 @@ async def create_workflow(body: CreateWorkflowRequest, request: Request) -> Crea
                 description=body.description,
                 steps=list(body.steps),
                 limits=body.limits,
+                input_schema=body.input_schema,
+                initial_state=body.initial_state,
+                output=body.output,
+                retry=body.retry,
             ),
             workflow_id=body.workflow_id,
         )

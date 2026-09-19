@@ -155,6 +155,21 @@ class TestStepAnswers:
         assert state.suspended_step_id == StepId("stp_z")
         assert state.suspend_reason is SuspendReason.TIMER
 
+    def test_the_payload_schema_is_kept_while_waiting_and_cleared_after(self) -> None:
+        schema = {"type": "object", "required": ["amount"]}
+        builder = (
+            LogBuilder()
+            .admitted()
+            .attempt()
+            .step_started("stp_w", kind="wait")
+            .suspended(
+                SuspendReason.EXTERNAL, step_id=StepId("stp_w"), event="paid", payload_schema=schema
+            )
+        )
+        assert reduce(builder.records).suspend_payload_schema == schema
+        builder.resumed(payload={"amount": 1})
+        assert reduce(builder.records).suspend_payload_schema == {}
+
     def test_two_waits_on_one_step_keep_two_answers(self) -> None:
         log = (
             LogBuilder()

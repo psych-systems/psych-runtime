@@ -26,6 +26,7 @@ import { useSubagents } from "@/hooks/use-subagents";
 import { useThreadReport } from "@/hooks/use-thread-report";
 import { Copyable } from "@/components/activity/copyable";
 import { RunViewSwitcher } from "@/components/activity/run-view-switcher";
+import { useIsWorkflowRun } from "@/hooks/use-workflow-view";
 import type { RunReport, ThreadReport, ThreadTotals } from "@/lib/types";
 
 /**
@@ -84,6 +85,8 @@ export function TraceView({ runId }: { runId: string }) {
   // running if its latest message is.
   const latestRunId = thread?.run_ids[thread.run_ids.length - 1] ?? runId;
   const { status } = useRunStatus(scope ?? latestRunId);
+  // Offered only when there is one. See `RunViewSwitcher`.
+  const isWorkflow = useIsWorkflowRun(scope ?? latestRunId);
   // The tree under whichever Run is in scope. A subagent's own work is in its
   // own log, so a trace of the parent alone has a gap exactly where the
   // interesting minute is; this is the way into the logs that fill it.
@@ -193,7 +196,7 @@ export function TraceView({ runId }: { runId: string }) {
 
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {lifecycle && <StatusPill state={lifecycle} size="sm" />}
-          <RunViewSwitcher runId={scope ?? latestRunId} active="trace" />
+          <RunViewSwitcher runId={scope ?? latestRunId} active="trace" isWorkflow={isWorkflow} />
           <Button
             variant="ghost"
             size="icon-sm"

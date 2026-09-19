@@ -27,11 +27,31 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 import psych_runtime
-from app.schemas import AgentStepIn, NestedWorkflowStepIn, ToolStepIn, WorkflowStepIn
+from app.schemas import (
+    AgentStepIn,
+    AskedQuestionIn,
+    BranchStepIn,
+    ConditionIn,
+    ForEachStepIn,
+    HumanStepIn,
+    LoopStepIn,
+    MappingIn,
+    MapStepIn,
+    NestedWorkflowStepIn,
+    ParallelStepIn,
+    RetryPolicyIn,
+    SetStateStepIn,
+    SleepStepIn,
+    ToolStepIn,
+    ValuePathIn,
+    WaitStepIn,
+    WorkflowStepIn,
+)
 from app.store_index import PlaygroundIndex, WorkflowEntry, WorkflowStepEntry, new_workflow_id
 from app.tools import WorkflowPublisher
 from psych_runtime.core.errors import SpecValidationError
 from psych_runtime.core.ids import VersionHash
+from psych_runtime.core.questions import AskedQuestion, QuestionOption
 from psych_runtime.core.validation import ValidationContext
 from psych_runtime.store.port import Store
 from psych_runtime.tools.registry import ToolRegistry
@@ -46,6 +66,10 @@ class WorkflowDefinition(BaseModel):
     description: str = Field(default="", max_length=4096)
     steps: list[WorkflowStepIn] = Field(min_length=1)
     limits: dict[str, Any] | None = None
+    input_schema: dict[str, Any] | None = None
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    output: MappingIn | None = None
+    retry: RetryPolicyIn | None = None
 
 
 class WorkflowRefused(Exception):
@@ -69,7 +93,7 @@ class WorkflowService:
     def index(self) -> PlaygroundIndex:
         return self._index
 
-    async def publish(  # noqa: PLR0912 - one branch per step kind, each refusal named
+    async def publish(
         self, owner: str, definition: WorkflowDefinition, *, workflow_id: str | None = None
     ) -> tuple[WorkflowEntry, bool]:
         """Publish ``definition`` as ``owner``'s workflow.
@@ -84,75 +108,18 @@ class WorkflowService:
         elif await self._index.get_workflow(owner, workflow_id) is None:
             raise WorkflowRefused(404, f"no workflow {workflow_id!r}")
 
-        steps: list[
-            psych_runtime.AgentStep | psych_runtime.ToolStep | psych_runtime.WorkflowStepRef
-        ] = []
-        entries: list[WorkflowStepEntry] = []
+        # One accumulator for the whole tree. A tool named inside a branch arm
+        # or a loop body has to reach `WorkflowSpec.tools` exactly as a
+        # top-level one does, or the Spec fails validation at publish naming a
+        # tool it never declared. An embedded agent or nested workflow carries
+        # its own tools in its own Spec and contributes nothing here.
         tools: dict[str, psych_runtime.CodeTool] = {}
+        steps: list[Any] = []
+        entries: list[WorkflowStepEntry] = []
         for step in definition.steps:
-            match step:
-                case ToolStepIn():
-                    if step.tool not in self._registry:
-                        raise WorkflowRefused(
-                            400,
-                            f"step {step.name!r} names no registered tool {step.tool!r}; "
-                            f"the registered tools are {sorted(self._registry.names)}",
-                        )
-                    tools.setdefault(step.tool, psych_runtime.CodeTool(name=step.tool))
-                    steps.append(
-                        psych_runtime.ToolStep(
-                            name=step.name, tool=step.tool, arguments=step.arguments
-                        )
-                    )
-                    entries.append(
-                        WorkflowStepEntry(
-                            kind="tool", name=step.name, tool=step.tool, arguments=step.arguments
-                        )
-                    )
-                case AgentStepIn():
-                    found = await self._index.get_agent(owner, step.agent_id)
-                    if found is None:
-                        raise WorkflowRefused(
-                            404, f"step {step.name!r} names no agent {step.agent_id!r}"
-                        )
-                    version = await self._store.get_version(found[0].version_hash)
-                    if version is None or not isinstance(version.spec, psych_runtime.AgentSpec):
-                        raise WorkflowRefused(
-                            409, f"agent {step.agent_id!r} has no published agent Version"
-                        )
-                    steps.append(psych_runtime.AgentStep(name=step.name, spec=version.spec))
-                    entries.append(
-                        WorkflowStepEntry(
-                            kind="agent",
-                            name=step.name,
-                            agent_id=step.agent_id,
-                            version_hash=str(version.hash),
-                        )
-                    )
-                case NestedWorkflowStepIn():
-                    if step.workflow_id == workflow_id:
-                        raise WorkflowRefused(
-                            400, f"step {step.name!r} would nest this workflow inside itself"
-                        )
-                    nested = await self._index.get_workflow(owner, step.workflow_id)
-                    if nested is None:
-                        raise WorkflowRefused(
-                            404, f"step {step.name!r} names no workflow {step.workflow_id!r}"
-                        )
-                    version = await self._store.get_version(nested.version_hash)
-                    if version is None or not isinstance(version.spec, psych_runtime.WorkflowSpec):
-                        raise WorkflowRefused(
-                            409, f"workflow {step.workflow_id!r} has no published Version"
-                        )
-                    steps.append(psych_runtime.WorkflowStepRef(name=step.name, spec=version.spec))
-                    entries.append(
-                        WorkflowStepEntry(
-                            kind="workflow",
-                            name=step.name,
-                            workflow_id=step.workflow_id,
-                            version_hash=str(version.hash),
-                        )
-                    )
+            built = await self._build_step(owner, step, workflow_id=workflow_id, tools=tools)
+            steps.append(built)
+            entries.append(_entry_for(step))
 
         try:
             spec = psych_runtime.WorkflowSpec(
@@ -164,6 +131,14 @@ class WorkflowService:
                     psych_runtime.Limits(**definition.limits)
                     if definition.limits
                     else psych_runtime.Limits()
+                ),
+                input_schema=definition.input_schema,
+                initial_state=dict(definition.initial_state),
+                output=_mapping(definition.output) if definition.output else None,
+                retry=(
+                    psych_runtime.RetryPolicy(**definition.retry.model_dump())
+                    if definition.retry is not None
+                    else psych_runtime.RetryPolicy()
                 ),
             )
             version = await psych_runtime.publish(
@@ -187,9 +162,251 @@ class WorkflowService:
             steps=tuple(entries),
             tools=tuple(tools),
             limits=spec.limits.model_dump(),
+            input_schema=definition.input_schema,
+            initial_state=dict(definition.initial_state),
+            output=(
+                {name: ref.model_dump(mode="json") for name, ref in definition.output.items()}
+                if definition.output
+                else None
+            ),
+            # The resolved policy rather than the request's, exactly as
+            # `limits` above is: a workflow that set no `retry` still has the
+            # default one, and reporting `null` would leave a console to guess
+            # what every step actually inherits.
+            retry=spec.retry.model_dump(mode="json"),
             published_at=version.published_at,
             now=datetime.now(UTC),
         )
+
+    async def _build_step(  # noqa: PLR0911, PLR0912 - one arm per step kind, each named
+        self,
+        owner: str,
+        step: WorkflowStepIn,
+        *,
+        workflow_id: str,
+        tools: dict[str, psych_runtime.CodeTool],
+    ) -> Any:
+        """One request step as the library's own step, children and all.
+
+        Recursive because the request is: a branch arm is a step, a loop body
+        is a step, and each of them may be another composite. The three kinds
+        that name something of this account -- a tool, an agent, a nested
+        workflow -- are the only ones that can be refused, and each refusal
+        keeps the status code it had when only those three kinds existed, so a
+        console that already reads a 404 as "you deleted that agent" keeps
+        reading it that way however deeply the step is nested.
+        """
+        common = _common(step)
+        match step:
+            case ToolStepIn():
+                if step.tool not in self._registry:
+                    raise WorkflowRefused(
+                        400,
+                        f"step {step.name!r} names no registered tool {step.tool!r}; "
+                        f"the registered tools are {sorted(self._registry.names)}",
+                    )
+                tools.setdefault(step.tool, psych_runtime.CodeTool(name=step.tool))
+                return psych_runtime.ToolStep(
+                    **common,
+                    tool=step.tool,
+                    arguments=step.arguments,
+                    arguments_from=_mapping(step.arguments_from),
+                )
+            case AgentStepIn():
+                agent_spec = await self._agent_spec(owner, step)
+                return psych_runtime.AgentStep(
+                    **common, spec=agent_spec, input=_mapping(step.input)
+                )
+            case NestedWorkflowStepIn():
+                nested_spec = await self._nested_spec(owner, step, workflow_id=workflow_id)
+                return psych_runtime.WorkflowStepRef(
+                    **common, spec=nested_spec, input=_mapping(step.input)
+                )
+            case ParallelStepIn():
+                branches = [
+                    await self._build_step(owner, branch, workflow_id=workflow_id, tools=tools)
+                    for branch in step.branches
+                ]
+                return psych_runtime.ParallelStep(
+                    **common,
+                    branches=tuple(branches),
+                    on_branch_failure=step.on_branch_failure,
+                )
+            case BranchStepIn():
+                cases = [
+                    psych_runtime.BranchCase(
+                        name=case.name,
+                        when=_condition(case.when),
+                        step=await self._build_step(
+                            owner, case.step, workflow_id=workflow_id, tools=tools
+                        ),
+                    )
+                    for case in step.cases
+                ]
+                otherwise = (
+                    await self._build_step(
+                        owner, step.otherwise, workflow_id=workflow_id, tools=tools
+                    )
+                    if step.otherwise is not None
+                    else None
+                )
+                return psych_runtime.BranchStep(
+                    **common, cases=tuple(cases), otherwise=otherwise, mode=step.mode
+                )
+            case ForEachStepIn():
+                return psych_runtime.ForEachStep(
+                    **common,
+                    items=psych_runtime.ValuePath(path=step.items.path),
+                    body=await self._build_step(
+                        owner, step.body, workflow_id=workflow_id, tools=tools
+                    ),
+                    concurrency=step.concurrency,
+                    on_item_failure=step.on_item_failure,
+                )
+            case LoopStepIn():
+                return psych_runtime.LoopStep(
+                    **common,
+                    body=await self._build_step(
+                        owner, step.body, workflow_id=workflow_id, tools=tools
+                    ),
+                    until=_condition(step.until) if step.until is not None else None,
+                    while_=_condition(step.while_) if step.while_ is not None else None,
+                    max_iterations=step.max_iterations,
+                )
+            case MapStepIn():
+                return psych_runtime.MapStep(**common, output=_mapping(step.output))
+            case SetStateStepIn():
+                return psych_runtime.SetStateStep(**common, values=_mapping(step.values))
+            case SleepStepIn():
+                return psych_runtime.SleepStep(
+                    **common,
+                    seconds=step.seconds,
+                    until=(
+                        psych_runtime.ValuePath(path=step.until.path)
+                        if step.until is not None
+                        else None
+                    ),
+                )
+            case WaitStepIn():
+                # `WaitStep` redeclares `timeout_seconds` -- there it bounds
+                # the suspension rather than an attempt -- so the shared value
+                # is dropped and the step's own is the one that is passed.
+                return psych_runtime.WaitStep(
+                    **{key: value for key, value in common.items() if key != "timeout_seconds"},
+                    event=step.event,
+                    payload_schema=step.payload_schema,
+                    timeout_seconds=step.timeout_seconds,
+                )
+            case HumanStepIn():
+                return psych_runtime.HumanStep(
+                    **common,
+                    prompt=step.prompt,
+                    questions=tuple(_question(q) for q in step.questions),
+                    expires_seconds=step.expires_seconds,
+                )
+
+    async def _agent_spec(self, owner: str, step: AgentStepIn) -> psych_runtime.AgentSpec:
+        found = await self._index.get_agent(owner, step.agent_id)
+        if found is None:
+            raise WorkflowRefused(404, f"step {step.name!r} names no agent {step.agent_id!r}")
+        version = await self._store.get_version(found[0].version_hash)
+        if version is None or not isinstance(version.spec, psych_runtime.AgentSpec):
+            raise WorkflowRefused(409, f"agent {step.agent_id!r} has no published agent Version")
+        # Written back onto the step so the stored definition -- and therefore
+        # `GET /api/workflows/{id}` -- reports the child hash this Version
+        # actually pinned. Never read from the request: a caller's
+        # `version_hash` is ignored, because the copy is taken here and a hash
+        # that disagreed with it would be a lie about what runs.
+        step.version_hash = str(version.hash)
+        return version.spec
+
+    async def _nested_spec(
+        self, owner: str, step: NestedWorkflowStepIn, *, workflow_id: str
+    ) -> psych_runtime.WorkflowSpec:
+        if step.workflow_id == workflow_id:
+            raise WorkflowRefused(400, f"step {step.name!r} would nest this workflow inside itself")
+        nested = await self._index.get_workflow(owner, step.workflow_id)
+        if nested is None:
+            raise WorkflowRefused(404, f"step {step.name!r} names no workflow {step.workflow_id!r}")
+        version = await self._store.get_version(nested.version_hash)
+        if version is None or not isinstance(version.spec, psych_runtime.WorkflowSpec):
+            raise WorkflowRefused(409, f"workflow {step.workflow_id!r} has no published Version")
+        step.version_hash = str(version.hash)
+        return version.spec
+
+
+def _common(step: WorkflowStepIn) -> dict[str, Any]:
+    """The fields every step kind shares, in the library's own spelling."""
+    return {
+        "name": step.name,
+        "description": step.description,
+        "when": _condition(step.when) if step.when is not None else None,
+        "retry": (
+            psych_runtime.RetryPolicy(**step.retry.model_dump()) if step.retry is not None else None
+        ),
+        "timeout_seconds": step.timeout_seconds,
+        "on_failure": step.on_failure,
+        "output_schema": step.output_schema,
+    }
+
+
+def _condition(condition: ConditionIn) -> psych_runtime.Condition:
+    """The request's mirror validated as the library's own model.
+
+    Through ``model_dump`` rather than field by field: the two shapes are the
+    same by construction, and a recursive hand-written copy is one more place
+    for them to drift apart silently.
+    """
+    return psych_runtime.Condition.model_validate(condition.model_dump(mode="json"))
+
+
+def _mapping(mapping: MappingIn) -> dict[str, Any]:
+    """A request Mapping as the library validates one: name to path or literal."""
+    return {
+        name: psych_runtime.ValuePath(path=ref.path)
+        if isinstance(ref, ValuePathIn)
+        else psych_runtime.LiteralValue(value=ref.value)
+        for name, ref in mapping.items()
+    }
+
+
+def _question(question: AskedQuestionIn) -> AskedQuestion:
+    return AskedQuestion(
+        question=question.question,
+        header=question.header,
+        options=tuple(
+            QuestionOption(label=option.label, description=option.description)
+            for option in question.options
+        ),
+        multi_select=question.multi_select,
+    )
+
+
+def _entry_for(step: WorkflowStepIn) -> WorkflowStepEntry:
+    """One top-level step as the index stores it.
+
+    ``definition`` is the whole step, serialised the way the wire carries it
+    (``by_alias``, so a loop's exit condition is ``while`` here as it is in the
+    request), which is what makes ``GET /api/workflows/{id}`` round-trip a
+    definition the console can put straight back into the editor. The flat
+    fields beside it are the pre-composite shape, still filled for the three
+    kinds that have them.
+    """
+    definition = step.model_dump(mode="json", by_alias=True)
+    entry: dict[str, Any] = {"kind": step.kind, "name": step.name, "definition": definition}
+    match step:
+        case ToolStepIn():
+            entry["tool"] = step.tool
+            entry["arguments"] = dict(step.arguments)
+        case AgentStepIn():
+            entry["agent_id"] = step.agent_id
+            entry["version_hash"] = step.version_hash
+        case NestedWorkflowStepIn():
+            entry["workflow_id"] = step.workflow_id
+            entry["version_hash"] = step.version_hash
+        case _:
+            pass
+    return WorkflowStepEntry(**entry)
 
 
 def summary_of(entry: WorkflowEntry) -> dict[str, Any]:
@@ -199,9 +416,13 @@ def summary_of(entry: WorkflowEntry) -> dict[str, Any]:
         "version_hash": str(entry.version_hash),
         "name": entry.name,
         "description": entry.description,
-        "steps": [step.model_dump() for step in entry.steps],
+        "steps": [step.definition for step in entry.steps],
         "tools": list(entry.tools),
         "limits": dict(entry.limits),
+        "input_schema": entry.input_schema,
+        "initial_state": dict(entry.initial_state),
+        "output": entry.output,
+        "retry": entry.retry,
         "published_at": entry.published_at.isoformat(),
         "created_at": entry.created_at.isoformat(),
         "updated_at": entry.updated_at.isoformat(),

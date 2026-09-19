@@ -354,6 +354,8 @@ class RunStateView:
     suspended_step_id: StepId | None = None
     """The workflow step the current suspension belongs to, if any."""
     suspended_step_name: str | None = None
+    suspend_payload_schema: dict[str, Any] = field(default_factory=dict)
+    """What a resume's payload must satisfy, from the ``suspended`` record."""
     suspend_event: str | None = None
     suspend_wake_at: datetime | None = None
     step_resumes: dict[StepId, tuple[StepResume, ...]] = field(default_factory=dict)
@@ -1136,6 +1138,7 @@ def reduce(  # noqa: PLR0912, PLR0915
                 state.suspend_questions = record.questions
                 state.suspended_step_id = record.step_id
                 state.suspended_step_name = record.step_name
+                state.suspend_payload_schema = dict(record.payload_schema)
                 state.suspend_event = record.event
                 state.suspend_wake_at = record.wake_at
                 state.turn_open = False
@@ -1183,6 +1186,7 @@ def reduce(  # noqa: PLR0912, PLR0915
                 state.suspend_questions = ()
                 state.suspended_step_id = None
                 state.suspended_step_name = None
+                state.suspend_payload_schema = {}
                 state.suspend_event = None
                 state.suspend_wake_at = None
 
@@ -1267,6 +1271,7 @@ def _continue_from(prior: RunStateView) -> RunStateView:
         run_input=dict(prior.run_input),
         step_resumes=dict(prior.step_resumes),
         workflow_state_updates=dict(prior.workflow_state_updates),
+        suspend_payload_schema=dict(prior.suspend_payload_schema),
     )
 
 

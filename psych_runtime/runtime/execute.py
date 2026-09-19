@@ -80,7 +80,7 @@ from psych_runtime.tools.code import HostCall, make_run_code, run_code_definitio
 from psych_runtime.tools.deferred import DEFAULT_CATALOGUE_BUDGET_CHARS, DeferredDiscovery
 from psych_runtime.tools.guidance import failure_guidance
 from psych_runtime.tools.mcp import McpTools
-from psych_runtime.tools.policy import AllowAll, Decision, Policy
+from psych_runtime.tools.policy import AllowAll, Decision, Policy, approval_required
 from psych_runtime.tools.registry import ToolRegistry
 from psych_runtime.tools.resolver import ToolResolver
 
@@ -862,11 +862,27 @@ class Runtime:
     async def _gate_step_tool(
         self, tool: str, arguments: dict[str, Any], context: _AttemptContext
     ) -> Decision:
-        """The consumer's ``Policy`` on a workflow ``ToolStep``, exactly as on a
-        model's tool call. A decision that asks for a person suspends the Run
-        on the step (``psych_runtime.runtime.workflow``); the engine owns that."""
+        """The consumer's ``Policy`` and approval selectors on a workflow
+        ``ToolStep``, exactly as on a model's tool call.
+
+        A decision that asks for a person suspends the Run on the step
+        (``psych_runtime.runtime.workflow``); the engine owns that. The
+        selectors are consulted here too, because a ``@destructive`` tool a
+        model may not call without a person is no less destructive when a
+        workflow calls it with fixed arguments.
+        """
         policy = self.policy if self.policy is not None else AllowAll()
-        return await policy.allow_tool(context.scope, tool, arguments)
+        decision = await policy.allow_tool(context.scope, tool, arguments)
+        registered = self.registry.get(tool)
+        if (
+            decision.allowed
+            and not decision.requires_approval
+            and registered is not None
+            and self.approval_selectors
+            and approval_required(registered.definition(), selectors=self.approval_selectors)
+        ):
+            return Decision.ask(f"{tool!r} matches the approval selectors")
+        return decision
 
     async def _nested_tool(
         self, journal: Journal, tool: str, arguments: dict[str, Any], context: _AttemptContext

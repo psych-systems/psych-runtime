@@ -252,7 +252,7 @@ class WorkflowEngine:
         self._telemetry = telemetry if telemetry is not None else NOOP_TELEMETRY
         self._now = now if now is not None else lambda: datetime.now(UTC)
         self._root: WorkflowSpec | None = None
-        self._state: dict[str, Any] = {}
+        self._initial_state: dict[str, Any] = {}
 
     # -- entry --------------------------------------------------------------
 
@@ -279,7 +279,7 @@ class WorkflowEngine:
         """
         self._root = spec
         state = self._journal.state
-        self._state = {**spec.initial_state, **state.workflow_state_updates}
+        self._initial_state = dict(spec.initial_state)
 
         if spec.input_schema is not None:
             try:
@@ -293,7 +293,7 @@ class WorkflowEngine:
                 )
 
         frame = _Frame(
-            scope=WorkflowScope(input=dict(state.run_input), state=dict(self._state)),
+            scope=WorkflowScope(input=dict(state.run_input), state=self._current_state()),
             path=path,
             parent_step_id=None,
             telemetry=self._telemetry,
@@ -363,12 +363,16 @@ class WorkflowEngine:
             "status": outcome.status.value,
         }
         scope = scope.with_step(step.name, entry)
-        if isinstance(step, SetStateStep) and outcome.status is StepStatus.COMPLETED:
-            self._state = {**self._state, **(outcome.output or {})}
-        # Always the engine's state, not the scope's: a set_state inside a
-        # loop body or a branch arm wrote to the engine, and the sequence
-        # around it reads that write through here.
-        return scope.with_state(dict(self._state))
+        # The state is read back from the log, never tracked here: a set_state
+        # inside a parallel branch, a loop body or a branch arm is folded by
+        # the reducer the moment its completion lands, so every reader sees
+        # the same state a reclaiming Worker would derive.
+        return scope.with_state(self._current_state())
+
+    def _current_state(self) -> dict[str, Any]:
+        """The workflow state right now: ``initial_state`` under every
+        completed ``set_state`` step, as the reducer folded them."""
+        return {**self._initial_state, **self._journal.state.workflow_state_updates}
 
     async def _stopped(self) -> StepOutcome | None:
         """An abort, if one has landed. Refreshes the journal so an interrupt
@@ -793,7 +797,7 @@ class WorkflowEngine:
         inner_input = step_input.get("input", frame.scope.input)
         nested_frame = replace(
             frame,
-            scope=WorkflowScope(input=dict(inner_input), state=dict(self._state)),
+            scope=WorkflowScope(input=dict(inner_input), state=self._current_state()),
             path=frame.path,
         )
         result = await self._sequence(step.spec, nested_frame)
@@ -813,6 +817,7 @@ class WorkflowEngine:
             replace(frame, path=(*frame.path, index, branch.name))
             for index, branch in enumerate(step.branches)
         ]
+        children: list[WorkflowStep] = list(step.branches)
         outcomes = await self._concurrently(
             [(branch, child) for branch, child in zip(step.branches, frames, strict=True)],
             limit=len(step.branches),
@@ -821,7 +826,7 @@ class WorkflowEngine:
         stopped = _first_stop(outcomes)
         if stopped is not None:
             return stopped
-        failed = next((o for o in outcomes if o.status is StepStatus.FAILED), None)
+        failed = _blocking_failure(children, outcomes)
         if failed is not None:
             return StepOutcome(name=step.name, status=StepStatus.FAILED, failure=failed.failure)
         return StepOutcome(
@@ -863,11 +868,12 @@ class WorkflowEngine:
         for inner, child in skipped:
             await self._skip(inner, child)
 
+        children = [inner for inner, _ in chosen]
         outcomes = await self._concurrently(chosen, limit=max(len(chosen), 1), fail_fast=True)
         stopped = _first_stop(outcomes)
         if stopped is not None:
             return stopped
-        failed = next((o for o in outcomes if o.status is StepStatus.FAILED), None)
+        failed = _blocking_failure(children, outcomes)
         if failed is not None:
             return StepOutcome(name=step.name, status=StepStatus.FAILED, failure=failed.failure)
         output: dict[str, Any] = {"chosen": [inner.name for inner, _ in chosen]}
@@ -911,13 +917,14 @@ class WorkflowEngine:
             )
             for index, item in enumerate(items)
         ]
+        children = [step.body for _ in work]
         outcomes = await self._concurrently(
             work, limit=step.concurrency, fail_fast=step.on_item_failure == "fail_fast"
         )
         stopped = _first_stop(outcomes)
         if stopped is not None:
             return stopped
-        failed = next((o for o in outcomes if o.status is StepStatus.FAILED), None)
+        failed = _blocking_failure(children, outcomes)
         if failed is not None:
             return StepOutcome(name=step.name, status=StepStatus.FAILED, failure=failed.failure)
         return StepOutcome(
@@ -998,7 +1005,9 @@ class WorkflowEngine:
                     return
                 outcome = await self._step(step, frame)
                 results[position] = outcome
-                if outcome.stops_sequence or (fail_fast and outcome.status is StepStatus.FAILED):
+                if outcome.stops_sequence or (
+                    fail_fast and outcome.status is StepStatus.FAILED and step.on_failure == "fail"
+                ):
                     stop.set()
 
         tasks = [
@@ -1026,8 +1035,29 @@ class WorkflowEngine:
                 error = task.exception()
                 if error is not None:
                     raise error
+        # A sibling cancelled because another child suspended or aborted is
+        # reported as that, so the composite propagates the real stop. One
+        # cancelled because a sibling failed is a failure of its own kind: it
+        # never ran to an end, and calling it aborted would settle the Run as
+        # stopped when nobody stopped it.
+        real_stop = next((o for o in results.values() if o.stops_sequence), None)
+        cancelled_status = real_stop.status if real_stop is not None else StepStatus.FAILED
         return [
-            results.get(position, StepOutcome(name=step.name, status=StepStatus.ABORTED))
+            results.get(
+                position,
+                StepOutcome(
+                    name=step.name,
+                    status=cancelled_status,
+                    failure=(
+                        _failure(
+                            "cancelled",
+                            f"step {step.name!r} was cancelled because a sibling failed first.",
+                        )
+                        if cancelled_status is StepStatus.FAILED
+                        else None
+                    ),
+                ),
+            )
             for position, (step, _) in enumerate(work)
         ]
 
@@ -1155,7 +1185,9 @@ class WorkflowEngine:
         attempt. Only reached without a parker."""
         memo = self._journal.state.steps[step_id]
         frame = _Frame(
-            scope=WorkflowScope(input=dict(self._journal.state.run_input), state=dict(self._state)),
+            scope=WorkflowScope(
+                input=dict(self._journal.state.run_input), state=self._current_state()
+            ),
             path=memo.path,
             parent_step_id=memo.parent_step_id,
             iteration=memo.iteration,
@@ -1226,6 +1258,27 @@ def _status_of(memo: StepRecord) -> StepStatus:
     if memo.failure is not None:
         return StepStatus.FAILED
     return StepStatus.COMPLETED
+
+
+def _blocking_failure(
+    children: Sequence[WorkflowStep], outcomes: Sequence[StepOutcome]
+) -> StepOutcome | None:
+    """The failure that fails a composite, if any.
+
+    A child whose ``on_failure`` is ``continue`` failed on its own terms and
+    the composite carries ``None`` for it. Among the rest, a real failure
+    outranks a sibling that was merely cancelled because of it.
+    """
+    blocking = [
+        outcome
+        for child, outcome in zip(children, outcomes, strict=True)
+        if outcome.status is StepStatus.FAILED and child.on_failure == "fail"
+    ]
+    if not blocking:
+        return None
+    return next(
+        (o for o in blocking if o.failure is None or o.failure.kind != "cancelled"), blocking[0]
+    )
 
 
 def _first_stop(outcomes: Sequence[StepOutcome]) -> StepOutcome | None:

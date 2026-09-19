@@ -40,6 +40,18 @@ and breaking changes are expected until the design survives a second consumer.
   `all_of()`, `any_of()`. `StepReport` and `SuspensionReport` carry the new
   step fields. `WorkflowRequired` names a workflow-only operation asked of an
   agent Run.
+- **The playground authors and runs the whole of it.** The workflow builder
+  edits every step kind (a Build tab, a Shape tab for input schema, state,
+  output and retries, and a JSON tab), the workflow page draws the definition
+  as a graph and lists the workflow's runs with a state filter, and a run's
+  new Workflow view shows the live step tree with a detail panel per step,
+  the waiting step's controls (approve or deny with the exact arguments,
+  answer, deliver an event checked against its schema, wake a timer,
+  continue or step through a breakpoint), and a replay dialog. New routes:
+  `GET /api/runs/{id}/workflow`, `POST /api/runs/{id}/replay`,
+  `GET /api/workflows/{id}/runs`, `POST /api/runs/{id}/events`; dispatch
+  takes structured `input`, `breakpoints` and `step_mode`. A workflow tool
+  step is gated by the account's approval selectors, as a model's call is.
 
 ### Changed
 

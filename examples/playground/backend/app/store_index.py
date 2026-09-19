@@ -86,7 +86,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from psych_runtime.core.ids import RunId, VersionHash
 from psych_runtime.store.port import Store
@@ -291,18 +291,67 @@ class AgentEntry(BaseModel):
 
 
 class WorkflowStepEntry(BaseModel):
-    """One step as the edit form needs it back: what it was built from, and
-    for an embedded agent or workflow, the hash the parent actually pins."""
+    """One top-level step as the edit form needs it back.
+
+    ``definition`` is the whole step as the request wrote it -- nested
+    branches, loop bodies and foreach bodies included -- stored as the JSON a
+    ``WorkflowStepIn`` validates from. Storing the request rather than a
+    projection of the published Spec is what lets the console re-open a
+    workflow for editing: the Spec has the embedded agent's copy of its Spec
+    where the request had an ``agent_id``, and an id cannot be recovered from a
+    copy.
+
+    The flat ``kind``/``name``/``tool``/``arguments``/``agent_id``/
+    ``workflow_id``/``version_hash`` fields are what this entry was before
+    composite steps existed. They stay, both so an index file written by an
+    older build still loads and so anything reading a tool step's arguments
+    off the summary keeps working. ``definition`` is derived from them when it
+    is absent, which is exactly the old-file case.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    kind: Literal["tool", "agent", "workflow"]
+    kind: Literal[
+        "tool",
+        "agent",
+        "workflow",
+        "parallel",
+        "branch",
+        "foreach",
+        "loop",
+        "map",
+        "set_state",
+        "sleep",
+        "wait",
+        "human",
+    ]
     name: str
     tool: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
     agent_id: str | None = None
     workflow_id: str | None = None
     version_hash: str | None = None
+    definition: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _definition_defaults_to_the_flat_fields(self) -> WorkflowStepEntry:
+        """An entry written before ``definition`` existed still answers for one."""
+        if self.definition:
+            return self
+        derived: dict[str, Any] = {"kind": self.kind, "name": self.name}
+        if self.kind == "tool":
+            derived["tool"] = self.tool or ""
+            derived["arguments"] = dict(self.arguments)
+        elif self.kind == "agent":
+            derived["agent_id"] = self.agent_id or ""
+            derived["version_hash"] = self.version_hash
+        elif self.kind == "workflow":
+            derived["workflow_id"] = self.workflow_id or ""
+            derived["version_hash"] = self.version_hash
+        # `frozen=True` means assignment is refused, so the derived value goes
+        # in through the same door pydantic itself uses.
+        object.__setattr__(self, "definition", derived)
+        return self
 
 
 class WorkflowEntry(BaseModel):
@@ -325,6 +374,14 @@ class WorkflowEntry(BaseModel):
     steps: tuple[WorkflowStepEntry, ...]
     tools: tuple[str, ...] = ()
     limits: dict[str, Any] = Field(default_factory=dict)
+    input_schema: dict[str, Any] | None = None
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] | None = None
+    """The workflow's output Mapping, as the request wrote it. ``None`` leaves
+    the output as every top-level step's output by name."""
+    retry: dict[str, Any] | None = None
+    """The default ``RetryPolicy`` every step inherits, as the request wrote
+    it. ``None`` on an entry written before workflows had one."""
     published_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -876,6 +933,10 @@ class PlaygroundIndex:
         steps: tuple[WorkflowStepEntry, ...],
         tools: tuple[str, ...],
         limits: dict[str, Any],
+        input_schema: dict[str, Any] | None = None,
+        initial_state: dict[str, Any] | None = None,
+        output: dict[str, Any] | None = None,
+        retry: dict[str, Any] | None = None,
         published_at: datetime,
         now: datetime,
     ) -> tuple[WorkflowEntry, bool]:
@@ -895,6 +956,10 @@ class PlaygroundIndex:
                 steps=steps,
                 tools=tools,
                 limits=limits,
+                input_schema=input_schema,
+                initial_state=dict(initial_state or {}),
+                output=output,
+                retry=retry,
                 published_at=published_at,
                 created_at=existing.created_at if existing else now,
                 updated_at=now,

@@ -8,6 +8,7 @@ import {
   SearchIcon,
   TriangleAlertIcon,
   WaypointsIcon,
+  WorkflowIcon,
 } from "lucide-react";
 
 import { useRunStatuses } from "@/components/activity/use-run-statuses";
@@ -325,6 +326,7 @@ function ConversationListRow({ row }: { row: ConversationRow }) {
   const title = conversation.head.message.trim() || conversation.head.name;
   const detail = row.attention ?? row.failureMessage;
   const actionClass = "opacity-100 transition-opacity md:opacity-0 md:group-hover/row:opacity-100 md:group-focus-within/row:opacity-100";
+  const isWorkflow = conversation.latest.kind === "workflow";
 
   return (
     <li className="group/row flex items-center gap-2 px-2 transition-colors hover:bg-surface/60">
@@ -332,6 +334,15 @@ function ConversationListRow({ row }: { row: ConversationRow }) {
         <span className="block truncate text-body font-medium text-foreground">{truncate(title, 140)}</span>
         <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
           <span className="inline-flex items-center gap-1.5"><StatusDot state={row.lifecycle} />{statusLabel(row.lifecycle)}</span>
+          {/* A workflow run reads differently from a chat, and its own view
+              is the one worth opening first. Named here so the row says so
+              before anybody clicks. */}
+          {isWorkflow && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-micro font-medium">
+              <WorkflowIcon className="size-3" aria-hidden />
+              Workflow
+            </span>
+          )}
           <span>{conversation.latest.name}</span>
           <span>{relativeTime(conversation.head.started_at)}</span>
           <span>{conversation.runs.length} {conversation.runs.length === 1 ? "message" : "messages"}</span>
@@ -345,6 +356,9 @@ function ConversationListRow({ row }: { row: ConversationRow }) {
 
       <DiagnosticAction href={`/activity/${conversation.latest.run_id}${row.review ? "?review=1" : ""}`} label="Open activity" icon={ActivityIcon} className={actionClass} />
       <DiagnosticAction href={`/activity/${conversation.latest.run_id}/trace${row.review ? "?review=1" : ""}`} label="Open trace" icon={WaypointsIcon} className={actionClass} />
+      {isWorkflow && (
+        <DiagnosticAction href={`/activity/${conversation.latest.run_id}/workflow${row.review ? "?review=1" : ""}`} label="Open workflow" icon={WorkflowIcon} className={actionClass} />
+      )}
     </li>
   );
 }

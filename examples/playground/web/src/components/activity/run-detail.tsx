@@ -12,6 +12,7 @@ import { DetailRow, Page, PageHeader, Section, Stat, TechnicalDetails } from "@/
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusPill, toLifecycle, type Lifecycle } from "@/components/ui/status";
 import { useRunStatus } from "@/hooks/use-run-status";
+import { useIsWorkflowRun } from "@/hooks/use-workflow-view";
 import { useThreadReport } from "@/hooks/use-thread-report";
 import { formatClockTime, formatCost, formatDayLabel, formatDuration, formatTokens, sumUsageTokens } from "@/lib/format";
 import type { RunReport, ThreadMessage, ThreadTotals } from "@/lib/types";
@@ -30,6 +31,8 @@ export function RunDetail({ runId }: { runId: string }) {
   const { thread, loading, error, refresh: refreshThread } = useThreadReport(runId);
   const latestRunId = thread?.run_ids[thread.run_ids.length - 1] ?? runId;
   const { status, error: statusError, refresh: refreshStatus } = useRunStatus(latestRunId);
+  // Offered only when there is one. See `RunViewSwitcher`.
+  const isWorkflow = useIsWorkflowRun(latestRunId);
 
   const refresh = () => {
     refreshThread();
@@ -77,7 +80,7 @@ export function RunDetail({ runId }: { runId: string }) {
         description={firstReport
           ? `${thread.run_ids.length} ${thread.run_ids.length === 1 ? "message" : "messages"} · started ${formatDayLabel(firstReport.admitted_at)} at ${formatClockTime(firstReport.admitted_at)}`
           : `${thread.run_ids.length} messages`}
-        actions={<><StatusPill state={lifecycle} /><RunViewSwitcher runId={latestRunId} active="activity" /><Button asChild variant="ghost" size="sm"><Link href={`/chat/${latestRunId}`}><MessagesSquareIcon className="size-3.5" />Open in chat</Link></Button></>}
+        actions={<><StatusPill state={lifecycle} /><RunViewSwitcher runId={latestRunId} active="activity" isWorkflow={isWorkflow} /><Button asChild variant="ghost" size="sm"><Link href={`/chat/${latestRunId}`}><MessagesSquareIcon className="size-3.5" />Open in chat</Link></Button></>}
       />
 
       <Link href="/conversations" className="-mt-3 inline-flex w-fit items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground">

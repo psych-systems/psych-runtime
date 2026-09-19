@@ -32,10 +32,14 @@ import { cn } from "@/lib/utils";
 export function QuestionCard({
   pending,
   onAnswer,
+  subject = "The agent",
 }: {
   pending: PendingQuestion;
   /** Resolves once the answer is delivered. Rejects with a message to show. */
   onAnswer: (answers: Record<string, string>) => Promise<void>;
+  /** Who is asking, for the one line of framing: an agent in chat, a
+   *  workflow's `human` step in the workflow view. */
+  subject?: string;
 }) {
   const [picked, setPicked] = useState<Record<number, string[]>>({});
   const [typed, setTyped] = useState<Record<number, string>>({});
@@ -100,8 +104,8 @@ export function QuestionCard({
         <div className="flex min-w-0 flex-1 flex-col gap-4">
           <p className="text-caption text-muted-foreground">
             {questions.length === 1
-              ? "The agent needs an answer before it can carry on."
-              : `The agent needs ${questions.length} answers before it can carry on.`}
+              ? `${subject} needs an answer before it can carry on.`
+              : `${subject} needs ${questions.length} answers before it can carry on.`}
           </p>
 
           {questions.map((question, index) => (

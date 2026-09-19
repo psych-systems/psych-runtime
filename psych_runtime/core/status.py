@@ -291,7 +291,7 @@ def _pending_wait(state: RunStateView) -> PendingWait | None:
         step_name=state.suspended_step_name or (step.name if step is not None else ""),
         reason=state.suspend_reason,
         event=state.suspend_event,
-        payload_schema={},
+        payload_schema=dict(state.suspend_payload_schema),
         wake_at=state.suspend_wake_at,
         expires_at=state.suspend_expires_at,
     )

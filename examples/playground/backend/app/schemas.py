@@ -10,7 +10,7 @@ DESIGN.md §4's own rule that a Spec is data with nothing left to interpret.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -393,36 +393,239 @@ class CreateAgentRequest(_ApiModel):
     Joins the Version hash like every other field here."""
 
 
-class ToolStepIn(_ApiModel):
-    kind: Literal["tool"] = "tool"
+# ---------------------------------------------------------------------------
+# Workflow steps
+#
+# The request shape mirrors ``psych_runtime.core.spec``'s step union rather than
+# accepting its models directly. Mirroring costs a class per kind and buys the
+# one thing the console needs: a body that is wrong is a 422 naming the field,
+# at the HTTP boundary, instead of a ``SpecValidationError`` surfacing as a
+# 400 with a path into a Spec the caller never wrote. The mirror is also what
+# lets an agent step name an ``agent_id`` and a nested workflow step a
+# ``workflow_id`` -- ids of this account's things -- where the library's own
+# models carry the embedded Spec the service resolves those ids into.
+#
+# One union serves both directions. ``WorkflowStepOut`` is this same shape, so
+# a workflow published from a body round-trips back through ``GET
+# /api/workflows/{id}`` byte for byte and the console can re-open it for
+# editing without a second, silently diverging response model to maintain.
+# ---------------------------------------------------------------------------
+
+
+class ValuePathIn(_ApiModel):
+    """A reference to a value the workflow already has: ``input.customer_id``,
+    ``steps.fetch.output.rows[0].id``, ``state.total``, ``item.sku``."""
+
+    kind: Literal["path"] = "path"
+    path: str
+
+
+class LiteralValueIn(_ApiModel):
+    """A constant written into the Spec, for a mapping that mixes the two."""
+
+    kind: Literal["literal"] = "literal"
+    value: Any = None
+
+
+ValueRefIn = Annotated[ValuePathIn | LiteralValueIn, Field(discriminator="kind")]
+MappingIn = dict[str, ValueRefIn]
+"""Field name to source. Selection only: a mapping cannot compute or branch."""
+
+
+class ConditionIn(_ApiModel):
+    """A predicate: a leaf comparing ``path`` to ``value`` with ``op``, or an
+    ``all_of``/``any_of`` group. Exactly one shape, checked by the library."""
+
+    path: str | None = None
+    op: Literal[
+        "eq", "ne", "gt", "gte", "lt", "lte", "in", "contains", "exists", "truthy", "matches"
+    ] = "truthy"
+    value: Any = None
+    all_of: list[ConditionIn] = Field(default_factory=list)
+    any_of: list[ConditionIn] = Field(default_factory=list)
+    negate: bool = False
+
+
+class RetryPolicyIn(_ApiModel):
+    """How a failed step is retried before the failure counts."""
+
+    max_attempts: int = Field(default=1, ge=1, le=100)
+    backoff_seconds: float = Field(default=0.0, ge=0, le=86_400)
+    multiplier: float = Field(default=2.0, ge=1.0, le=10.0)
+    max_backoff_seconds: float = Field(default=3_600.0, gt=0, le=86_400)
+    retry_on: list[str] = Field(default_factory=list)
+
+
+class _StepIn(_ApiModel):
+    """What every step kind carries besides its own fields, named exactly as
+    ``psych_runtime.core.spec._StepBase`` names them."""
+
     name: str
+    description: str = Field(default="", max_length=4096)
+    when: ConditionIn | None = None
+    retry: RetryPolicyIn | None = None
+    timeout_seconds: float | None = None
+    on_failure: Literal["fail", "continue"] = "fail"
+    output_schema: dict[str, Any] | None = None
+
+
+class ToolStepIn(_StepIn):
+    kind: Literal["tool"] = "tool"
     tool: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments_from: MappingIn = Field(default_factory=dict)
 
 
-class AgentStepIn(_ApiModel):
+class AgentStepIn(_StepIn):
+    """An agent of this account, by id. The service embeds a copy of the Spec
+    that agent publishes today, and reports the hash it pinned back in
+    ``version_hash`` -- which is output only and ignored on the way in."""
+
     kind: Literal["agent"] = "agent"
-    name: str
     agent_id: str
+    input: MappingIn = Field(default_factory=dict)
+    version_hash: str | None = None
 
 
-class NestedWorkflowStepIn(_ApiModel):
+class NestedWorkflowStepIn(_StepIn):
+    """Another workflow of this account, by id, embedded the same way."""
+
     kind: Literal["workflow"] = "workflow"
-    name: str
     workflow_id: str
+    input: MappingIn = Field(default_factory=dict)
+    version_hash: str | None = None
 
 
-WorkflowStepIn = ToolStepIn | AgentStepIn | NestedWorkflowStepIn
+class ParallelStepIn(_StepIn):
+    kind: Literal["parallel"] = "parallel"
+    branches: list[WorkflowStepIn] = Field(min_length=1)
+    on_branch_failure: Literal["fail_fast", "wait_all"] = "fail_fast"
+
+
+class BranchCaseIn(_ApiModel):
+    name: str
+    when: ConditionIn
+    step: WorkflowStepIn
+
+
+class BranchStepIn(_StepIn):
+    kind: Literal["branch"] = "branch"
+    cases: list[BranchCaseIn] = Field(min_length=1)
+    otherwise: WorkflowStepIn | None = None
+    mode: Literal["first", "all"] = "first"
+
+
+class ForEachStepIn(_StepIn):
+    kind: Literal["foreach"] = "foreach"
+    items: ValuePathIn
+    body: WorkflowStepIn
+    concurrency: int = Field(default=1, ge=1, le=64)
+    on_item_failure: Literal["fail_fast", "wait_all"] = "fail_fast"
+
+
+class LoopStepIn(_StepIn):
+    """``while`` on the wire, ``while_`` in Python, exactly as the library
+    spells it: ``while`` is a keyword and the wire name is the readable one."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kind: Literal["loop"] = "loop"
+    body: WorkflowStepIn
+    until: ConditionIn | None = None
+    while_: ConditionIn | None = Field(default=None, alias="while")
+    max_iterations: int = Field(default=100, ge=1, le=10_000)
+
+
+class MapStepIn(_StepIn):
+    kind: Literal["map"] = "map"
+    output: MappingIn = Field(min_length=1)
+
+
+class SetStateStepIn(_StepIn):
+    kind: Literal["set_state"] = "set_state"
+    values: MappingIn = Field(min_length=1)
+
+
+class SleepStepIn(_StepIn):
+    kind: Literal["sleep"] = "sleep"
+    seconds: float | None = None
+    until: ValuePathIn | None = None
+
+
+class QuestionOptionIn(_ApiModel):
+    """One answer a person can pick without typing."""
+
+    label: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=400)
+
+
+class AskedQuestionIn(_ApiModel):
+    """One question a ``human`` step puts to a person, as
+    ``psych_runtime.core.questions.AskedQuestion`` spells it."""
+
+    question: str = Field(min_length=1, max_length=2000)
+    header: str = Field(default="", max_length=24)
+    options: list[QuestionOptionIn] = Field(default_factory=list)
+    multi_select: bool = False
+
+
+class WaitStepIn(_StepIn):
+    kind: Literal["wait"] = "wait"
+    event: str
+    payload_schema: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: float | None = None
+
+
+class HumanStepIn(_StepIn):
+    kind: Literal["human"] = "human"
+    prompt: str = Field(min_length=1, max_length=8192)
+    questions: list[AskedQuestionIn] = Field(default_factory=list)
+    expires_seconds: float | None = None
+
+
+WorkflowStepIn = Annotated[
+    ToolStepIn
+    | AgentStepIn
+    | NestedWorkflowStepIn
+    | ParallelStepIn
+    | BranchStepIn
+    | ForEachStepIn
+    | LoopStepIn
+    | MapStepIn
+    | SetStateStepIn
+    | SleepStepIn
+    | WaitStepIn
+    | HumanStepIn,
+    Field(discriminator="kind"),
+]
+"""Every step kind, discriminated by ``kind``. Recursive: a composite step
+holds more of these."""
+
+WorkflowStepOut = WorkflowStepIn
+"""The response shape is the request shape. An embedded agent or workflow step
+carries ``version_hash`` on the way out: the child hash this Version pins,
+which may be older than what that agent or workflow runs today."""
+
+# The union is recursive, so the models that hold it are resolved once every
+# name in it exists -- the same rebuild ``psych_runtime.core.spec`` performs.
+for _step_model in (
+    ConditionIn,
+    ParallelStepIn,
+    BranchCaseIn,
+    BranchStepIn,
+    ForEachStepIn,
+    LoopStepIn,
+):
+    _step_model.model_rebuild()
 
 
 class CreateWorkflowRequest(_ApiModel):
     """``POST /api/workflows``: DESIGN.md §5's fixed pipeline.
 
-    Steps are tool calls with their arguments written down, agents named by
-    id, or other workflows named by id; the latter two are copied in at their
-    current Version (see ``app.workflows``). ``workflow_id`` names an existing
-    workflow to publish a new Version of, exactly as ``agent_id`` does for an
-    agent.
+    Steps are any of the twelve kinds, nested; agents and other workflows are
+    named by id and copied in at their current Version (see ``app.workflows``).
+    ``workflow_id`` names an existing workflow to publish a new Version of,
+    exactly as ``agent_id`` does for an agent.
     """
 
     workflow_id: str | None = None
@@ -430,18 +633,14 @@ class CreateWorkflowRequest(_ApiModel):
     description: str = Field(default="", max_length=4096)
     steps: list[WorkflowStepIn] = Field(min_length=1)
     limits: dict[str, Any] | None = None
-
-
-class WorkflowStepOut(_ApiModel):
-    kind: Literal["tool", "agent", "workflow"]
-    name: str
-    tool: str | None = None
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    agent_id: str | None = None
-    workflow_id: str | None = None
-    version_hash: str | None = None
-    """For an embedded agent or workflow: the child hash this Version pins,
-    which may be older than what that agent or workflow runs today."""
+    input_schema: dict[str, Any] | None = None
+    """A JSON Schema the Run's input must satisfy, checked before any step."""
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    """What ``state.<name>`` reads as before any ``set_state`` step ran."""
+    output: MappingIn | None = None
+    """What the Run's output is. Unset, it is every top-level step's output."""
+    retry: RetryPolicyIn | None = None
+    """The default for every step that sets no ``retry`` of its own."""
 
 
 class WorkflowSummary(_ApiModel):
@@ -452,6 +651,10 @@ class WorkflowSummary(_ApiModel):
     steps: list[WorkflowStepOut]
     tools: list[str]
     limits: dict[str, Any] = Field(default_factory=dict)
+    input_schema: dict[str, Any] | None = None
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    output: MappingIn | None = None
+    retry: RetryPolicyIn | None = None
     published_at: str
     created_at: str
     updated_at: str
@@ -605,7 +808,20 @@ class DispatchRequest(_ApiModel):
     the other two: its current Version is what the Run pins, and the Worker
     drives the workflow engine rather than the agent loop because the Version
     says so, not because this route did anything different."""
-    message: str
+    message: str = ""
+    """The Run's opening message. Optional when ``input`` carries a structured
+    workflow input; a workflow that reads ``input.message`` still gets it."""
+    input: dict[str, Any] | None = None
+    """A structured input for a workflow Run, read by ``input.<name>`` paths.
+
+    Given with an empty ``message``, this *is* the Run's input; given with one,
+    the message joins it under ``message`` so a workflow can read either."""
+    breakpoints: list[str] = Field(default_factory=list)
+    """Step names to pause before. The Run suspends with reason ``breakpoint``
+    and ``POST /api/runs/{run_id}/resume`` lets it through."""
+    step_mode: bool = False
+    """Pause before every step. A resume whose payload carries
+    ``{"step_mode": false}`` turns it off again and runs to the end."""
     continues_run_id: str | None = None
     """A prior Run this message continues, for a second turn in the same
     conversation, omitted for a thread's first message. Passed
@@ -649,6 +865,37 @@ class ForkRequest(_ApiModel):
 
     message: str
     agent_id: str | None = None
+
+
+class ReplayRequest(_ApiModel):
+    """``POST /api/runs/{run_id}/replay``: run a workflow again from one step.
+
+    Every step the source Run settled before ``from_step`` is copied into the
+    new Run as ``replayed`` rather than re-executed, so a workflow that failed
+    at step nine is debugged by changing something and re-running step nine,
+    not the eight side effects before it. The source Run is untouched.
+    """
+
+    from_step: str
+    input: dict[str, Any] | None = None
+    """Replaces the source Run's input from ``from_step`` on. Omitted, the
+    replay sees exactly what the original saw."""
+    breakpoints: list[str] = Field(default_factory=list)
+    step_mode: bool = False
+
+
+class DeliverEventRequest(_ApiModel):
+    """``POST /api/runs/{run_id}/events``: the payload a ``wait`` step waits for.
+
+    ``event`` has to match the event the Run is actually suspended on. Naming
+    the wrong one is a 409 rather than a silently discarded delivery: a
+    workflow with two wait steps would otherwise complete the wrong one.
+    """
+
+    event: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    by: str | None = None
+    """Who delivered it, recorded on the Run's ``resumed`` record."""
 
 
 class DispatchResponse(_ApiModel):

@@ -283,6 +283,42 @@ class TestComposition:
         assert state.terminal_state is TerminalState.COMPLETED
         assert h.calls == {"double": 1}
 
+    async def test_state_written_inside_a_parallel_branch_is_read_by_the_next_step(self) -> None:
+        """Seen in the console: a set_state inside a parallel step was folded
+        by the reducer but not by the engine, so the branch after it read the
+        initial state and took the wrong arm."""
+        h = _Harness()
+        spec = WorkflowSpec(
+            name="fanned_state",
+            tools=TOOLS,
+            initial_state={"count": 0},
+            steps=(
+                ParallelStep(
+                    name="par",
+                    branches=(
+                        ToolStep(name="a", tool="double", arguments={"n": 1}),
+                        SetStateStep(name="count_it", values={"count": lit(3)}),
+                    ),
+                ),
+                BranchStep(
+                    name="decide",
+                    cases=(
+                        BranchCase(
+                            name="many",
+                            when=Condition(path="state.count", op="gt", value=1),
+                            step=MapStep(name="many_map", output={"took": lit("many")}),
+                        ),
+                    ),
+                    otherwise=MapStep(name="few", output={"took": lit("few")}),
+                ),
+            ),
+        )
+        run_id = await h.start(spec)
+        state = await h.drive(run_id)
+        assert state.terminal_state is TerminalState.COMPLETED
+        assert state.output is not None
+        assert state.output["decide"]["chosen"] == ["many_map"]
+
     async def test_a_nested_workflow_gets_its_own_namespace_and_shares_state(self) -> None:
         h = _Harness()
         inner = WorkflowSpec(
@@ -417,6 +453,68 @@ class TestFailureHandling:
         assert state.terminal_state is TerminalState.COMPLETED
         assert state.output is not None
         assert state.output["after"] == {"got": None, "status": "failed"}
+
+    async def test_a_tolerated_branch_failure_does_not_cancel_its_siblings(self) -> None:
+        """Seen in the console: a parallel step whose one branch failed with
+        ``on_failure="continue"`` cancelled the other branch and settled the
+        Run as aborted, though nobody had aborted anything."""
+        h = _Harness()
+        spec = WorkflowSpec(
+            name="tolerant_fanout",
+            tools=TOOLS,
+            steps=(
+                ParallelStep(
+                    name="par",
+                    branches=(
+                        ToolStep(
+                            name="broken",
+                            tool="flaky",
+                            arguments={"label": "broken", "succeed_on": 99},
+                            on_failure="continue",
+                        ),
+                        ToolStep(
+                            name="fine", tool="slow", arguments={"label": "fine", "seconds": 0.2}
+                        ),
+                    ),
+                ),
+                ToolStep(name="after", tool="double", arguments={"n": 1}),
+            ),
+        )
+        run_id = await h.start(spec)
+        state = await h.drive(run_id)
+        assert state.terminal_state is TerminalState.COMPLETED
+        assert state.output is not None
+        assert state.output["par"] == {"broken": None, "fine": {"result": "fine done"}}
+        assert h.calls == {"broken": 1, "fine": 1, "double": 1}
+
+    async def test_a_fail_fast_sibling_is_recorded_as_cancelled_not_aborted(self) -> None:
+        h = _Harness()
+        spec = WorkflowSpec(
+            name="fanout",
+            tools=TOOLS,
+            steps=(
+                ParallelStep(
+                    name="par",
+                    branches=(
+                        ToolStep(
+                            name="broken",
+                            tool="flaky",
+                            arguments={"label": "broken", "succeed_on": 99},
+                        ),
+                        ToolStep(
+                            name="slowpoke",
+                            tool="slow",
+                            arguments={"label": "slowpoke", "seconds": 30},
+                        ),
+                    ),
+                ),
+            ),
+        )
+        run_id = await h.start(spec)
+        state = await h.drive(run_id)
+        assert state.terminal_state is TerminalState.FAILED
+        assert state.failure is not None
+        assert state.failure.kind == "RuntimeError", "the real failure, not the cancellation"
 
     async def test_a_step_timeout_is_its_own_failure_kind(self) -> None:
         h = _Harness()
@@ -658,6 +756,42 @@ class TestWaiting:
         assert denied.calls == {}
         report = await psych_runtime.report(denied.store, run_id)
         assert len([s for s in report.steps if s.name == "pay"]) == 1, "a denial is not retried"
+
+
+class TestApprovalSelectors:
+    async def test_a_destructive_tool_step_asks_when_the_selectors_say_so(self) -> None:
+        """Seen in the console: a workflow calling the account's destructive
+        refund tool paid without the approval an agent's call would have
+        needed. Selectors gate a tool step exactly as they gate a model's call."""
+        calls: dict[str, int] = {}
+        registry = ToolRegistry()
+
+        @registry.register(annotations={"destructive"})
+        def refund(order_id: str) -> str:
+            """Refund an order."""
+            calls["refund"] = calls.get("refund", 0) + 1
+            return f"refunded {order_id}"
+
+        store = InMemoryStore()
+        runtime = Runtime(
+            store=store, model=FakeModel(), registry=registry, approval_selectors=("@destructive",)
+        )
+        spec = WorkflowSpec(
+            name="pay",
+            tools=(CodeTool(name="refund"),),
+            steps=(ToolStep(name="pay", tool="refund", arguments={"order_id": "A1"}),),
+        )
+        version = await psych_runtime.publish(store, spec)
+        run_id = (await psych_runtime.dispatch(store, version, SCOPE)).run_id
+        h = _Harness()
+        h.store, h.runtime = store, runtime
+        waiting = await h.drive(run_id, until=lambda s: s.suspended)
+        assert waiting.suspend_reason is SuspendReason.APPROVAL
+        assert calls == {}
+        await psych_runtime.resume(store, run_id, approved=True, by="ops")
+        state = await h.drive(run_id)
+        assert state.terminal_state is TerminalState.COMPLETED
+        assert calls == {"refund": 1}
 
 
 class TestDebugging:

@@ -30,7 +30,7 @@ function abilities(agent: AgentSummary): string[] {
   if (agent.may_ask_questions) on.push("asks");
   if (agent.tasks_enabled) on.push("plans");
   if (agent.components_enabled) on.push("components");
-  if (agent.subagents_enabled || agent.subagents.length > 0) on.push("helpers");
+  if (agent.subagents_enabled || agent.subagents.length > 0) on.push("sub-agents");
   if (agent.code_execution?.enabled) on.push("code");
   if (agent.compaction !== null) on.push("summarises");
   if (agent.answer_style === "concise") on.push("concise");

@@ -60,7 +60,7 @@ and breaking changes are expected until the design survives a second consumer.
   of cards. A new agent publishes in two clicks: essentials on top, then
   what it can use, how it behaves and, behind "Show advanced", limits and
   model options. Everything that works out of the box is on by
-  default (questions, plans, components, helpers, summarising, approvals for
+  default (questions, plans, components, sub-agents, summarising, approvals for
   risky actions, code execution when a sandbox is available, every registered
   tool and connection); code execution asks for the isolation the default
   profile actually provides. Settings gained a sticky section navigation and
@@ -75,7 +75,7 @@ and breaking changes are expected until the design survives a second consumer.
   Atlassian, Linear, Slack, Sentry, Stripe, Vercel, Cloudflare, Supabase,
   PostHog, ...) each connected by one click and a sign-in or a token, one
   specialist agent per connector, a **Psych** agent that holds every
-  specialist as a named helper and can spawn more, and five use-case
+  specialist as a sub-agent and can spawn more, and five use-case
   workflows (a GitHub activity report, a Jira sprint digest, inbox-and-issues
   triage, release notes, an incident summary). Psych carries the host tools
   `list_agents`, `create_agent`, `update_agent`, `list_workflows`,

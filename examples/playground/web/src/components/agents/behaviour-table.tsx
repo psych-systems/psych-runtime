@@ -73,9 +73,9 @@ export function BehaviourTable({ form }: { form: AgentFormState }) {
 
       <ToggleRow
         id="subagents"
-        label="Start helpers on its own"
-        help="It may write a helper and run it in the background. This is a ceiling, not a roster: a helper only ever gets tools this agent already holds, so it cannot widen what the agent reaches."
-        detail="Background helpers it writes itself."
+        label="Start sub-agents on its own"
+        help="It may write a sub-agent and run it in the background. This is a ceiling, not a roster: a sub-agent only ever gets tools this agent already holds, so it cannot widen what the agent reaches."
+        detail="Background sub-agents it writes itself."
         checked={form.subagentsEnabled}
         onCheckedChange={form.setSubagentsEnabled}
       >
@@ -92,7 +92,7 @@ export function BehaviourTable({ form }: { form: AgentFormState }) {
 
       <ToggleRow
         id="roster"
-        label="Named helpers"
+        label="Sub-agents"
         help="Agents you already published, embedded into this one by name. It hands a task over and waits. The whole tree is pinned by one version."
         detail={
           form.roster.length === 0

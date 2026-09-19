@@ -55,7 +55,7 @@ export function SubagentRosterField({
     <div className="flex flex-col gap-3">
       {value.length === 0 && (
         <p className="text-caption text-muted-foreground">
-          No named helpers. Add one and this agent can hand a task to it and wait for the answer.
+          No sub-agents. Add one and this agent can hand a task to it and wait for the answer.
         </p>
       )}
       {value.map((ref, index) => {
@@ -105,7 +105,7 @@ export function SubagentRosterField({
                 size="icon-sm"
                 variant="ghost"
                 className="mt-6 shrink-0"
-                aria-label={`Remove ${ref.name || "this helper"}`}
+                aria-label={`Remove ${ref.name || "this sub-agent"}`}
                 onClick={() => onChange(value.filter((_, i) => i !== index))}
               >
                 <Trash2Icon />
@@ -137,7 +137,7 @@ export function SubagentRosterField({
           disabled={candidates.length === 0}
           onClick={() => onChange([...value, { name: "", description: "", agent_id: "" }])}
         >
-          <PlusIcon /> Add a named helper
+          <PlusIcon /> Add a sub-agent
         </Button>
         {candidates.length === 0 && (
           <span className="text-caption text-muted-foreground">
@@ -154,7 +154,7 @@ export function SubagentRosterField({
 }
 
 /**
- * The envelope for helpers the model writes itself. A ceiling and never a
+ * The envelope for sub-agents the model writes itself. A ceiling and never a
  * roster: the agent may compose a child out of at most these tools, on at
  * most these models, this deep and this many at once.
  */
@@ -175,8 +175,8 @@ export function SpawnEnvelopeFields({
       <FieldGrid columns={2}>
         <NumberField
           id="spawn-depth"
-          label="How deep helpers may go"
-          help="1 means a helper may not start helpers of its own."
+          label="How deep sub-agents may go"
+          help="1 means a sub-agent may not start sub-agents of its own."
           min={1}
           max={16}
           value={value.max_depth}
@@ -194,7 +194,7 @@ export function SpawnEnvelopeFields({
         <div className="flex min-w-0 flex-col gap-1.5">
           <LabelWithHelp
             htmlFor="spawn-models"
-            label="Models a helper may run on"
+            label="Models a sub-agent may run on"
             help="Comma separated. Empty means this agent's own model and no other: a model named here that you never priced is a model you never priced."
           />
           <Input
@@ -216,8 +216,8 @@ export function SpawnEnvelopeFields({
         <div className="flex min-w-0 items-center justify-between gap-3">
           <LabelWithHelp
             htmlFor="spawn-message"
-            label="May message a running helper"
-            help="Off means it can only start a helper, check on it and wait for the result."
+            label="May message a running sub-agent"
+            help="Off means it can only start a sub-agent, check on it and wait for the result."
           />
           <Switch
             id="spawn-message"
@@ -228,12 +228,12 @@ export function SpawnEnvelopeFields({
       </FieldGrid>
       <div className="flex flex-col gap-1.5">
         <LabelWithHelp
-          label="Tools a helper may be given"
-          help="All of them by default. A helper is narrowed against this and against what this agent actually holds, so nothing here can widen anything."
+          label="Tools a sub-agent may be given"
+          help="All of them by default. A sub-agent is narrowed against this and against what this agent actually holds, so nothing here can widen anything."
         />
         {tools.length === 0 ? (
           <p className="text-caption text-muted-foreground">
-            This agent holds no tools, so neither can a helper it writes.
+            This agent holds no tools, so neither can a sub-agent it writes.
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">

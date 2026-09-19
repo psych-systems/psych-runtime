@@ -61,7 +61,7 @@ export function AdvancedTable({ form }: { form: AgentFormState }) {
 
           <FeatureGroup
             title="How long it may wait"
-            help="A conversation that stops for a person, a webhook or a helper holds no worker and costs nothing while it waits. These say when waiting becomes giving up."
+            help="A conversation that stops for a person, a webhook or a sub-agent holds no worker and costs nothing while it waits. These say when waiting becomes giving up."
           >
             <div className="px-4 py-3">
               <SuspensionFields value={form.suspension} onChange={form.setSuspension} />

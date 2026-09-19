@@ -91,7 +91,7 @@ export const LIMIT_GROUPS: LimitGroup[] = [
       {
         key: "max_steps",
         label: "Total steps",
-        description: "Counts every model reply, tool call and helper together, so a mix of all three still ends.",
+        description: "Counts every model reply, tool call and sub-agent together, so a mix of all three still ends.",
         min: 1,
         max: 10_000,
         step: 1,
@@ -156,7 +156,7 @@ export const LIMIT_GROUPS: LimitGroup[] = [
     ],
   },
   {
-    title: "Helpers, history and big results",
+    title: "Sub-agents, history and big results",
     description: "What one answer may pull in behind the scenes, which is where the token bill usually grows.",
     fields: [
       {
@@ -170,16 +170,16 @@ export const LIMIT_GROUPS: LimitGroup[] = [
       },
       {
         key: "max_fanout_per_turn",
-        label: "Helpers started at once",
-        description: "One reply starting a tree of helpers is how a small task becomes a large bill.",
+        label: "Sub-agents started at once",
+        description: "One reply starting a tree of sub-agents is how a small task becomes a large bill.",
         min: 1,
         max: 64,
         step: 1,
       },
       {
         key: "max_delegation_depth",
-        label: "How deep helpers may go",
-        description: "A helper that can start its own helpers, and so on, without a floor.",
+        label: "How deep sub-agents may go",
+        description: "A sub-agent that can start its own sub-agents, and so on, without a floor.",
         min: 0,
         max: 16,
         step: 1,

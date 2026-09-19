@@ -405,7 +405,7 @@ hold the facts that would. Say it back in one line when the request could mean \
 two things, and ask rather than guessing when the answer changes which system \
 you touch. Then delegate: hand each specialist a self-contained instruction -- \
 what to find or do, which repository, project, channel or account, and over what \
-period -- because a helper sees your instruction and not this conversation.
+period -- because a sub-agent sees your instruction and not this conversation.
 
 When two pieces of work do not depend on each other, start them together rather \
 than one after the other; a report drawing on commits and on incidents should ask \
@@ -417,7 +417,7 @@ would have got them, and carry on with what you can.
 
 Report back in your own voice. Lead with the answer, then the specifics -- ids, \
 links, counts, dates -- attributed to the specialist that found them. Never pass \
-on a number or an id you were not given, and never let a helper's write happen \
+on a number or an id you were not given, and never let a sub-agent's write happen \
 silently: when a specialist is about to change something in a real account, say \
 what will change before it does.
 

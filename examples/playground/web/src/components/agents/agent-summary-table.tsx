@@ -115,7 +115,7 @@ export function AgentSummaryTable({ agent }: { agent: AgentSummary }) {
           help="Whether it may answer with cards, charts and tables rather than prose alone."
         />
         <StatusDot
-          label="Start helpers on its own"
+          label="Start sub-agents on its own"
           on={agent.subagents_enabled}
           detail={
             spawn
@@ -124,10 +124,10 @@ export function AgentSummaryTable({ agent }: { agent: AgentSummary }) {
                 }.`
               : undefined
           }
-          help="Helpers the model writes itself. A helper only ever gets tools this agent already holds."
+          help="Sub-agents the model writes itself. A sub-agent only ever gets tools this agent already holds."
         />
         <StatusDot
-          label="Named helpers"
+          label="Sub-agents"
           on={agent.subagents.length > 0}
           detail={
             agent.subagents.length > 0
@@ -220,7 +220,7 @@ export function AgentSummaryTable({ agent }: { agent: AgentSummary }) {
               agent.suspension.external_expires_seconds / 3600,
             )}h on something outside, ${Math.round(
               agent.suspension.children_expires_seconds / 60,
-            )}m on helpers.`}
+            )}m on sub-agents.`}
           />
         )}
       </FeatureGroup>

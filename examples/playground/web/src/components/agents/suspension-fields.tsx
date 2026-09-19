@@ -34,8 +34,8 @@ const FIELDS: { key: keyof SuspensionIn; label: string; help: string }[] = [
   },
   {
     key: "children_expires_seconds",
-    label: "On helpers",
-    help: "How long a parent waits for background helpers before giving up on them.",
+    label: "On sub-agents",
+    help: "How long a parent waits for background sub-agents before giving up on them.",
   },
 ];
 

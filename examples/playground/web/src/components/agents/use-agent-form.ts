@@ -116,7 +116,7 @@ export function fieldKeyForPath(path: string, agentName: string): FieldKey | str
  * Extracted from the form so the layout around it is presentation only and
  * the request body is built once, in one readable function. The defaults
  * below are the new ones: a person who publishes without touching anything
- * gets an agent that can ask, plan, show components, start helpers,
+ * gets an agent that can ask, plan, show components, start sub-agents,
  * summarise itself and pause before risky actions, with every registered
  * tool and every saved connection. Everything remains reachable and every
  * one of them is still part of the version hash.

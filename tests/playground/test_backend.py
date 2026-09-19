@@ -13,6 +13,7 @@ server, and it is the same `127.0.0.1` stub the library's own MCP tests use.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
@@ -2346,6 +2347,13 @@ class TestSubagents:
         state = app.state.playground
         scope = Scope(tenant=await self._account_id(client), principal="tester")
 
+        # This helper plays the Worker itself, appending the parent's attempt
+        # and turn by hand. The backend's own Worker polls the same store and
+        # would claim the parent first, after which the hand-written attempt
+        # is a second one and the reducer refuses it as corruption. Stop the
+        # real Worker before the parent exists, so there is exactly one writer.
+        state.worker.stop()
+
         version_hash = await _publish(client, subagents_enabled=True)
         parent = (
             await client.post(
@@ -2590,3 +2598,29 @@ class TestSubagents:
                 f"/api/runs/{parent}/subagents/{child_id}/message", json={"message": "hello"}
             )
         ).status_code == 404
+
+
+class TestScenarioListingStaysResponsive:
+    async def test_a_hanging_availability_check_does_not_hold_the_list(
+        self, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Seen on a laptop without the databases: the four-stores probe sat
+        in a connect that never returned and the Capabilities page showed
+        skeletons forever. Every probe is bounded and they run together."""
+        from app import main as backend
+        from app.scenarios import four_stores
+
+        async def never(_ctx: Any) -> str | None:
+            await asyncio.sleep(3600)
+            return None
+
+        monkeypatch.setattr(four_stores, "check_availability", never)
+        monkeypatch.setattr(backend, "_SCENARIO_PROBE_SECONDS", 0.5)
+        started = asyncio.get_running_loop().time()
+        response = await client.get("/api/scenarios")
+        elapsed = asyncio.get_running_loop().time() - started
+        assert response.status_code == 200, response.text
+        assert elapsed < 5, f"the list took {elapsed:.1f}s"
+        stores = next(s for s in response.json() if s["id"] == four_stores.INFO.id)
+        assert stores["available"] is False
+        assert "did not answer" in stores["unavailable_reason"]

@@ -19,7 +19,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Response
@@ -2980,12 +2980,32 @@ async def seed_code_execution_review(request: Request) -> DemoSeedResponse:
     return DemoSeedResponse(agent_id=agent_id, run_ids=[str(r) for r in run_ids])
 
 
+_SCENARIO_PROBE_SECONDS: Final = 10.0
+"""The most any one scenario's availability check may take before the list
+reports it unavailable and moves on."""
+
+
 @app.get("/api/scenarios", response_model=list[ScenarioOut])
 async def list_scenarios(request: Request) -> list[ScenarioOut]:
+    """Every scenario, with whether it can run here.
+
+    Availability checks run together and each is bounded, because one of
+    them reaches for databases that are usually absent, and a page that waits
+    on the slowest probe in sequence is a page that never renders.
+    """
     ctx = await _scenario_context(_state(request), await _account(request))
+
+    async def availability(check: Callable[[ScenarioContext], Awaitable[str | None]]) -> str | None:
+        try:
+            return await asyncio.wait_for(check(ctx), timeout=_SCENARIO_PROBE_SECONDS)
+        except TimeoutError:
+            return f"its availability check did not answer within {_SCENARIO_PROBE_SECONDS:g}s"
+        except Exception as err:
+            return f"its availability check failed: {err}"
+
+    reasons = await asyncio.gather(*(availability(s.check_availability) for s in SCENARIOS))
     out: list[ScenarioOut] = []
-    for scenario in SCENARIOS:
-        reason = await scenario.check_availability(ctx)
+    for scenario, reason in zip(SCENARIOS, reasons, strict=True):
         out.append(
             ScenarioOut(
                 id=scenario.INFO.id,

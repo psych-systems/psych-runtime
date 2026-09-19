@@ -14,6 +14,7 @@ here and nowhere else.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -50,37 +51,60 @@ be picked up by aioboto3's default credential chain and pointed at a
 localhost endpoint it was never meant for)."""
 
 
+_PROBE_SECONDS = 3.0
+"""How long one store gets to answer the availability probe.
+
+A store that is not there does not always refuse quickly: a DynamoDB
+endpoint nobody is listening on is retried by the client library for well
+over a minute, and a MySQL driver can sit in connect for as long as the
+kernel lets it. The Capabilities page asks this on every visit, so an
+unbounded probe is a page that never loads on any machine without the
+databases, which is most of them.
+"""
+
+
+async def _probe(label: str, attempt: Awaitable[None], problems: list[str]) -> None:
+    try:
+        await asyncio.wait_for(attempt, timeout=_PROBE_SECONDS)
+    except TimeoutError:
+        problems.append(f"{label}: did not answer within {_PROBE_SECONDS:g}s")
+    except Exception as err:
+        problems.append(f"{label}: {err}")
+
+
+async def _probe_postgres(dsn: str) -> None:
+    async with PostgresStore(dsn=dsn) as pg:
+        await pg.migrate()
+
+
+async def _probe_mysql(dsn: str) -> None:
+    async with MySQLStore(dsn=dsn) as my:
+        await my.migrate()
+
+
+async def _probe_dynamodb(endpoint: str) -> None:
+    probe_prefix = f"avail-{datetime.now(UTC).timestamp():.6f}".replace(".", "")
+    async with DynamoDBStore(
+        endpoint_url=endpoint,
+        table_prefix=probe_prefix,
+        aws_access_key_id=_DYNAMODB_LOCAL_CREDENTIAL,
+        aws_secret_access_key=_DYNAMODB_LOCAL_CREDENTIAL,
+    ) as ddb:
+        await ddb.ensure_tables()
+        await ddb.drop_tables()
+
+
 async def check_availability(ctx: ScenarioContext) -> str | None:
     _ = ctx
     problems: list[str] = []
-
-    pg_dsn = postgres_dsn()
-    try:
-        async with PostgresStore(dsn=pg_dsn) as pg:
-            await pg.migrate()
-    except Exception as err:
-        problems.append(f"PostgreSQL at {pg_dsn!r}: {err}")
-
-    my_dsn = mysql_dsn()
-    try:
-        async with MySQLStore(dsn=my_dsn) as my:
-            await my.migrate()
-    except Exception as err:
-        problems.append(f"MySQL at {my_dsn!r}: {err}")
-
-    endpoint = dynamodb_endpoint()
-    try:
-        probe_prefix = f"avail-{datetime.now(UTC).timestamp():.6f}".replace(".", "")
-        async with DynamoDBStore(
-            endpoint_url=endpoint,
-            table_prefix=probe_prefix,
-            aws_access_key_id=_DYNAMODB_LOCAL_CREDENTIAL,
-            aws_secret_access_key=_DYNAMODB_LOCAL_CREDENTIAL,
-        ) as ddb:
-            await ddb.ensure_tables()
-            await ddb.drop_tables()
-    except Exception as err:
-        problems.append(f"DynamoDB Local at {endpoint!r}: {err}")
+    pg_dsn, my_dsn, endpoint = postgres_dsn(), mysql_dsn(), dynamodb_endpoint()
+    # The three probes run together and each is bounded, so the answer takes
+    # one probe's worth of time at most rather than three long timeouts.
+    await asyncio.gather(
+        _probe(f"PostgreSQL at {pg_dsn!r}", _probe_postgres(pg_dsn), problems),
+        _probe(f"MySQL at {my_dsn!r}", _probe_mysql(my_dsn), problems),
+        _probe(f"DynamoDB Local at {endpoint!r}", _probe_dynamodb(endpoint), problems),
+    )
 
     if problems:
         joined = "; ".join(problems)

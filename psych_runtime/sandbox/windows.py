@@ -635,17 +635,23 @@ async def _drive(
                     backend="windows-job",
                 ),
             )
+    except asyncio.CancelledError:
+        # The caller's task was cancelled (a Worker shutting down, an abort).
+        # The job is terminated below either way; what a cancellation used to
+        # skip was reaping the process and draining its pipes, and a
+        # subprocess nobody waited for surfaces at garbage collection as a
+        # still-running child with an unclosed transport.
+        job.terminate()
+        await _reap(proc)
+        await bounded(stdout_task)
+        await bounded(stderr_task)
+        raise
     finally:
-        # Whatever happened, including this task being cancelled from outside:
-        # the job is terminated, so nothing the program started survives.
+        # Whatever happened: the job is terminated, so nothing the program
+        # started survives.
         job.terminate()
 
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(proc.wait(), timeout=_GRACE_SECONDS)
-    if proc.returncode is None:
-        proc.kill()
-        with contextlib.suppress(ProcessLookupError):
-            await proc.wait()
+    await _reap(proc)
 
     stdout = await bounded(stdout_task)
     stderr = await bounded(stderr_task)
@@ -686,6 +692,17 @@ async def _drive(
         artifacts_omitted=omitted,
         cancelled=talk.cancelled,
     )
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Wait for the child after its job was terminated, killing it directly if
+    the kernel is slow to deliver the job's termination."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=_GRACE_SECONDS)
+    if proc.returncode is None:
+        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
 
 
 def _grade(ready: ReadyFrame, *, network_granted: bool) -> SandboxGuarantees:

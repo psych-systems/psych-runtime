@@ -5,11 +5,19 @@ import { AlertTriangleIcon, FlaskConicalIcon, RefreshCwIcon, SquareStackIcon } f
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help";
 import { EmptyState, Page, PageHeader, Section, Stat } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { BackendUnreachableNotice } from "@/components/app-shell/health-indicator";
 import { useBackendConfig } from "@/components/app-shell/backend-config-provider";
-import { ScenarioCard } from "@/components/capabilities/scenario-card";
+import { ScenarioRow } from "@/components/capabilities/scenario-row";
 import { useScenarioRunner } from "@/components/capabilities/use-scenario-runner";
 import { useScenarios } from "@/components/capabilities/use-scenarios";
 import type { ScenarioSummary } from "@/lib/types";
@@ -22,6 +30,9 @@ import type { ScenarioSummary } from "@/lib/types";
  * reader is evaluating whether the runtime does what it claims, so the claim
  * and its citation are the content. That is why Capabilities sits in its own
  * nav group rather than beside Chat.
+ *
+ * A table rather than a stack of cards: the reader is comparing twenty
+ * scenarios, and the evidence for any one of them opens in place.
  */
 
 /**
@@ -60,11 +71,19 @@ export default function CapabilitiesPage() {
         <PageHeader
           title="Capabilities"
           description={
-            <>
-              Each scenario drives the real runtime end to end and reports what it found. Nothing
-              here is pre-recorded, and a scenario that cannot run says why rather than passing
-              vacuously.
-            </>
+            <span className="inline-flex flex-wrap items-center gap-1.5">
+              Each scenario drives the real runtime and reports what it found.
+              <HelpTip title="Capabilities" short="Nothing here is pre-recorded.">
+                <p>
+                  Every scenario runs against the running code, end to end. A scenario that cannot
+                  run says why rather than passing vacuously.
+                </p>
+                <p>
+                  A scenario that ran and found its claims did not hold is a real result, not an
+                  error, and reads as one.
+                </p>
+              </HelpTip>
+            </span>
           }
           actions={
             <Button
@@ -80,16 +99,8 @@ export default function CapabilitiesPage() {
         {tally && (
           <div className="flex flex-wrap gap-8 rounded-xl border border-border bg-card px-5 py-4">
             <Stat label="Scenarios" value={tally.total} />
-            <Stat
-              label="Passed"
-              value={tally.passed}
-              tone={tally.passed > 0 ? "default" : "muted"}
-            />
-            <Stat
-              label="Failed"
-              value={tally.failed}
-              tone={tally.failed > 0 ? "failed" : "muted"}
-            />
+            <Stat label="Passed" value={tally.passed} tone={tally.passed > 0 ? "default" : "muted"} />
+            <Stat label="Failed" value={tally.failed} tone={tally.failed > 0 ? "failed" : "muted"} />
             <Stat label="Not yet run" value={tally.notRun} tone="muted" />
           </div>
         )}
@@ -166,16 +177,38 @@ function ScenarioGroup({
   if (scenarios.length === 0) return null;
   return (
     <Section title={title} description={description}>
-      <div className="flex flex-col gap-3">
-        {scenarios.map((scenario) => (
-          <ScenarioCard
-            key={scenario.id}
-            scenario={scenario}
-            entry={entryFor(scenario.id)}
-            disabled={anyRunActive}
-            onRun={() => void onRun(scenario)}
-          />
-        ))}
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead>Scenario</TableHead>
+              <TableHead className="hidden sm:table-cell">
+                <span className="inline-flex items-center gap-1.5">
+                  Needs
+                  <HelpTip title="Needs" short="What must be reachable for it to run.">
+                    <p>
+                      A scenario whose requirements are not met here says so and refuses to run,
+                      rather than passing without having tried anything.
+                    </p>
+                  </HelpTip>
+                </span>
+              </TableHead>
+              <TableHead>Last verdict</TableHead>
+              <TableHead className="text-right">Run</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {scenarios.map((scenario) => (
+              <ScenarioRow
+                key={scenario.id}
+                scenario={scenario}
+                entry={entryFor(scenario.id)}
+                disabled={anyRunActive}
+                onRun={() => void onRun(scenario)}
+              />
+            ))}
+          </TableBody>
+        </Table>
       </div>
     </Section>
   );

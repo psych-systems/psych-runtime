@@ -9,6 +9,7 @@ the cases below are what a job object specifically has to get right.
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import subprocess
 import sys
@@ -205,3 +206,37 @@ class TestSetup:
 
         with pytest.raises(SandboxSetupError, match="POSIX"):
             SubprocessSandbox(python_bin=subprocess.list2cmdline([sys.executable]))
+
+
+class TestCancelledTaskReapsTheChild:
+    async def test_cancelling_the_task_mid_run_reaps_the_child(
+        self, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Seen as a flake in the e2e suite: a run whose task was cancelled
+        while the program was still going terminated the job but never waited
+        for the process, and it surfaced at garbage collection as a
+        still-running child with an unclosed transport. Cancellation must
+        reap what it started before the cancellation propagates."""
+        spawned: list[asyncio.subprocess.Process] = []
+        real = asyncio.create_subprocess_exec
+
+        async def recording(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+            proc = await real(*args, **kwargs)  # type: ignore[arg-type]
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
+        program = "import time\nfor _ in range(600):\n    time.sleep(0.05)\nreturn 'never'\n"
+        task = asyncio.create_task(sandbox.run(program, limits=_FAST_LIMITS))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if spawned:
+                break
+        await asyncio.sleep(0.5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert spawned, "the sandbox never spawned its child"
+        assert all(proc.returncode is not None for proc in spawned), (
+            "the cancelled run left its child unreaped"
+        )

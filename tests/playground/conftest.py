@@ -396,7 +396,12 @@ async def live_playground(
         raise RuntimeError("the live playground app never started listening")
 
     base_url = f"http://127.0.0.1:{port}"
-    async with httpx.AsyncClient(base_url=base_url) as client:
+    # A generous timeout, because this client talks to a real server in a
+    # thread while the backend it is talking to may itself be calling back
+    # into the same server (an A2A round trip). Under a loaded machine the
+    # default five seconds turned a slow but correct answer into a failure
+    # that said nothing about the code.
+    async with httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(60.0)) as client:
         try:
             yield base_url, client
         finally:

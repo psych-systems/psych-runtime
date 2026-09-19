@@ -16,7 +16,7 @@ import type { ScenarioRunResult } from "@/lib/types";
  * hold (`degenerate-loop` documents exactly this) is a genuine result, not
  * an error, and should not read as one. A transport failure that never
  * produced a result at all is a different component (`ScenarioConnectionError`
- * in `scenario-card.tsx`) with visibly different chrome, so the two are
+ * in `scenario-row.tsx`) with visibly different chrome, so the two are
  * never confusable.
  */
 export function ScenarioVerdict({ result }: { result: ScenarioRunResult }) {

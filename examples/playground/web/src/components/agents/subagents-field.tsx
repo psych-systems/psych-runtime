@@ -7,6 +7,8 @@ import { FieldError } from "@/components/settings/validation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LabelWithHelp } from "@/components/ui/help";
+import { FieldGrid, NumberField } from "@/components/agents/field-bits";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { AgentSummary, SpawnIn, SubagentRefIn } from "@/lib/types";
@@ -169,41 +171,66 @@ export function SpawnEnvelopeFields({
   models: string[];
 }) {
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-border p-3">
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="spawn-depth">How deep helpers may go</Label>
-          <Input
-            id="spawn-depth"
-            type="number"
-            className="tabular"
-            min={1}
-            max={16}
-            value={value.max_depth}
-            onChange={(e) => onChange({ ...value, max_depth: Number(e.target.value) || 1 })}
+    <div className="flex flex-col gap-4">
+      <FieldGrid columns={2}>
+        <NumberField
+          id="spawn-depth"
+          label="How deep helpers may go"
+          help="1 means a helper may not start helpers of its own."
+          min={1}
+          max={16}
+          value={value.max_depth}
+          onChange={(next) => onChange({ ...value, max_depth: Number(next) || 1 })}
+        />
+        <NumberField
+          id="spawn-alive"
+          label="Alive at once"
+          help="Each one is a separate conversation with its own bill."
+          min={1}
+          max={32}
+          value={value.max_alive}
+          onChange={(next) => onChange({ ...value, max_alive: Number(next) || 1 })}
+        />
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <LabelWithHelp
+            htmlFor="spawn-models"
+            label="Models a helper may run on"
+            help="Comma separated. Empty means this agent's own model and no other: a model named here that you never priced is a model you never priced."
           />
-          <p className="text-micro text-muted-foreground">
-            1 means a helper may not start helpers of its own.
-          </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="spawn-alive">Alive at once</Label>
           <Input
-            id="spawn-alive"
-            type="number"
-            className="tabular"
-            min={1}
-            max={32}
-            value={value.max_alive}
-            onChange={(e) => onChange({ ...value, max_alive: Number(e.target.value) || 1 })}
+            id="spawn-models"
+            value={value.models.join(", ")}
+            spellCheck={false}
+            placeholder={models[0] ? `${models[0]}, ...` : "This agent's own"}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                models: e.target.value
+                  .split(",")
+                  .map((m) => m.trim())
+                  .filter(Boolean),
+              })
+            }
           />
-          <p className="text-micro text-muted-foreground">
-            Each one is a separate conversation with its own bill.
-          </p>
         </div>
-      </div>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <LabelWithHelp
+            htmlFor="spawn-message"
+            label="May message a running helper"
+            help="Off means it can only start a helper, check on it and wait for the result."
+          />
+          <Switch
+            id="spawn-message"
+            checked={value.may_message}
+            onCheckedChange={(may_message) => onChange({ ...value, may_message })}
+          />
+        </div>
+      </FieldGrid>
       <div className="flex flex-col gap-1.5">
-        <Label>Tools a helper may be given</Label>
+        <LabelWithHelp
+          label="Tools a helper may be given"
+          help="All of them by default. A helper is narrowed against this and against what this agent actually holds, so nothing here can widen anything."
+        />
         {tools.length === 0 ? (
           <p className="text-caption text-muted-foreground">
             This agent holds no tools, so neither can a helper it writes.
@@ -235,44 +262,6 @@ export function SpawnEnvelopeFields({
             })}
           </div>
         )}
-        <p className="text-micro text-muted-foreground">
-          All of them by default. A helper is narrowed against this and against what this agent
-          actually holds, so nothing here can widen anything.
-        </p>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="spawn-models">Models a helper may run on</Label>
-        <Input
-          id="spawn-models"
-          value={value.models.join(", ")}
-          spellCheck={false}
-          placeholder={models[0] ? `${models[0]}, ...` : "Comma separated; empty means this agent's own"}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              models: e.target.value
-                .split(",")
-                .map((m) => m.trim())
-                .filter(Boolean),
-            })
-          }
-        />
-        <p className="text-micro text-muted-foreground">
-          Empty means this agent&apos;s own model and no other. A model named here that you never
-          priced is a model you never priced.
-        </p>
-      </div>
-      <div className="flex items-center justify-between gap-3 rounded-lg bg-surface/60 px-3 py-2">
-        <div className="flex min-w-0 flex-col">
-          <span className="text-body font-medium">May message a running helper</span>
-          <span className="text-caption text-muted-foreground">
-            Off means it can only start, check and wait.
-          </span>
-        </div>
-        <Switch
-          checked={value.may_message}
-          onCheckedChange={(may_message) => onChange({ ...value, may_message })}
-        />
       </div>
     </div>
   );

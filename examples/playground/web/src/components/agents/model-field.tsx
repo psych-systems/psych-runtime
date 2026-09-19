@@ -44,6 +44,7 @@ import { cn } from "@/lib/utils";
  * agent is the one who knows.
  */
 export function ModelField({
+  id,
   value,
   onChange,
   models,
@@ -51,6 +52,8 @@ export function ModelField({
   placeholder,
   invalid,
 }: {
+  /** Put on the trigger, so a `LabelWithHelp` beside it points somewhere. */
+  id?: string;
   value: string;
   onChange: (next: string) => void;
   /** What the provider said it serves. Empty is normal, not an error. */
@@ -82,6 +85,7 @@ export function ModelField({
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
+            id={id}
             type="button"
             variant="outline"
             role="combobox"

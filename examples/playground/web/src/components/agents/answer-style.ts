@@ -46,14 +46,6 @@ export const ANSWER_STYLE_COPY: {
   },
 };
 
-export const ANSWER_STYLE_OPTIONS: ReadonlyArray<{
-  value: AnswerStyleChoice;
-  copy: AnswerStyleCopy;
-}> = [
-  { value: null, copy: ANSWER_STYLE_COPY.detailed },
-  { value: "concise", copy: ANSWER_STYLE_COPY.concise },
-];
-
 export function answerStyleCopy(style: AnswerStyleChoice): AnswerStyleCopy {
   return style === "concise" ? ANSWER_STYLE_COPY.concise : ANSWER_STYLE_COPY.detailed;
 }

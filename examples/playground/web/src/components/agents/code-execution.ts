@@ -1,4 +1,4 @@
-import type { CodeExecutionIn, IsolationLevel } from "@/lib/types";
+import type { CodeExecutionIn, IsolationLevel, RuntimeSettings } from "@/lib/types";
 
 /**
  * The form's view of an agent's code-execution terms, mirroring
@@ -41,6 +41,40 @@ export const DEFAULT_CODE_EXECUTION: CodeExecutionFormState = {
   collect_artifacts: true,
   max_artifacts: 16,
 };
+
+/**
+ * The strongest isolation a named profile can actually provide, or `null`
+ * when this console cannot tell.
+ *
+ * `default` is this host's own local backend, and on a host whose only
+ * available backend is process-level that is all it reaches. A container or
+ * remote profile puts a kernel boundary around the program, so it provides
+ * `isolated`. Asking for more than a profile provides is not a weaker run:
+ * the profile refuses the program outright and returns the reason, which is
+ * why the form has to know this before it picks a default.
+ */
+export function profileIsolation(
+  runtime: RuntimeSettings | null,
+  profile: string,
+): IsolationLevel | null {
+  if (runtime === null) return null;
+  if (profile === "default") {
+    return runtime.sandbox_backends.find((backend) => backend.available)?.isolation ?? null;
+  }
+  const named = runtime.sandbox_profiles.find((entry) => entry.name === profile);
+  if (named === undefined) return null;
+  return named.backend === "container" || named.backend === "remote" ? "isolated" : "process";
+}
+
+/** Whether the terms ask for more containment than the profile can give.
+ *  Nothing is clamped: the program is refused, so this is worth saying. */
+export function isolationExceedsProfile(
+  runtime: RuntimeSettings | null,
+  profile: string,
+  isolation: IsolationLevel,
+): boolean {
+  return isolation === "isolated" && profileIsolation(runtime, profile) === "process";
+}
 
 export const ISOLATION_COPY: Record<
   IsolationLevel,

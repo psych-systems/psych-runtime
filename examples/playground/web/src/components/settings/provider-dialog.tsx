@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { LabelWithHelp } from "@/components/ui/help";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FieldError, issuesByPath } from "@/components/settings/validation";
 import type { ProviderIn, ProviderOut } from "@/components/settings/types";
@@ -81,8 +81,7 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit provider" : "Add a provider"}</DialogTitle>
           <DialogDescription>
-            One service that answers your agents. Saving it does not switch to it, that is a
-            separate step.
+            Saving does not switch to it. That is a separate step.
           </DialogDescription>
         </DialogHeader>
 
@@ -94,7 +93,11 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
           )}
 
           <div>
-            <Label htmlFor="provider-label">Name</Label>
+            <LabelWithHelp
+              htmlFor="provider-label"
+              label="Name"
+              help={<p>Yours, to tell this provider from the others in the list.</p>}
+            />
             <Input
               id="provider-label"
               className="mt-1.5"
@@ -107,7 +110,16 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
           </div>
 
           <div>
-            <Label htmlFor="provider-base-url">Address</Label>
+            <LabelWithHelp
+              htmlFor="provider-base-url"
+              label="Address"
+              help={
+                <p>
+                  The OpenAI-compatible base URL this playground calls, usually ending in{" "}
+                  <code>/v1</code>.
+                </p>
+              }
+            />
             <Input
               id="provider-base-url"
               className="mt-1.5 font-technical"
@@ -120,7 +132,20 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
           </div>
 
           <div>
-            <Label htmlFor="provider-model">Default model</Label>
+            {/* The old copy said this was "the one new runs dispatch to",
+                which is not true and sent people here to change what a
+                published agent runs. An agent pins its own model at
+                publication and keeps it. */}
+            <LabelWithHelp
+              htmlFor="provider-model"
+              label="Default model"
+              help={
+                <p>
+                  The model offered first when you build an agent. An agent that is already
+                  published keeps running the model it was built with.
+                </p>
+              }
+            />
             <Input
               id="provider-model"
               className="mt-1.5 font-technical"
@@ -130,18 +155,29 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
               aria-invalid={fieldErrors.model !== undefined}
             />
             <FieldError message={fieldErrors.model} />
-            {/* The old copy said this was "the one new runs dispatch to",
-                which is not true and sent people here to change what a
-                published agent runs. An agent pins its own model at
-                publication and keeps it. */}
-            <p className="mt-1 text-caption text-muted-foreground">
-              The model offered first when you build an agent. An agent that is already published
-              keeps running the model it was built with.
-            </p>
           </div>
 
           <div>
-            <Label htmlFor="provider-api-key">Key</Label>
+            {/* An edit that leaves this blank must send no `api_key` at all.
+                Sending an empty string clears the stored key, which is how an
+                unrelated edit used to lock everyone out of the provider. */}
+            <LabelWithHelp
+              htmlFor="provider-api-key"
+              label="Key"
+              help={
+                isEdit && provider?.has_api_key ? (
+                  <p>
+                    A key is already stored. It is never sent back to this page, so type one only
+                    to replace it.
+                  </p>
+                ) : (
+                  <p>
+                    Once saved, this page can only ever say whether a key is stored, never what it
+                    is.
+                  </p>
+                )
+              }
+            />
             <Input
               id="provider-api-key"
               type="password"
@@ -153,14 +189,6 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
               aria-invalid={fieldErrors.api_key !== undefined}
             />
             <FieldError message={fieldErrors.api_key} />
-            {/* An edit that leaves this blank must send no `api_key` at all.
-                Sending an empty string clears the stored key, which is how an
-                unrelated edit used to lock everyone out of the provider. */}
-            <p className="mt-1 text-caption text-muted-foreground">
-              {isEdit && provider?.has_api_key
-                ? "A key is already stored. It is never sent back to this page, so type one only to replace it."
-                : "Once saved, this page can only ever say whether a key is stored, never what it is."}
-            </p>
           </div>
         </div>
 

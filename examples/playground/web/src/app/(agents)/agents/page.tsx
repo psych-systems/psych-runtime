@@ -42,7 +42,7 @@ export default function AgentsPage() {
       <Page>
         <PageHeader
           title="Agents"
-          description="What you can talk to. Each one has its own instructions and its own set of things it can use."
+          description="What you can talk to."
           actions={
             <Button asChild>
               <Link href="/agents/new">

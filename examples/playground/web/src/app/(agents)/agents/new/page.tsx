@@ -9,7 +9,7 @@ export default function NewAgentPage() {
     <Page className="max-w-3xl">
         <PageHeader
           title="New agent"
-          description="Everything is checked when you publish, so nothing here can go wrong later in front of someone waiting for an answer."
+          description="Name it, say what it should do, publish. Everything else already has a sensible answer."
         />
         {/* The form reads `?from=` to prefill a duplicate, and
             `useSearchParams` opts a route out of prerendering unless the

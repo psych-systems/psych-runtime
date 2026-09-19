@@ -6,7 +6,6 @@ import {
   CircleAlertIcon,
   Loader2Icon,
   PlusIcon,
-  SaveIcon,
   ShieldCheckIcon,
   ShieldIcon,
   StethoscopeIcon,
@@ -27,11 +26,20 @@ import type {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { FeatureGroup, FeatureRow, FeatureTable } from "@/components/ui/feature-table";
+import { LabelWithHelp } from "@/components/ui/help";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Section } from "@/components/ui/page";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { SaveRow } from "@/components/settings/save-row";
+import { SettingsSectionBlock } from "@/components/settings/section-nav";
 import { cn } from "@/lib/utils";
 
 const GUARANTEE_LABELS: Record<keyof SandboxGuarantees, string> = {
@@ -78,13 +86,13 @@ function toIn(runtime: RuntimeSettings): RuntimeSettingsIn {
 /**
  * Where an agent's programs run, and what that is worth on this host.
  *
- * Two kinds of thing on one screen, and they are kept visibly apart. The
+ * Two kinds of thing on one list, and they are kept visibly apart. The
  * `default` profile is this machine's own backend: what it is, and the level
  * it reaches, come from the process's own detection and probe rather than
  * from anything written here, because the difference between "isolated" and
  * "a process on the same account" is the whole question a person is asking.
- * Further profiles are configuration: a container image, or a service by
- * URL with the name of the secret that authenticates to it. Each has a
+ * Further profiles are configuration: a container image, or a service by URL
+ * with the name of the secret that authenticates to it. Each row carries a
  * check that asks the backend what it can actually do, without running any
  * agent's code.
  */
@@ -99,11 +107,16 @@ export function SandboxSection({
   onSave: (runtime: RuntimeSettingsIn) => Promise<void>;
   onCheck: (name: string) => Promise<SandboxProfileHealth>;
 }) {
+  const saved = JSON.stringify(toIn(runtime));
+  // Seeded once and never reset from the server. Runtime and Sandbox both PUT
+  // the whole `RuntimeSettingsIn`, so each one's save refreshes the other's
+  // source; re-seeding here would throw away half-written profiles the moment
+  // somebody saved the Runtime section.
   const [draft, setDraft] = useState<RuntimeSettingsIn>(() => toIn(runtime));
   const [saving, setSaving] = useState(false);
   const [health, setHealth] = useState<Record<string, SandboxProfileHealth | "checking">>({});
 
-  const dirty = JSON.stringify(draft) !== JSON.stringify(toIn(runtime));
+  const dirty = JSON.stringify(draft) !== saved;
   const platform = PLATFORM_NAMES[runtime.sandbox_platform] ?? runtime.sandbox_platform;
   const local = runtime.sandbox_backends.find((b) => b.available) ?? null;
 
@@ -137,9 +150,7 @@ export function SandboxSection({
   const updateProfile = (index: number, patch: Partial<SandboxProfileIn>) => {
     setDraft({
       ...draft,
-      sandbox_profiles: draft.sandbox_profiles.map((p, i) =>
-        i === index ? { ...p, ...patch } : p
-      ),
+      sandbox_profiles: draft.sandbox_profiles.map((p, i) => (i === index ? { ...p, ...patch } : p)),
     });
   };
 
@@ -169,26 +180,53 @@ export function SandboxSection({
   };
 
   return (
-    <Section
-      title="Where agents run code"
-      description="Sandbox profiles an agent can name. An agent asks for a profile and an isolation level; a profile decides what actually runs the program and reports what it can guarantee, never more."
+    <SettingsSectionBlock
+      id="sandbox"
+      title="Sandbox"
+      description="Profiles an agent can name when it wants to run a program."
+      actions={
+        <>
+          <Button size="sm" variant="outline" onClick={() => addProfile("container")}>
+            <PlusIcon /> Container
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => addProfile("remote")}>
+            <PlusIcon /> Remote
+          </Button>
+        </>
+      }
     >
-      <div className="flex flex-col gap-5">
-        <div className="flex flex-col gap-4 rounded-xl border border-border p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex min-w-0 flex-col gap-0.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-technical text-body font-medium">default</span>
-                <Badge variant="outline">this machine</Badge>
-                {local && <LevelBadge level={local.isolation} />}
-              </div>
-              <span className="text-caption text-muted-foreground">
-                {runtime.sandbox_available
-                  ? `${localDescription(local?.name ?? null, platform)}`
-                  : `Unavailable on this ${platform} host.`}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
+      <FeatureTable>
+        <FeatureGroup
+          title="This machine"
+          help={
+            <p>
+              What this host can do on its own. Detected and probed by the running process, never
+              declared here.
+            </p>
+          }
+        >
+        <FeatureRow
+          label={
+            <span className="inline-flex flex-wrap items-center gap-2">
+              <StatusDot state={health.default} available={runtime.sandbox_available} />
+              <span className="font-technical">default</span>
+              <Badge variant="outline">this machine</Badge>
+              {local && <LevelBadge level={local.isolation} />}
+            </span>
+          }
+          detail={
+            runtime.sandbox_available
+              ? localDescription(local?.name ?? null, platform)
+              : `Unavailable on this ${platform} host.`
+          }
+          help={
+            <p>
+              This host&apos;s own backend. What it is and how far it isolates come from the
+              running process, not from anything written here.
+            </p>
+          }
+          control={
+            <>
               <CheckButton
                 state={health.default}
                 disabled={!runtime.sandbox_available}
@@ -200,17 +238,16 @@ export function SandboxSection({
                 aria-label="Offer the default profile"
                 disabled={!runtime.sandbox_available}
               />
-            </div>
-          </div>
-
+            </>
+          }
+        >
           {!runtime.sandbox_available && (
             <Alert>
               <CircleAlertIcon />
               <AlertTitle>No local backend can be built here</AlertTitle>
               <AlertDescription>
-                {runtime.sandbox_unavailable_reason ??
-                  "This host cannot run programs locally."}{" "}
-                Add a container or remote profile below, or fix the host.
+                {runtime.sandbox_unavailable_reason ?? "This host cannot run programs locally."}{" "}
+                Add a container or remote profile, or fix the host.
               </AlertDescription>
             </Alert>
           )}
@@ -219,10 +256,10 @@ export function SandboxSection({
             <p className="flex items-start gap-2 rounded-lg bg-surface/60 px-3 py-2 text-caption text-muted-foreground">
               <ShieldIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
               <span>
-                Process-level only: the program is a fresh process with resource limits, a scrubbed
-                environment and a temporary working directory, but it shares this account&apos;s
-                view of the filesystem and the network is not denied. Agents that require{" "}
-                <strong>isolated</strong> will be refused here, with the reason returned to them.{" "}
+                Process-level only: a fresh process with resource limits, a scrubbed environment
+                and a temporary working directory, sharing this account&apos;s view of the
+                filesystem, with the network not denied. Agents that require{" "}
+                <strong>isolated</strong> are refused here, with the reason returned to them.{" "}
                 {runtime.sandbox_backends
                   .filter((b) => !b.available && b.isolation === "isolated")
                   .map((b) => b.reason)
@@ -245,30 +282,44 @@ export function SandboxSection({
               }
             />
           )}
-        </div>
+        </FeatureRow>
+        </FeatureGroup>
 
+        <FeatureGroup
+          title="Profiles you added"
+          help={
+            <p>
+              A container image, or a service that speaks the sandbox protocol. These are
+              configuration: what they can guarantee still comes from a check.
+            </p>
+          }
+        >
+        {draft.sandbox_profiles.length === 0 && (
+          <FeatureRow
+            label={<span className="font-normal text-muted-foreground">None yet</span>}
+            detail="Add a container or remote profile above."
+          />
+        )}
         {draft.sandbox_profiles.map((profile, index) => (
-          <div key={index} className="flex flex-col gap-4 rounded-xl border border-border p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor={`sb-name-${index}`} className="sr-only">
-                    Profile name
-                  </Label>
-                  <Input
-                    id={`sb-name-${index}`}
-                    value={profile.name}
-                    spellCheck={false}
-                    className="h-8 font-technical sm:w-44"
-                    onChange={(e) => updateProfile(index, { name: e.target.value })}
-                  />
-                </div>
+          <FeatureRow
+            key={index}
+            label={
+              <span className="inline-flex flex-wrap items-center gap-2">
+                <StatusDot state={health[profile.name]} available />
+                <span className="font-technical">{profile.name || "unnamed"}</span>
                 <Badge variant="outline">
                   {profile.backend === "container" ? "container" : "remote service"}
                 </Badge>
                 <LevelBadge level="isolated" hint="as the backend reports it" />
-              </div>
-              <div className="flex items-center gap-2">
+              </span>
+            }
+            detail={
+              profile.backend === "container"
+                ? profile.image || "No image set"
+                : profile.base_url || "No address set"
+            }
+            control={
+              <>
                 <CheckButton
                   state={health[profile.name]}
                   disabled={dirty}
@@ -293,91 +344,122 @@ export function SandboxSection({
                 >
                   <Trash2Icon />
                 </Button>
+              </>
+            }
+          >
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1">
+                <LabelWithHelp
+                  htmlFor={`sb-name-${index}`}
+                  label="Name"
+                  help={<p>What an agent asks for when it names this profile.</p>}
+                />
+                <Input
+                  id={`sb-name-${index}`}
+                  value={profile.name}
+                  spellCheck={false}
+                  className="font-technical"
+                  onChange={(e) => updateProfile(index, { name: e.target.value })}
+                />
               </div>
+              {profile.backend === "container" ? (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <LabelWithHelp
+                      htmlFor={`sb-image-${index}`}
+                      label="Image"
+                      help={
+                        <p>
+                          Pulled or built ahead of time; nothing pulls it for you. Prefer a digest
+                          for a reproducible deployment.
+                        </p>
+                      }
+                    />
+                    <Input
+                      id={`sb-image-${index}`}
+                      value={profile.image ?? ""}
+                      spellCheck={false}
+                      className="font-technical"
+                      placeholder="python:3.12-slim"
+                      onChange={(e) => updateProfile(index, { image: e.target.value })}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor={`sb-runtime-${index}`}>Runtime</Label>
+                    <Select
+                      value={profile.runtime ?? "auto"}
+                      onValueChange={(v) =>
+                        updateProfile(index, {
+                          runtime: v === "auto" ? null : (v as "docker" | "podman"),
+                        })
+                      }
+                    >
+                      <SelectTrigger id={`sb-runtime-${index}`} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Detect (docker, then podman)</SelectItem>
+                        <SelectItem value="docker">docker</SelectItem>
+                        <SelectItem value="podman">podman</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <LabelWithHelp
+                      htmlFor={`sb-url-${index}`}
+                      label="Service URL"
+                      help={
+                        <p>
+                          A service speaking the sandbox protocol, yours or a provider&apos;s.
+                          Every call to it passes the egress allowlist under Runtime.
+                        </p>
+                      }
+                    />
+                    <Input
+                      id={`sb-url-${index}`}
+                      value={profile.base_url ?? ""}
+                      spellCheck={false}
+                      className="font-technical"
+                      placeholder="https://sandboxes.internal.example.com"
+                      onChange={(e) => updateProfile(index, { base_url: e.target.value })}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <LabelWithHelp
+                      htmlFor={`sb-cred-${index}`}
+                      label="Credential"
+                      help={
+                        <p>
+                          The name of a secret, sent as a bearer token. The value never appears
+                          here, in an agent, or in a record.
+                        </p>
+                      }
+                    />
+                    <Select
+                      value={profile.credential ?? "none"}
+                      onValueChange={(v) =>
+                        updateProfile(index, { credential: v === "none" ? null : v })
+                      }
+                    >
+                      <SelectTrigger id={`sb-cred-${index}`} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No credential</SelectItem>
+                        {secrets.map((name) => (
+                          <SelectItem key={name} value={name}>
+                            {name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              )}
             </div>
-
-            {profile.backend === "container" ? (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor={`sb-image-${index}`}>Image</Label>
-                  <Input
-                    id={`sb-image-${index}`}
-                    value={profile.image ?? ""}
-                    spellCheck={false}
-                    className="font-technical"
-                    placeholder="python:3.12-slim"
-                    onChange={(e) => updateProfile(index, { image: e.target.value })}
-                  />
-                  <p className="text-micro text-muted-foreground">
-                    Pulled or built ahead of time; nothing pulls it for you. Prefer an image
-                    digest for a reproducible deployment.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor={`sb-runtime-${index}`}>Runtime</Label>
-                  <Select
-                    value={profile.runtime ?? "auto"}
-                    onValueChange={(v) =>
-                      updateProfile(index, {
-                        runtime: v === "auto" ? null : (v as "docker" | "podman"),
-                      })
-                    }
-                  >
-                    <SelectTrigger id={`sb-runtime-${index}`}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="auto">Detect (docker, then podman)</SelectItem>
-                      <SelectItem value="docker">docker</SelectItem>
-                      <SelectItem value="podman">podman</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor={`sb-url-${index}`}>Service URL</Label>
-                  <Input
-                    id={`sb-url-${index}`}
-                    value={profile.base_url ?? ""}
-                    spellCheck={false}
-                    className="font-technical"
-                    placeholder="https://sandboxes.internal.example.com"
-                    onChange={(e) => updateProfile(index, { base_url: e.target.value })}
-                  />
-                  <p className="text-micro text-muted-foreground">
-                    A service speaking the sandbox protocol, yours or a provider&apos;s. Every
-                    call to it passes the egress policy above.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor={`sb-cred-${index}`}>Credential</Label>
-                  <Select
-                    value={profile.credential ?? "none"}
-                    onValueChange={(v) =>
-                      updateProfile(index, { credential: v === "none" ? null : v })
-                    }
-                  >
-                    <SelectTrigger id={`sb-cred-${index}`}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No credential</SelectItem>
-                      {secrets.map((name) => (
-                        <SelectItem key={name} value={name}>
-                          {name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-micro text-muted-foreground">
-                    The name of a secret from the list below, sent as a bearer token. The value
-                    never appears here, in an agent, or in a record.
-                  </p>
-                </div>
-              </div>
-            )}
 
             {typeof health[profile.name] === "object" && (
               <HealthReport report={health[profile.name] as SandboxProfileHealth} />
@@ -390,29 +472,35 @@ export function SandboxSection({
               onChange={(hard_limits) => updateProfile(index, { hard_limits })}
               onAllowNetwork={(allow_network) => updateProfile(index, { allow_network })}
             />
-          </div>
+          </FeatureRow>
         ))}
+        </FeatureGroup>
+      </FeatureTable>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => addProfile("container")}>
-            <PlusIcon /> Container profile
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => addProfile("remote")}>
-            <PlusIcon /> Remote profile
-          </Button>
-          <span className="ml-auto flex items-center gap-2">
-            {dirty && !saving && (
-              <span className="text-caption text-muted-foreground">Unsaved changes.</span>
-            )}
-            <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-              {saving ? <Loader2Icon className="animate-spin" /> : <SaveIcon />}
-              {saving ? "Saving" : "Save sandbox settings"}
-            </Button>
-          </span>
-        </div>
-      </div>
-    </Section>
+      <SaveRow dirty={dirty} saving={saving} onSave={() => void save()} label="Save sandbox" />
+    </SettingsSectionBlock>
   );
+}
+
+/** Green once a check said ready, red once one said otherwise, grey until
+ *  anybody asks. Never a guess: an unchecked profile reads as unchecked. */
+function StatusDot({
+  state,
+  available,
+}: {
+  state: SandboxProfileHealth | "checking" | undefined;
+  available: boolean;
+}) {
+  const tone = !available
+    ? "bg-muted-foreground/40"
+    : state === "checking"
+      ? "animate-pulse bg-status-running"
+      : typeof state === "object"
+        ? state.ready
+          ? "bg-status-done"
+          : "bg-status-failed"
+        : "bg-muted-foreground/50";
+  return <span className={cn("size-2 shrink-0 rounded-full", tone)} aria-hidden />;
 }
 
 function localDescription(backend: string | null, platform: string): string {
@@ -456,7 +544,7 @@ function CheckButton({
   const checking = state === "checking";
   return (
     <Button
-      size="sm"
+      size="xs"
       variant="outline"
       disabled={disabled || checking}
       title={title}
@@ -489,7 +577,9 @@ function HealthReport({ report }: { report: SandboxProfileHealth }) {
       role="status"
       className={cn(
         "flex flex-col gap-3 rounded-lg border px-3 py-2.5",
-        report.ready ? "border-status-done/30 bg-status-done/5" : "border-status-failed/30 bg-status-failed/5"
+        report.ready
+          ? "border-status-done/30 bg-status-done/5"
+          : "border-status-failed/30 bg-status-failed/5"
       )}
     >
       <div className="flex flex-wrap items-center gap-2 text-caption">
@@ -542,7 +632,9 @@ function HealthReport({ report }: { report: SandboxProfileHealth }) {
       {report.mechanisms.length > 0 && (
         <p className="text-micro text-muted-foreground">
           Mechanisms: {report.mechanisms.join(", ")}.
-          {report.network_grant_supported ? " Network can be granted." : " Network cannot be granted."}
+          {report.network_grant_supported
+            ? " Network can be granted."
+            : " Network cannot be granted."}
           {report.artifacts_supported ? " Files are collected." : " Files are not collected."}
         </p>
       )}
@@ -570,7 +662,9 @@ function LimitsGrid({
 }) {
   const number = (key: keyof SandboxLimitsIn, label: string, step = 1) => (
     <div className="flex flex-col gap-1">
-      <Label htmlFor={`sb-${id}-${key}`}>{label}</Label>
+      <Label htmlFor={`sb-${id}-${key}`} className="text-caption">
+        {label}
+      </Label>
       <Input
         id={`sb-${id}-${key}`}
         type="number"
@@ -587,14 +681,22 @@ function LimitsGrid({
   );
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-caption text-muted-foreground">
-        Ceilings for every agent on this profile. An agent&apos;s own request can only lower them.
-      </p>
+      <LabelWithHelp
+        label="Ceilings"
+        help={
+          <p>
+            The most any agent on this profile may take. An agent&apos;s own request can only
+            lower them.
+          </p>
+        }
+      />
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {number("cpu_seconds", "CPU seconds")}
         {number("wall_seconds", "Wall clock seconds")}
         <div className="flex flex-col gap-1">
-          <Label htmlFor={`sb-${id}-memory`}>Memory (MB)</Label>
+          <Label htmlFor={`sb-${id}-memory`} className="text-caption">
+            Memory (MB)
+          </Label>
           <Input
             id={`sb-${id}-memory`}
             type="number"
@@ -614,13 +716,15 @@ function LimitsGrid({
         </div>
         {number("process_count", "Processes")}
       </div>
-      <label className="flex items-center gap-3 text-caption">
-        <Switch checked={allowNetwork} onCheckedChange={onAllowNetwork} />
-        <span>
-          Let agents ask for raw network access on this profile. Off keeps every fetch behind a
-          host tool and the egress policy.
+      <label className="flex items-center justify-between gap-3 text-caption">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="text-body font-medium">Raw network</span>
         </span>
+        <Switch checked={allowNetwork} onCheckedChange={onAllowNetwork} />
       </label>
+      <p className="-mt-2 text-micro text-muted-foreground">
+        Off keeps every fetch behind a host tool and the egress allowlist.
+      </p>
     </div>
   );
 }

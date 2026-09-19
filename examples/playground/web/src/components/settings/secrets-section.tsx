@@ -15,11 +15,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState, Section } from "@/components/ui/page";
+import { EmptyState } from "@/components/ui/page";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { LabelWithHelp } from "@/components/ui/help";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FieldError } from "@/components/settings/validation";
+import { SettingsSectionBlock } from "@/components/settings/section-nav";
 
 interface SecretsSectionProps {
   secrets: string[];
@@ -83,9 +92,10 @@ export function SecretsSection({ secrets, onAdd, onRemove }: SecretsSectionProps
   }
 
   return (
-    <Section
+    <SettingsSectionBlock
+      id="secrets"
       title="Secrets"
-      description="Passwords and tokens, kept under a name. A connection refers to the name, so the value itself never travels with an agent. This is a local tool, so the values sit in plain text on this machine."
+      description="Passwords and tokens kept under a name, so the value itself never travels with an agent."
       actions={
         secrets.length > 0 ? (
           <Button size="sm" onClick={openAdd}>
@@ -106,37 +116,44 @@ export function SecretsSection({ secrets, onAdd, onRemove }: SecretsSectionProps
           }
         />
       ) : (
-        <ul className="flex flex-col gap-1.5">
-          {secrets.map((secretName) => (
-            <li
-              key={secretName}
-              className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2"
-            >
-              <span className="inline-flex items-center gap-2 font-technical text-body">
-                <KeyRoundIcon className="size-3.5 text-muted-foreground" />
-                {secretName}
-              </span>
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                aria-label={`Delete ${secretName}`}
-                onClick={() => setPendingDelete(secretName)}
-              >
-                <Trash2Icon />
-              </Button>
-            </li>
-          ))}
-        </ul>
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Name</TableHead>
+                <TableHead>Value</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {secrets.map((secretName) => (
+                <TableRow key={secretName}>
+                  <TableCell className="font-technical">{secretName}</TableCell>
+                  <TableCell className="text-caption text-muted-foreground">
+                    Stored, never shown
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Delete ${secretName}`}
+                      onClick={() => setPendingDelete(secretName)}
+                    >
+                      <Trash2Icon />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Add a secret</DialogTitle>
-            <DialogDescription>
-              Give it the name a connection will refer to. The value is stored here and is never
-              shown again.
-            </DialogDescription>
+            <DialogDescription>The value is stored here and never shown again.</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3">
             {formError && (
@@ -145,7 +162,16 @@ export function SecretsSection({ secrets, onAdd, onRemove }: SecretsSectionProps
               </Alert>
             )}
             <div>
-              <Label htmlFor="secret-name">Name</Label>
+              <LabelWithHelp
+                htmlFor="secret-name"
+                label="Name"
+                help={
+                  <p>
+                    What a connection, sandbox profile or peer refers to. This is a local tool, so
+                    values sit in plain text on this machine.
+                  </p>
+                }
+              />
               <Input
                 id="secret-name"
                 className="mt-1.5 font-technical"
@@ -160,7 +186,11 @@ export function SecretsSection({ secrets, onAdd, onRemove }: SecretsSectionProps
               )}
             </div>
             <div>
-              <Label htmlFor="secret-value">Value</Label>
+              <LabelWithHelp
+                htmlFor="secret-value"
+                label="Value"
+                help={<p>The token or password itself. Nothing reads it back out afterwards.</p>}
+              />
               <Input
                 id="secret-value"
                 type="password"
@@ -208,6 +238,6 @@ export function SecretsSection({ secrets, onAdd, onRemove }: SecretsSectionProps
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Section>
+    </SettingsSectionBlock>
   );
 }

@@ -1,16 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2Icon, SaveIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { describeApiError } from "@/lib/errors";
 import type { CostPolicy, RuntimeSettings, RuntimeSettingsIn } from "@/lib/types";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Section } from "@/components/ui/page";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
+import { FeatureRow, FeatureTable } from "@/components/ui/feature-table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { SaveRow } from "@/components/settings/save-row";
+import { SettingsSectionBlock } from "@/components/settings/section-nav";
 
 const COST_POLICIES: { value: CostPolicy; label: string; help: string }[] = [
   {
@@ -45,7 +50,7 @@ function toIn(runtime: RuntimeSettings): RuntimeSettingsIn {
 }
 
 /**
- * How this account's runs execute: what none of them is part of a Spec.
+ * How this account's runs execute: rows, controls, and a "?" for the why.
  *
  * Every field here is a `psych.Runtime` constructor argument or a port it
  * takes, not a field of any published agent. Changing one changes the next
@@ -64,6 +69,8 @@ export function RuntimeSection({
   const [draft, setDraft] = useState<RuntimeSettingsIn>(toIn(runtime));
   const [prevSaved, setPrevSaved] = useState(saved);
   const [saving, setSaving] = useState(false);
+  // Held as text rather than as the array: splitting on every keystroke means
+  // a comma can never be typed.
   const [egressText, setEgressText] = useState(runtime.egress_allow.join(", "));
   const [deniedText, setDeniedText] = useState(runtime.denied_tools.join(", "));
 
@@ -75,22 +82,29 @@ export function RuntimeSection({
     setDeniedText(next.denied_tools.join(", "));
   }
 
-  const dirty = JSON.stringify(draft) !== saved;
+  const dirty =
+    JSON.stringify(draft) !== saved ||
+    egressText !== runtime.egress_allow.join(", ") ||
+    deniedText !== runtime.denied_tools.join(", ");
 
   async function save() {
     setSaving(true);
+    const egress_allow = egressText
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const denied_tools = deniedText
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     try {
-      await onSave({
-        ...draft,
-        egress_allow: egressText
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        denied_tools: deniedText
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-      });
+      await onSave({ ...draft, egress_allow, denied_tools });
+      // Written back normalised, as the server now holds them. Typing a
+      // trailing comma would otherwise leave the section permanently dirty:
+      // the save changes nothing on the server, so the re-seed above never
+      // fires and the text keeps the comma the server dropped.
+      setEgressText(egress_allow.join(", "));
+      setDeniedText(denied_tools.join(", "));
       toast.success("Runtime settings saved. They apply to the next message.");
     } catch (err) {
       toast.error("Could not save runtime settings", { description: describeApiError(err) });
@@ -100,111 +114,135 @@ export function RuntimeSection({
   }
 
   return (
-    <Section
-      title="How agents run"
-      description="Execution, not identity. Nothing here is part of any agent's published spec, so changing it moves no version hash."
+    <SettingsSectionBlock
+      id="runtime"
+      title="Runtime"
+      description="Execution, not identity: nothing here is part of any agent's published spec."
     >
-      <div className="flex flex-col gap-5 rounded-xl border border-border p-4">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="rt-cost-policy">Cost, when the provider and Psych disagree</Label>
-          <Select
-            value={draft.cost_policy}
-            onValueChange={(cost_policy) => setDraft({ ...draft, cost_policy: cost_policy as CostPolicy })}
-          >
-            <SelectTrigger id="rt-cost-policy">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {COST_POLICIES.map((policy) => (
-                <SelectItem key={policy.value} value={policy.value}>
-                  {policy.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-micro text-muted-foreground">
-            {COST_POLICIES.find((p) => p.value === draft.cost_policy)?.help}
-          </p>
-        </div>
+      <FeatureTable>
+        <FeatureRow
+          htmlFor="rt-cost-policy"
+          label="Cost source"
+          detail={COST_POLICIES.find((p) => p.value === draft.cost_policy)?.help}
+          help={
+            <p>
+              Which number a conversation records when the provider reports a cost and Psych also
+              works one out from your rates. They often disagree.
+            </p>
+          }
+          control={
+            <Select
+              value={draft.cost_policy}
+              onValueChange={(cost_policy) =>
+                setDraft({ ...draft, cost_policy: cost_policy as CostPolicy })
+              }
+            >
+              <SelectTrigger id="rt-cost-policy" className="w-56 max-w-[60vw]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {COST_POLICIES.map((policy) => (
+                  <SelectItem key={policy.value} value={policy.value}>
+                    {policy.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+        />
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="rt-offload">Large result cutoff for storage (bytes)</Label>
+        <FeatureRow
+          htmlFor="rt-offload"
+          label="Large result cutoff"
+          detail="bytes"
+          help={
+            <p>
+              A tool result bigger than this is stored on disk and read back with{" "}
+              <code>read_tool_output</code> rather than sitting in the log record whole.
+              Independent of an agent&apos;s own cutoff, which decides what the model sees.
+            </p>
+          }
+          control={
             <Input
               id="rt-offload"
               type="number"
-              className="tabular"
+              className="tabular w-36"
               min={1}
               value={draft.blob_offload_bytes}
               onChange={(e) =>
                 setDraft({ ...draft, blob_offload_bytes: Number(e.target.value) || 1 })
               }
             />
-            <p className="text-micro text-muted-foreground">
-              A tool result bigger than this is stored on disk and read back with{" "}
-              <code className="font-technical">read_tool_output</code>, rather than sitting in the
-              log record whole. Independent of an agent&apos;s own large-result cutoff, which
-              decides what the model sees.
+          }
+        />
+
+        <FeatureRow
+          htmlFor="rt-catalogue"
+          label="Catalogue budget"
+          detail="characters"
+          help={
+            <p>
+              How much of one connected server&apos;s tool list may sit in the prompt before it is
+              discovered on demand instead.
             </p>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="rt-catalogue">MCP catalogue budget (characters)</Label>
+          }
+          control={
             <Input
               id="rt-catalogue"
               type="number"
-              className="tabular"
+              className="tabular w-36"
               min={1}
               value={draft.catalogue_budget_chars}
               onChange={(e) =>
                 setDraft({ ...draft, catalogue_budget_chars: Number(e.target.value) || 1 })
               }
             />
-            <p className="text-micro text-muted-foreground">
-              How much of one connected server&apos;s tool list may sit in the prompt before it is
-              discovered on demand instead.
-            </p>
-          </div>
-        </div>
+          }
+        />
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="rt-egress">Where outbound calls may go</Label>
+        <FeatureRow
+          htmlFor="rt-egress"
+          label="Egress allowlist"
+          help={
+            <p>
+              Hostnames or wildcard patterns, separated by commas. Empty allows everything. It
+              applies to every outbound call your agents make: the model, MCP servers, HTTP tools
+              and A2A peers alike, since they share one seam.
+            </p>
+          }
+        >
           <Input
             id="rt-egress"
             value={egressText}
             spellCheck={false}
+            className="font-technical"
             placeholder="Empty allows everything. e.g. api.example.com, *.internal.example.com"
             onChange={(e) => setEgressText(e.target.value)}
           />
-          <p className="text-micro text-muted-foreground">
-            Hostnames or wildcard patterns. Applies to every outbound call your agents make: the
-            model, MCP servers, HTTP tools and A2A peers alike, since they all share one seam.
-          </p>
-        </div>
+        </FeatureRow>
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="rt-denied">Tools switched off here, whatever an agent grants</Label>
+        <FeatureRow
+          htmlFor="rt-denied"
+          label="Always-off tools"
+          help={
+            <p>
+              Tool names, separated by commas, switched off here whatever an agent grants. A call
+              refused reaches the model as an explanation it can act on, not a crash.
+            </p>
+          }
+        >
           <Input
             id="rt-denied"
             value={deniedText}
             spellCheck={false}
+            className="font-technical"
             placeholder="Empty means none. e.g. issue_refund"
             onChange={(e) => setDeniedText(e.target.value)}
           />
-          <p className="text-micro text-muted-foreground">
-            A call refused here reaches the model as an explanation it can act on, not a crash.
-          </p>
-        </div>
+        </FeatureRow>
+      </FeatureTable>
 
-        <div className="flex items-center gap-2">
-          <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-            {saving ? <Loader2Icon className="animate-spin" /> : <SaveIcon />}
-            {saving ? "Saving" : "Save runtime settings"}
-          </Button>
-          {dirty && !saving && (
-            <span className="text-caption text-muted-foreground">Unsaved changes.</span>
-          )}
-        </div>
-      </div>
-    </Section>
+      <SaveRow dirty={dirty} saving={saving} onSave={() => void save()} />
+    </SettingsSectionBlock>
   );
 }

@@ -17,8 +17,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState, Section } from "@/components/ui/page";
+import { FeatureRow, FeatureTable } from "@/components/ui/feature-table";
+import { HelpTip } from "@/components/ui/help";
+import { EmptyState } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SettingsSectionBlock } from "@/components/settings/section-nav";
 
 /**
  * What your agents still know, and how to make them stop knowing it.
@@ -89,9 +92,28 @@ export function MemorySection() {
   }
 
   return (
-    <Section
-      title="What your agents remember"
-      description="Facts an agent chose to keep after a conversation ended. They go into the system prompt of every later conversation, which is what makes an agent seem to know you."
+    <SettingsSectionBlock
+      id="memory"
+      title="Memory"
+      description={
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          {memories === null
+            ? "Facts an agent chose to keep after a conversation ended."
+            : memories.length === 1
+              ? "1 fact your agents kept after a conversation ended."
+              : `${memories.length} facts your agents kept after conversations ended.`}
+          <HelpTip title="Memory" short="Facts that go into every later prompt.">
+            <p>
+              Every fact goes into the system prompt of each later conversation, in the order it
+              was remembered. It is what makes an agent seem to know you.
+            </p>
+            <p>
+              Nothing here is searched or ranked: Psych refuses to own retrieval, so a consumer
+              who wants that supplies it themselves.
+            </p>
+          </HelpTip>
+        </span>
+      }
       actions={
         memories !== null && memories.length > 0 ? (
           <Button size="sm" variant="outline" onClick={() => setConfirmErase(true)}>
@@ -113,43 +135,31 @@ export function MemorySection() {
         <EmptyState
           icon={BrainIcon}
           title="Nothing remembered yet"
-          description="An agent remembers something when it decides a fact is worth keeping past the conversation. Nothing here means none of yours has, which is the ordinary case for a new account."
+          description="An agent remembers something when it decides a fact is worth keeping past the conversation. Nothing here is the ordinary case for a new account."
         />
       )}
 
       {memories !== null && memories.length > 0 && (
-        <ul className="flex flex-col gap-1.5">
+        <FeatureTable dense>
           {memories.map((memory) => (
-            <li
+            <FeatureRow
               key={memory.id}
-              className="flex items-start justify-between gap-3 rounded-lg border border-border px-3 py-2.5"
-            >
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-body">{memory.content}</span>
-                <span className="text-caption text-muted-foreground">
-                  Remembered {formatDayLabel(memory.created_at)}
-                </span>
-              </span>
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                aria-label="Forget this"
-                onClick={() => void forgetOne(memory)}
-              >
-                <Trash2Icon />
-              </Button>
-            </li>
+              label={<span className="font-normal">{memory.content}</span>}
+              detail={`Remembered ${formatDayLabel(memory.created_at)}`}
+              control={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Forget this"
+                  onClick={() => void forgetOne(memory)}
+                >
+                  <Trash2Icon />
+                </Button>
+              }
+            />
           ))}
-        </ul>
+        </FeatureTable>
       )}
-
-      <p className="text-caption text-muted-foreground">
-        {/* Said outright, because "memory" invites the assumption that it
-            searches, and Psych deliberately does not. */}
-        Every fact goes into the prompt, in the order it was remembered. Nothing here is searched
-        or ranked: Psych refuses to own retrieval, so a consumer who wants that supplies it
-        themselves.
-      </p>
 
       <Dialog open={confirmErase} onOpenChange={(open) => !open && setConfirmErase(false)}>
         <DialogContent className="sm:max-w-sm">
@@ -157,8 +167,8 @@ export function MemorySection() {
             <DialogTitle>Forget everything?</DialogTitle>
             <DialogDescription>
               {memories?.length ?? 0} fact{memories?.length === 1 ? "" : "s"} will be deleted
-              outright, not hidden. Your conversations stay available; only what the agents
-              learned from them goes. This cannot be undone.
+              outright, not hidden. Your conversations stay available; only what the agents learned
+              from them goes. This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -175,6 +185,6 @@ export function MemorySection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Section>
+    </SettingsSectionBlock>
   );
 }

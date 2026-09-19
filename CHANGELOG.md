@@ -53,6 +53,20 @@ and breaking changes are expected until the design survives a second consumer.
   takes structured `input`, `breakpoints` and `step_mode`. A workflow tool
   step is gated by the account's approval selectors, as a model's call is.
 
+- **The console's authoring and settings pages were rewritten for people
+  who are not engineers.** Every explanatory paragraph now lives behind a
+  "?" beside the thing it explains (hover for one line, click to pin), and
+  settings read as tables of labelled rows with toggles rather than stacks
+  of cards. A new agent publishes from a template in two clicks: essentials
+  on top, then what it can use, how it behaves and, behind "Show advanced",
+  limits and model options. Everything that works out of the box is on by
+  default (questions, plans, components, helpers, summarising, approvals for
+  risky actions, code execution when a sandbox is available, every registered
+  tool and connection); code execution asks for the isolation the default
+  profile actually provides. Settings gained a sticky section navigation and
+  tables for providers, secrets, skills and prices; Connections and
+  Capabilities became tables with actions in the row.
+
 ### Changed
 
 - A workflow Run that fails now settles with the failing step's failure on
@@ -60,6 +74,19 @@ and breaking changes are expected until the design survives a second consumer.
 - An `AgentStep` with a mapped `input` delivers `input.message` to the nested
   agent as the user message at that step, in both the model's conversation
   and `thread()`.
+
+### Fixed
+
+- The Capabilities page could show placeholders forever on a machine without
+  the databases: the four-stores scenario's availability probe sat in a
+  connect that never returned. Every probe is now bounded and they run
+  together, and a scenario whose check does not answer is listed as
+  unavailable with that reason.
+- A Windows sandbox run whose task was cancelled mid-program terminated the
+  job but never reaped the child, which surfaced at garbage collection as a
+  still-running subprocess with an unclosed transport. Cancellation now waits
+  for the child and drains its pipes before propagating.
+- On a phone, page titles sat under the floating sidebar button.
 
 ### Security
 

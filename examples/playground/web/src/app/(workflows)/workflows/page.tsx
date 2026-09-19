@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState, Page, PageHeader } from "@/components/ui/page";
+import { HelpTip } from "@/components/ui/help";
 import {
   Dialog,
   DialogContent,
@@ -48,7 +49,21 @@ export default function WorkflowsPage() {
       <Page>
         <PageHeader
           title="Workflows"
-          description="Fixed pipelines: steps in an order you chose, run by the same worker as an agent, each finished step remembered so a crash resumes rather than restarts. An agent with the create_workflow tool can write one of these for you."
+          description={
+            <span className="inline-flex flex-wrap items-center gap-1.5">
+              Fixed pipelines: steps in an order you chose.
+              <HelpTip title="Workflows" short="Steps in order, resumed after a crash.">
+                <p>
+                  They run on the same worker as an agent, and each finished step is remembered, so
+                  a crash resumes rather than restarts.
+                </p>
+                <p>
+                  An agent with the <code>create_workflow</code> tool can write one of these for
+                  you.
+                </p>
+              </HelpTip>
+            </span>
+          }
           actions={
             <Button asChild>
               <Link href="/workflows/new">

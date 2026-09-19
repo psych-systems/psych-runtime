@@ -46,7 +46,9 @@ import { cn } from "@/lib/utils";
 export function Page({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className={cn("mx-auto flex w-full max-w-6xl flex-col gap-7 px-4 py-6 sm:px-7 sm:py-8 lg:px-10", className)}>
+      {/* Below the md breakpoint the sidebar trigger floats at the top-left
+          corner, so the page starts under it rather than behind it. */}
+      <div className={cn("mx-auto flex w-full max-w-6xl flex-col gap-7 px-4 pt-14 pb-6 sm:px-7 sm:pb-8 md:py-8 lg:px-10", className)}>
         {children}
       </div>
     </div>

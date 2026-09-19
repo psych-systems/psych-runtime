@@ -1,7 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BotIcon, CopyIcon, KeyRoundIcon, Loader2Icon, NetworkIcon, PlusIcon, SaveIcon, Trash2Icon } from "lucide-react";
+import {
+  BotIcon,
+  CopyIcon,
+  KeyRoundIcon,
+  Loader2Icon,
+  NetworkIcon,
+  PencilIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -13,12 +22,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { EmptyState, Section } from "@/components/ui/page";
+import { HelpTip, LabelWithHelp } from "@/components/ui/help";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { createA2AToken, listAgents } from "@/lib/api";
 import { describeApiError } from "@/lib/errors";
+import { SaveRow } from "@/components/settings/save-row";
 import type { A2APeerPreset } from "@/components/settings/types";
 import type { AgentSummary } from "@/lib/types";
 
@@ -55,6 +81,11 @@ const BLANK: A2APeerPreset = {
  * The same rule as the skill library: a published agent carries its own copy
  * of every peer's address and credential name, so editing one here changes
  * what you publish next and never what a running conversation calls.
+ *
+ * The table is the list; the dialog is the form. A peer carries fields this
+ * form does not show (`scheme`, `allow`, `extensions`), so every edit spreads
+ * the peer it started from rather than building a fresh object, which would
+ * drop them silently on the next save.
  */
 export function A2APeersSection({
   peers,
@@ -73,6 +104,7 @@ export function A2APeersSection({
   const [draft, setDraft] = useState<A2APeerPreset[]>(peers);
   const [prevSaved, setPrevSaved] = useState(saved);
   const [saving, setSaving] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [ownAgentDialogOpen, setOwnAgentDialogOpen] = useState(false);
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
 
@@ -89,6 +121,11 @@ export function A2APeersSection({
     setDraft(draft.map((peer, i) => (i === index ? { ...peer, ...patch } : peer)));
   }
 
+  function addPeer() {
+    setDraft([...draft, { ...BLANK }]);
+    setEditingIndex(draft.length);
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -102,155 +139,287 @@ export function A2APeersSection({
   }
 
   return (
-    <section className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="flex items-center gap-2 text-lg font-semibold">
-          <NetworkIcon className="size-4 text-muted-foreground" aria-hidden />
-          Other agents
-        </h2>
-        <p className="text-body text-muted-foreground">
-          Agents elsewhere that yours can hand work to, over A2A. Give an address and, if it needs
-          one, the name of a credential. What each peer can actually do is read from its own agent
-          card when a conversation calls it, so there is nothing to list here.
-        </p>
-      </div>
-
-      {draft.length === 0 && (
-        <p className="text-caption text-muted-foreground">
-          No peers yet. Add one and it becomes something you can attach when building an agent.
-        </p>
+    <Section
+      title="Other agents"
+      description={
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          Agents elsewhere that yours can hand work to, over A2A.
+          <HelpTip title="Other agents" short="Address and credential name; nothing else.">
+            <p>
+              What a peer can actually do is read from its own agent card when a conversation
+              calls it, so there is nothing to list here.
+            </p>
+            <p>
+              Attaching a peer copies its address and credential name into the published agent, so
+              editing here changes what you publish next.
+            </p>
+          </HelpTip>
+        </span>
+      }
+      actions={
+        draft.length > 0 ? (
+          <Button size="sm" onClick={addPeer}>
+            <PlusIcon /> Add a peer
+          </Button>
+        ) : null
+      }
+    >
+      {draft.length === 0 ? (
+        <EmptyState
+          icon={NetworkIcon}
+          title="No peers yet"
+          description="Add one and it becomes something you can attach when building an agent."
+          action={
+            <Button onClick={addPeer}>
+              <PlusIcon /> Add a peer
+            </Button>
+          }
+        />
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Name</TableHead>
+                <TableHead className="hidden md:table-cell">Address</TableHead>
+                <TableHead className="hidden sm:table-cell">Credential</TableHead>
+                <TableHead>
+                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                    If unreachable
+                    <HelpTip
+                      title="If unreachable"
+                      short="Whether a conversation carries on without it."
+                    >
+                      <p>
+                        &quot;Fails&quot; is usually what you want for a peer the answer depends
+                        on. &quot;Carries on&quot; lets the conversation continue without it.
+                      </p>
+                    </HelpTip>
+                  </span>
+                </TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {draft.map((peer, index) => (
+                <TableRow key={index} className="align-top">
+                  <TableCell>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="font-medium">{peer.name || "Unnamed"}</span>
+                      <span className="line-clamp-1 text-caption text-muted-foreground">
+                        {peer.description || peer.url || "Nothing set yet"}
+                      </span>
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden max-w-56 truncate font-technical text-caption text-muted-foreground md:table-cell">
+                    {peer.url || "--"}
+                  </TableCell>
+                  <TableCell className="hidden font-technical text-caption text-muted-foreground sm:table-cell">
+                    {peer.credential || "None"}
+                  </TableCell>
+                  <TableCell className="text-caption text-muted-foreground">
+                    {peer.optional ? "Carries on" : "Fails"}
+                  </TableCell>
+                  <TableCell>
+                    <span className="flex items-center justify-end gap-1">
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Edit ${peer.name || "this peer"}`}
+                        onClick={() => setEditingIndex(index)}
+                      >
+                        <PencilIcon />
+                      </Button>
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Remove ${peer.name || "this peer"}`}
+                        onClick={() => setDraft(draft.filter((_, i) => i !== index))}
+                      >
+                        <Trash2Icon />
+                      </Button>
+                    </span>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
-      {draft.map((peer, index) => (
-        <div key={index} className="flex flex-col gap-3 rounded-lg border border-border p-3">
-          <div className="flex items-start gap-2">
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <Label htmlFor={`peer-name-${index}`}>Name</Label>
-              <Input
-                id={`peer-name-${index}`}
-                value={peer.name}
-                spellCheck={false}
-                placeholder="research"
-                onChange={(e) => update(index, { name: e.target.value })}
-              />
-              <p className="text-micro text-muted-foreground">
-                What your agent calls it. Two peers may both call themselves &quot;research&quot;;
-                this name is yours.
-              </p>
-            </div>
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              className="mt-6 shrink-0"
-              aria-label={`Remove ${peer.name || "this peer"}`}
-              onClick={() => setDraft(draft.filter((_, i) => i !== index))}
-            >
-              <Trash2Icon />
-            </Button>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={`peer-url-${index}`}>Address</Label>
-            <Input
-              id={`peer-url-${index}`}
-              value={peer.url}
-              spellCheck={false}
-              placeholder="https://agents.example.com"
-              onChange={(e) => update(index, { url: e.target.value })}
-            />
-            <p className="text-micro text-muted-foreground">
-              The peer&apos;s A2A address, or its agent card URL directly. A plain address is
-              resolved to its card at <code className="font-technical">/.well-known/agent-card.json</code>.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={`peer-desc-${index}`}>What it is for</Label>
-            <Input
-              id={`peer-desc-${index}`}
-              value={peer.description}
-              placeholder="Deep research over our internal papers"
-              onChange={(e) => update(index, { description: e.target.value })}
-            />
-            <p className="text-micro text-muted-foreground">
-              For you, not for the model. Your agent learns what this peer does from its card.
-            </p>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`peer-cred-${index}`}>Credential name</Label>
-              <Input
-                id={`peer-cred-${index}`}
-                value={peer.credential ?? ""}
-                spellCheck={false}
-                placeholder="research_token"
-                onChange={(e) => update(index, { credential: e.target.value || null })}
-              />
-              <p className="text-micro text-muted-foreground">
-                The name of a secret, never the secret. Add the value under Settings.
-              </p>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`peer-tenant-${index}`}>Routing id</Label>
-              <Input
-                id={`peer-tenant-${index}`}
-                value={peer.tenant ?? ""}
-                spellCheck={false}
-                placeholder="Optional"
-                onChange={(e) => update(index, { tenant: e.target.value || null })}
-              />
-              <p className="text-micro text-muted-foreground">
-                Only when the peer&apos;s card asks for one, because it hosts many agents behind
-                one address.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 rounded-lg bg-surface/60 px-3 py-2">
-            <div className="flex min-w-0 flex-col">
-              <span className="text-body font-medium">Carry on if it is unreachable</span>
-              <span className="text-caption text-muted-foreground">
-                Off means a conversation fails when this peer cannot be reached, which is usually
-                what you want for a peer the answer depends on.
-              </span>
-            </div>
-            <Switch
-              checked={peer.optional}
-              onCheckedChange={(value) => update(index, { optional: value })}
-              aria-label={`Carry on without ${peer.name || "this peer"}`}
-            />
-          </div>
-        </div>
-      ))}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={() => setDraft([...draft, { ...BLANK }])}>
-          <PlusIcon /> Add a peer
-        </Button>
+      <SaveRow dirty={dirty} saving={saving} onSave={() => void save()} label="Save peers">
         <Button type="button" variant="outline" size="sm" onClick={() => setOwnAgentDialogOpen(true)}>
           <BotIcon /> Call one of your own agents
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={() => setTokenDialogOpen(true)}>
           <KeyRoundIcon /> Mint a token for a peer elsewhere
         </Button>
-        <Button size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-          {saving ? <Loader2Icon className="animate-spin" /> : <SaveIcon />}
-          {saving ? "Saving" : "Save peers"}
-        </Button>
-        {dirty && !saving && (
-          <span className="text-caption text-muted-foreground">Unsaved changes.</span>
-        )}
-      </div>
+      </SaveRow>
 
+      <PeerDialog
+        peer={editingIndex === null ? null : (draft[editingIndex] ?? null)}
+        onOpenChange={(open) => !open && setEditingIndex(null)}
+        onChange={(patch) => editingIndex !== null && update(editingIndex, patch)}
+      />
       <AddOwnAgentDialog
         open={ownAgentDialogOpen}
         onOpenChange={setOwnAgentDialogOpen}
         onAdd={onAddOwnAgent}
       />
       <MintTokenDialog open={tokenDialogOpen} onOpenChange={setTokenDialogOpen} />
-    </section>
+    </Section>
+  );
+}
+
+/** One peer's fields, labels and help only. Patches the draft as you type, so
+ *  closing it changes nothing on its own: the section's Save writes. */
+function PeerDialog({
+  peer,
+  onOpenChange,
+  onChange,
+}: {
+  peer: A2APeerPreset | null;
+  onOpenChange: (open: boolean) => void;
+  onChange: (patch: Partial<A2APeerPreset>) => void;
+}) {
+  return (
+    <Dialog open={peer !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{peer?.name ? `Edit ${peer.name}` : "Add a peer"}</DialogTitle>
+          <DialogDescription>Save the list when you are done.</DialogDescription>
+        </DialogHeader>
+        {peer && (
+          <div className="flex flex-col gap-3">
+            <div>
+              <LabelWithHelp
+                htmlFor="peer-name"
+                label="Name"
+                help={
+                  <p>
+                    What your agent calls it. Two peers may both call themselves
+                    &quot;research&quot;; this name is yours.
+                  </p>
+                }
+              />
+              <Input
+                id="peer-name"
+                className="mt-1.5"
+                value={peer.name}
+                spellCheck={false}
+                placeholder="research"
+                onChange={(e) => onChange({ name: e.target.value })}
+              />
+            </div>
+
+            <div>
+              <LabelWithHelp
+                htmlFor="peer-url"
+                label="Address"
+                help={
+                  <p>
+                    The peer&apos;s A2A address, or its agent card URL directly. A plain address is
+                    resolved to its card at <code>/.well-known/agent-card.json</code>.
+                  </p>
+                }
+              />
+              <Input
+                id="peer-url"
+                className="mt-1.5 font-technical"
+                value={peer.url}
+                spellCheck={false}
+                placeholder="https://agents.example.com"
+                onChange={(e) => onChange({ url: e.target.value })}
+              />
+            </div>
+
+            <div>
+              <LabelWithHelp
+                htmlFor="peer-desc"
+                label="What it is for"
+                help={
+                  <p>
+                    For you, not for the model. Your agent learns what this peer does from its
+                    card.
+                  </p>
+                }
+              />
+              <Input
+                id="peer-desc"
+                className="mt-1.5"
+                value={peer.description}
+                placeholder="Deep research over our internal papers"
+                onChange={(e) => onChange({ description: e.target.value })}
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <LabelWithHelp
+                  htmlFor="peer-cred"
+                  label="Credential name"
+                  help={
+                    <p>
+                      The name of a secret, never the secret. Add the value under Settings, then
+                      name it here.
+                    </p>
+                  }
+                />
+                <Input
+                  id="peer-cred"
+                  className="mt-1.5 font-technical"
+                  value={peer.credential ?? ""}
+                  spellCheck={false}
+                  placeholder="research_token"
+                  onChange={(e) => onChange({ credential: e.target.value || null })}
+                />
+              </div>
+              <div>
+                <LabelWithHelp
+                  htmlFor="peer-tenant"
+                  label="Routing id"
+                  help={
+                    <p>
+                      Only when the peer&apos;s card asks for one, because it hosts many agents
+                      behind one address.
+                    </p>
+                  }
+                />
+                <Input
+                  id="peer-tenant"
+                  className="mt-1.5 font-technical"
+                  value={peer.tenant ?? ""}
+                  spellCheck={false}
+                  placeholder="Optional"
+                  onChange={(e) => onChange({ tenant: e.target.value || null })}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+              <LabelWithHelp
+                htmlFor="peer-optional"
+                label="Carry on if it is unreachable"
+                help={
+                  <p>
+                    Off means a conversation fails when this peer cannot be reached, which is
+                    usually what you want for a peer the answer depends on.
+                  </p>
+                }
+              />
+              <Switch
+                id="peer-optional"
+                checked={peer.optional}
+                onCheckedChange={(value) => onChange({ optional: value })}
+              />
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>Done</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

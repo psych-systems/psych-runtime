@@ -5,23 +5,29 @@ import {
   STATUS_COPY,
   type BindingGroup,
 } from "@/components/agents/bindable-tools";
-import { ShieldCheckIcon, ShieldIcon } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { DetailRow } from "@/components/ui/page";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { LabelWithHelp } from "@/components/ui/help";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { FieldError } from "@/components/settings/validation";
+import { FieldGrid, NumberField } from "@/components/agents/field-bits";
 import {
   ISOLATION_COPY,
   PRESERVE_COPY,
+  isolationExceedsProfile,
+  profileIsolation,
   type CodeExecutionFormState,
 } from "@/components/agents/code-execution";
 import { formatBytes } from "@/lib/format";
-import type { CodeExecutionIn, IsolationLevel, RuntimeSettings } from "@/lib/types";
+import type { IsolationLevel, RuntimeSettings } from "@/lib/types";
 
 interface CodeExecutionFieldsProps {
   value: CodeExecutionFormState;
@@ -29,9 +35,9 @@ interface CodeExecutionFieldsProps {
   /** Keyed `code_execution.<field>`. */
   fieldErrors: Record<string, string>;
   /** What a program may call, grouped by where each tool comes from.
-   *  Not a flat list of the agent's own tools any more: a program reaches
-   *  every tool the agent is authorized to call, and an MCP tool is
-   *  discovered rather than declared, so each entry carries its own status. */
+   *  Not a flat list of the agent's own tools: a program reaches every tool
+   *  the agent is authorized to call, and an MCP tool is discovered rather
+   *  than declared, so each entry carries its own status. */
   toolGroups: BindingGroup[];
   /** Profile names this account offers, from Settings. */
   profiles: string[];
@@ -39,13 +45,12 @@ interface CodeExecutionFieldsProps {
 }
 
 /**
- * The terms an agent asks for when it runs a program.
+ * The terms an agent asks for when it runs a program, as labelled controls.
  *
- * Grouped as three questions: where it runs and how far it is contained,
- * what it may call and spend, and what happens to what it produces. Every
- * limit is labelled as a request against the profile's ceiling, because a
- * person typing a larger number here is not buying a larger budget and the
- * form must not let them think so.
+ * Every number here is a *request*: the profile carries the ceiling and the
+ * effective cap is the smaller of the two, so a larger number buys nothing.
+ * That, and everything else this used to explain in paragraphs, is now one
+ * hover away behind the "?" beside the field it belongs to.
  */
 export function CodeExecutionFields({
   value,
@@ -57,21 +62,30 @@ export function CodeExecutionFields({
 }: CodeExecutionFieldsProps) {
   const known = profiles.length > 0 ? profiles : ["default"];
   const profileKnown = known.includes(value.profile);
-  const localLevel = runtime?.sandbox_backends.find((b) => b.available)?.isolation ?? null;
-  const mismatch =
-    value.profile === "default" && value.isolation === "isolated" && localLevel === "process";
+  const provides = profileIsolation(runtime, value.profile);
+  const mismatch = isolationExceedsProfile(runtime, value.profile, value.isolation);
+  const ceiling =
+    runtime && value.profile === "default"
+      ? `Up to ${runtime.sandbox_limits.cpu_seconds}s CPU, ${runtime.sandbox_limits.wall_seconds}s wall clock, ${formatBytes(
+          runtime.sandbox_limits.address_space_bytes,
+        )} memory and ${runtime.sandbox_limits.process_count} processes.`
+      : null;
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="code-profile">Sandbox profile</Label>
+    <div className="flex flex-col gap-4">
+      <FieldGrid columns={2}>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <LabelWithHelp
+            htmlFor="code-profile"
+            label="Sandbox profile"
+            help="A name this installation resolves, never a machine or a credential. Profiles are set up in Settings, and an agent naming one that is not offered is refused at publish."
+          />
           {known.length > 1 ? (
             <Select
               value={profileKnown ? value.profile : known[0]}
               onValueChange={(profile) => onChange({ ...value, profile })}
             >
-              <SelectTrigger id="code-profile">
+              <SelectTrigger id="code-profile" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -90,22 +104,33 @@ export function CodeExecutionFields({
               onChange={(event) => onChange({ ...value, profile: event.target.value })}
             />
           )}
-          <p className="text-caption text-muted-foreground">
-            A name resolved by this installation, never a machine or a credential. Profiles are
-            configured in Settings; an agent naming one that is not offered is refused at publish.
-          </p>
           <FieldError message={fieldErrors["code_execution.profile"]} />
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="code-isolation">Isolation it requires</Label>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <LabelWithHelp
+            htmlFor="code-isolation"
+            label="Isolation it requires"
+            help={
+              <>
+                <p>
+                  <strong>{ISOLATION_COPY.isolated.label}:</strong>{" "}
+                  {ISOLATION_COPY.isolated.description}
+                </p>
+                <p>
+                  <strong>{ISOLATION_COPY.process.label}:</strong>{" "}
+                  {ISOLATION_COPY.process.description}
+                </p>
+              </>
+            }
+          />
           <Select
             value={value.isolation}
             onValueChange={(isolation) =>
               onChange({ ...value, isolation: isolation as IsolationLevel })
             }
           >
-            <SelectTrigger id="code-isolation">
+            <SelectTrigger id="code-isolation" className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -116,328 +141,243 @@ export function CodeExecutionFields({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-caption text-muted-foreground">
-            {ISOLATION_COPY[value.isolation].description}
+          {/* One line, not a banner. Asking for more than a profile provides
+              does not run the program weaker; it refuses it. */}
+          <p
+            className={
+              mismatch ? "text-caption text-status-failed" : "text-caption text-muted-foreground"
+            }
+          >
+            {mismatch
+              ? `This profile reaches ${provides} isolation only, so every program would be refused.`
+              : provides !== null
+                ? `This profile provides ${provides} isolation.`
+                : "What this profile provides is not reported here."}
           </p>
         </div>
-      </div>
 
-      {mismatch && (
-        <div
-          role="status"
-          className="flex items-start gap-2 rounded-lg border border-status-waiting/40 bg-status-waiting/10 px-3 py-2 text-caption"
-        >
-          <ShieldIcon className="mt-0.5 size-4 shrink-0 text-status-waiting" aria-hidden />
-          <span>
-            This host&apos;s local backend reaches <strong>process</strong> isolation only, so an
-            agent requiring <strong>isolated</strong> on the default profile will have every program
-            refused, with the reason returned to it. Add a container or remote profile in Settings,
-            or choose process-level isolation for code you trust.
-          </span>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <LabelWithHelp
+            htmlFor="code-network"
+            label="Raw network access"
+            help="Off, the program has no route out and fetches through a host tool that passes the egress policy. On, it may open its own sockets, which bypasses that policy for the program; the profile must allow it too."
+          />
+          <Switch
+            id="code-network"
+            checked={value.network === "unrestricted"}
+            onCheckedChange={(on) =>
+              onChange({ ...value, network: on ? "unrestricted" : "denied" })
+            }
+          />
         </div>
+
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <LabelWithHelp
+            htmlFor="code-bindings"
+            label="May call every tool it holds"
+            help="Host functions available inside the program, each going through the same policy, approvals and record as a direct call. Leaving this on keeps a program in step with the agent: a tool added to a connection becomes callable in the same turn it does for the model. No credential ever enters the sandbox, and a tool needing an approval or an answer is refused before it runs."
+          />
+          <Switch
+            id="code-bindings"
+            checked={value.bindings === null}
+            disabled={toolGroups.length === 0}
+            onCheckedChange={(on) =>
+              onChange({ ...value, bindings: on ? null : allBindingNames(toolGroups) })
+            }
+          />
+        </div>
+      </FieldGrid>
+
+      {value.bindings !== null && toolGroups.length > 0 && (
+        <BindingPicker value={value} onChange={onChange} toolGroups={toolGroups} />
       )}
 
-      <div className="flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
-        <div className="flex flex-col gap-0.5">
-          <p className="text-body font-medium">Raw network access</p>
-          <p className="text-caption text-muted-foreground">
-            Off, the program has no route out and fetches through a host tool that passes the
-            egress policy. On, it may open its own sockets, which bypasses that policy for the
-            program; the profile must allow it too.
-          </p>
-        </div>
-        <Switch
-          checked={value.network === "unrestricted"}
-          onCheckedChange={(on) => onChange({ ...value, network: on ? "unrestricted" : "denied" })}
-          aria-label="Raw network access"
+      <FieldGrid columns={3}>
+        <NumberField
+          id="code-cpu_seconds"
+          label="CPU"
+          suffix="seconds"
+          help={`A request against the profile's ceiling. Empty takes the ceiling; a larger number is clamped to it, never granted.${ceiling ? ` ${ceiling}` : ""}`}
+          value={value.cpu_seconds}
+          placeholder="ceiling"
+          error={fieldErrors["code_execution.cpu_seconds"]}
+          onChange={(next) => onChange({ ...value, cpu_seconds: next })}
         />
-      </div>
-
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-0.5">
-          <h3 className="text-body font-medium">Budgets it asks for</h3>
-          <p className="text-caption text-muted-foreground">
-            Requests against the profile&apos;s ceiling. Empty takes the ceiling; a larger number
-            is clamped to it, never granted.
-            {runtime && value.profile === "default" && (
+        <NumberField
+          id="code-wall_seconds"
+          label="Wall clock"
+          suffix="seconds"
+          help="How long one program may run in real time. Empty takes the profile's ceiling."
+          value={value.wall_seconds}
+          placeholder="ceiling"
+          error={fieldErrors["code_execution.wall_seconds"]}
+          onChange={(next) => onChange({ ...value, wall_seconds: next })}
+        />
+        <NumberField
+          id="code-memory_mb"
+          label="Memory"
+          suffix="MB"
+          help="How much memory one program may address. Empty takes the profile's ceiling."
+          value={value.memory_mb}
+          placeholder="ceiling"
+          error={fieldErrors["code_execution.memory_mb"]}
+          onChange={(next) => onChange({ ...value, memory_mb: next })}
+        />
+        <NumberField
+          id="code-process_count"
+          label="Processes"
+          help="How many processes the program's tree may hold at once. Empty takes the profile's ceiling."
+          value={value.process_count}
+          placeholder="ceiling"
+          error={fieldErrors["code_execution.process_count"]}
+          onChange={(next) => onChange({ ...value, process_count: next })}
+        />
+        <NumberField
+          id="code-preview"
+          label="Preview per stream"
+          suffix="bytes"
+          help="The model is shown a head-and-tail preview of each stream inside this budget. Everything beyond it stays out of the prompt and, when kept, is readable by handle."
+          min={256}
+          max={65536}
+          step={256}
+          value={value.preview_bytes}
+          error={fieldErrors["code_execution.preview_bytes"]}
+          onChange={(next) =>
+            onChange({ ...value, preview_bytes: Number(next) || value.preview_bytes })
+          }
+        />
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <LabelWithHelp
+            htmlFor="code-preserve"
+            label="Output beyond the preview"
+            help={
               <>
-                {" "}
-                The default profile allows up to {runtime.sandbox_limits.cpu_seconds}s CPU,{" "}
-                {runtime.sandbox_limits.wall_seconds}s wall clock,{" "}
-                {formatBytes(runtime.sandbox_limits.address_space_bytes)} memory and{" "}
-                {runtime.sandbox_limits.process_count} processes.
+                {(
+                  Object.keys(PRESERVE_COPY) as CodeExecutionFormState["preserve_output"][]
+                ).map((key) => (
+                  <p key={key}>
+                    <strong>{PRESERVE_COPY[key].label}:</strong> {PRESERVE_COPY[key].description}
+                  </p>
+                ))}
               </>
-            )}
-          </p>
+            }
+          />
+          <Select
+            value={value.preserve_output}
+            onValueChange={(preserve_output) =>
+              onChange({
+                ...value,
+                preserve_output: preserve_output as CodeExecutionFormState["preserve_output"],
+              })
+            }
+          >
+            <SelectTrigger id="code-preserve" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(PRESERVE_COPY) as CodeExecutionFormState["preserve_output"][]).map(
+                (key) => (
+                  <SelectItem key={key} value={key}>
+                    {PRESERVE_COPY[key].label}
+                  </SelectItem>
+                ),
+              )}
+            </SelectContent>
+          </Select>
         </div>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {(
-            [
-              ["cpu_seconds", "CPU seconds"],
-              ["wall_seconds", "Wall clock seconds"],
-              ["memory_mb", "Memory (MB)"],
-              ["process_count", "Processes"],
-            ] as const
-          ).map(([key, label]) => (
-            <div key={key} className="flex flex-col gap-1">
-              <Label htmlFor={`code-${key}`}>{label}</Label>
-              <Input
-                id={`code-${key}`}
-                inputMode="decimal"
-                className="tabular"
-                placeholder="ceiling"
-                value={value[key]}
-                aria-invalid={fieldErrors[`code_execution.${key}`] !== undefined}
-                onChange={(event) => onChange({ ...value, [key]: event.target.value })}
-              />
-              <FieldError message={fieldErrors[`code_execution.${key}`]} />
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-0.5">
-          <h3 className="text-body font-medium">Tools a program may call</h3>
-          <p className="text-caption text-muted-foreground">
-            Host functions available inside the program, each going through the same policy,
-            approvals and record as a direct call. Only tools this agent is already authorized
-            to call can be offered; narrowing here never widens anything.
-          </p>
-        </div>
-        {toolGroups.length === 0 ? (
-          <p className="text-caption text-muted-foreground italic">
-            This agent holds no tools and is connected to nothing, so a program can call none.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
-            <label className="flex items-center gap-2 text-body">
-              <Checkbox
-                checked={value.bindings === null}
-                onCheckedChange={(checked) =>
-                  onChange({
-                    ...value,
-                    bindings: checked ? null : allBindingNames(toolGroups),
-                  })
-                }
-              />
-              Every tool it is authorized to call
-            </label>
-            <p className="pl-6 text-caption text-muted-foreground">
-              Including tools discovered from a connected system at run time. Leaving this on
-              keeps a program in step with the agent: a tool added to a connection becomes
-              callable, and one withdrawn stops being callable, in the same turn either happens
-              for the model.
-            </p>
-            {value.bindings !== null &&
-              toolGroups.map((group) => (
-                <div key={`${group.origin}:${group.label}`} className="flex flex-col gap-1.5 pl-6">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-caption font-medium">{group.label}</span>
-                    <span className="text-caption text-muted-foreground">
-                      {group.origin === "mcp" ? "connected system" : `${group.origin} tools`}
-                    </span>
-                  </div>
-                  {group.note && (
-                    <p className="text-caption text-muted-foreground">{group.note}</p>
-                  )}
-                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                    {group.options.map((option) => {
-                      const on = value.bindings?.includes(option.name) ?? false;
-                      const status = STATUS_COPY[option.status];
-                      return (
-                        <label
-                          key={option.name}
-                          className="flex items-start gap-2 text-caption"
-                          title={option.note}
-                        >
-                          <Checkbox
-                            checked={on}
-                            disabled={option.status === "incompatible"}
-                            onCheckedChange={(checked) => {
-                              const current = value.bindings ?? [];
-                              onChange({
-                                ...value,
-                                bindings: checked
-                                  ? [...current, option.name].filter(
-                                      (t, i, a) => a.indexOf(t) === i,
-                                    )
-                                  : current.filter((t) => t !== option.name),
-                              });
-                            }}
-                          />
-                          <span className="flex flex-col">
-                            <span className="font-technical">{option.name}</span>
-                            {option.status !== "available" && (
-                              <span className={status.tone}>{status.label}</span>
-                            )}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-          </div>
-        )}
-        <p className="text-caption text-muted-foreground">
-          No credential ever enters the sandbox. A program sends a tool name and JSON arguments
-          and receives a result; the token, the connection and the OAuth exchange stay on the
-          worker. A tool needing a person&apos;s approval or an answer cannot be called from a
-          program at all — the call is refused before it runs and the model is told to make it
-          directly.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-0.5">
-          <h3 className="text-body font-medium">What it produces</h3>
-          <p className="text-caption text-muted-foreground">
-            The model is shown a head-and-tail preview of each stream inside this budget. Everything
-            beyond it stays out of the prompt and, when kept, is readable in windows by handle.
-          </p>
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="code-preview">Preview per stream (bytes)</Label>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <LabelWithHelp
+            htmlFor="code-artifacts"
+            label="Files it writes"
+            help="Files written to the working directory come back by relative path, up to this many. Links are never followed. Off, they are discarded when the program ends."
+          />
+          <div className="flex items-center gap-3">
+            <Switch
+              id="code-artifacts"
+              checked={value.collect_artifacts}
+              onCheckedChange={(collect_artifacts) => onChange({ ...value, collect_artifacts })}
+            />
             <Input
-              id="code-preview"
+              aria-label="Most files collected"
               type="number"
               className="tabular"
-              min={256}
-              max={65536}
-              step={256}
-              value={value.preview_bytes}
-              aria-invalid={fieldErrors["code_execution.preview_bytes"] !== undefined}
+              min={0}
+              max={256}
+              disabled={!value.collect_artifacts}
+              value={value.max_artifacts}
               onChange={(event) => {
                 const parsed = event.target.valueAsNumber;
                 onChange({
                   ...value,
-                  preview_bytes: Number.isFinite(parsed) ? parsed : value.preview_bytes,
+                  max_artifacts: Number.isFinite(parsed) ? parsed : value.max_artifacts,
                 });
               }}
             />
-            <FieldError message={fieldErrors["code_execution.preview_bytes"]} />
           </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="code-preserve">Output beyond the preview</Label>
-            <Select
-              value={value.preserve_output}
-              onValueChange={(preserve_output) =>
-                onChange({
-                  ...value,
-                  preserve_output: preserve_output as CodeExecutionFormState["preserve_output"],
-                })
-              }
-            >
-              <SelectTrigger id="code-preserve">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(PRESERVE_COPY) as CodeExecutionFormState["preserve_output"][]).map(
-                  (key) => (
-                    <SelectItem key={key} value={key}>
-                      {PRESERVE_COPY[key].label}
-                    </SelectItem>
-                  )
-                )}
-              </SelectContent>
-            </Select>
-            <p className="text-caption text-muted-foreground">
-              {PRESERVE_COPY[value.preserve_output].description}
-            </p>
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="code-artifacts">Files it writes</Label>
-            <div className="flex items-center gap-3">
-              <Switch
-                id="code-artifacts"
-                checked={value.collect_artifacts}
-                onCheckedChange={(collect_artifacts) => onChange({ ...value, collect_artifacts })}
-              />
-              <Input
-                aria-label="Most files collected"
-                type="number"
-                className="tabular"
-                min={0}
-                max={256}
-                disabled={!value.collect_artifacts}
-                value={value.max_artifacts}
-                onChange={(event) => {
-                  const parsed = event.target.valueAsNumber;
-                  onChange({
-                    ...value,
-                    max_artifacts: Number.isFinite(parsed) ? parsed : value.max_artifacts,
-                  });
-                }}
-              />
-            </div>
-            <p className="text-caption text-muted-foreground">
-              Files written to the working directory come back by relative path, up to this many.
-              Links are never followed.
-            </p>
-            <FieldError message={fieldErrors["code_execution.max_artifacts"]} />
-          </div>
+          <FieldError message={fieldErrors["code_execution.max_artifacts"]} />
         </div>
-      </div>
+      </FieldGrid>
     </div>
   );
 }
 
-/** What a published version asks for, on the agent page. */
-export function CodeExecutionSummary({
-  terms,
-  runtime,
+/** Which of the agent's tools a program may call, shown only once somebody
+ *  has turned off "every tool it holds". */
+function BindingPicker({
+  value,
+  onChange,
+  toolGroups,
 }: {
-  terms: CodeExecutionIn | null;
-  runtime: RuntimeSettings | null;
+  value: CodeExecutionFormState;
+  onChange: (next: CodeExecutionFormState) => void;
+  toolGroups: BindingGroup[];
 }) {
-  if (terms === null || !terms.enabled) {
-    return (
-      <p className="text-body text-muted-foreground">
-        This version does not run programs. It is never shown the{" "}
-        <code className="font-technical">run_code</code> tool.
-      </p>
-    );
-  }
-  const offered = runtime?.sandbox_profile_names.includes(terms.profile) ?? true;
-  const Icon = terms.isolation === "isolated" ? ShieldCheckIcon : ShieldIcon;
-  const requested = [
-    terms.limits.cpu_seconds != null ? `${terms.limits.cpu_seconds}s CPU` : null,
-    terms.limits.wall_seconds != null ? `${terms.limits.wall_seconds}s wall clock` : null,
-    terms.limits.memory_bytes != null ? `${formatBytes(terms.limits.memory_bytes)} memory` : null,
-    terms.limits.process_count != null ? `${terms.limits.process_count} processes` : null,
-  ].filter((s): s is string => s !== null);
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline" className="gap-1">
-          <Icon className="size-3" aria-hidden />
-          {ISOLATION_COPY[terms.isolation].label}
-        </Badge>
-        <Badge variant="outline" className="font-technical">
-          profile: {terms.profile}
-        </Badge>
-        {!offered && <Badge variant="destructive">profile not offered here</Badge>}
-        <Badge variant="outline">
-          {terms.network === "denied" ? "no network" : "raw network"}
-        </Badge>
-      </div>
-      <DetailRow label="Budgets requested">
-        {requested.length > 0 ? requested.join(", ") : "the profile's ceiling"}
-      </DetailRow>
-      <DetailRow label="Tools a program may call">
-        {terms.bindings === null
-          ? "every tool it is authorized to call"
-          : terms.bindings.join(", ") || "none"}
-      </DetailRow>
-      <DetailRow label="Preview per stream">{terms.preview_bytes.toLocaleString()} bytes</DetailRow>
-      <DetailRow label="Output beyond the preview">
-        {PRESERVE_COPY[terms.preserve_output].label}
-      </DetailRow>
-      <DetailRow label="Files it writes">
-        {terms.collect_artifacts ? `collected, up to ${terms.max_artifacts}` : "discarded"}
-      </DetailRow>
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      {toolGroups.map((group) => (
+        <div key={`${group.origin}:${group.label}`} className="flex flex-col gap-1.5">
+          <div className="flex items-baseline gap-2">
+            <span className="text-caption font-medium">{group.label}</span>
+            <span className="text-micro text-muted-foreground">
+              {group.origin === "mcp" ? "connected system" : `${group.origin} tools`}
+            </span>
+          </div>
+          {group.note && <p className="text-micro text-muted-foreground">{group.note}</p>}
+          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+            {group.options.map((option) => {
+              const on = value.bindings?.includes(option.name) ?? false;
+              const status = STATUS_COPY[option.status];
+              return (
+                <label
+                  key={option.name}
+                  className="flex items-start gap-2 text-caption"
+                  title={option.note}
+                >
+                  <Checkbox
+                    checked={on}
+                    disabled={option.status === "incompatible"}
+                    onCheckedChange={(checked) => {
+                      const current = value.bindings ?? [];
+                      onChange({
+                        ...value,
+                        bindings: checked
+                          ? [...current, option.name].filter((t, i, a) => a.indexOf(t) === i)
+                          : current.filter((t) => t !== option.name),
+                      });
+                    }}
+                  />
+                  <span className="flex flex-col">
+                    <span className="font-technical">{option.name}</span>
+                    {option.status !== "available" && (
+                      <span className={status.tone}>{status.label}</span>
+                    )}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

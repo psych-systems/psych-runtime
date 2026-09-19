@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { LabelWithHelp } from "@/components/ui/help";
 import {
   Select,
   SelectContent,
@@ -66,6 +66,10 @@ function initialAuthentication(connection: McpServerPreset | null): Authenticati
   return "none";
 }
 
+/**
+ * Fields and a "?" per field. Every paragraph this form used to carry is now
+ * behind the help beside the label it explained, so the form is a form.
+ */
 export function ConnectionDialog({
   open,
   onOpenChange,
@@ -126,9 +130,7 @@ export function ConnectionDialog({
   // under the same one: deleting either then removed both, and a test ran
   // against whichever the backend happened to reach first.
   const nameTaken =
-    trimmedName !== "" &&
-    trimmedName !== connection?.name &&
-    existingNames.includes(trimmedName);
+    trimmedName !== "" && trimmedName !== connection?.name && existingNames.includes(trimmedName);
 
   async function handleSubmit() {
     setSaving(true);
@@ -141,24 +143,23 @@ export function ConnectionDialog({
         description: description.trim(),
         transport,
         credential:
-          authentication === "bearer" && credential.trim() !== ""
-            ? credential.trim()
-            : null,
+          authentication === "bearer" && credential.trim() !== "" ? credential.trim() : null,
         allow: allow
           .split(",")
           .map((entry) => entry.trim())
           .filter((entry) => entry.length > 0),
         optional,
         preload: preloadValue(preload),
-        oauth: authentication === "oauth"
-          ? {
-              grant,
-              preregistered_client_id: clientId.trim() === "" ? null : clientId.trim(),
-              client_secret_credential:
-                clientSecretCredential.trim() === "" ? null : clientSecretCredential.trim(),
-              issuer: issuer.trim() === "" ? null : issuer.trim(),
-            }
-          : null,
+        oauth:
+          authentication === "oauth"
+            ? {
+                grant,
+                preregistered_client_id: clientId.trim() === "" ? null : clientId.trim(),
+                client_secret_credential:
+                  clientSecretCredential.trim() === "" ? null : clientSecretCredential.trim(),
+                issuer: issuer.trim() === "" ? null : issuer.trim(),
+              }
+            : null,
       };
       await onSave(edited, connection?.name ?? null);
       onOpenChange(false);
@@ -180,8 +181,7 @@ export function ConnectionDialog({
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit connection" : "Add a connection"}</DialogTitle>
           <DialogDescription>
-            A system your agents can reach. Saving it stores the details, it does not connect.
-            Use Test connection for that.
+            Saving stores the details. Testing is what connects.
           </DialogDescription>
         </DialogHeader>
 
@@ -194,7 +194,16 @@ export function ConnectionDialog({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Label htmlFor="connection-name">Name</Label>
+              <LabelWithHelp
+                htmlFor="connection-name"
+                label="Name"
+                help={
+                  <p>
+                    Yours, and unique. Two connections under one name would collide: deleting
+                    either would remove both.
+                  </p>
+                }
+              />
               <Input
                 id="connection-name"
                 className="mt-1.5 font-technical"
@@ -213,7 +222,16 @@ export function ConnectionDialog({
               <FieldError message={fieldErrors.name} />
             </div>
             <div>
-              <Label htmlFor="connection-transport">How it talks</Label>
+              <LabelWithHelp
+                htmlFor="connection-transport"
+                label="How it talks"
+                help={
+                  <p>
+                    Streaming HTTP is the current MCP transport. Server-sent events is what older
+                    servers speak.
+                  </p>
+                }
+              />
               <Select value={transport} onValueChange={(next) => setTransport(next as McpTransport)}>
                 <SelectTrigger id="connection-transport" className="mt-1.5 w-full">
                   <SelectValue />
@@ -227,7 +245,11 @@ export function ConnectionDialog({
           </div>
 
           <div>
-            <Label htmlFor="connection-url">Address</Label>
+            <LabelWithHelp
+              htmlFor="connection-url"
+              label="Address"
+              help={<p>The MCP endpoint this playground connects to.</p>}
+            />
             <Input
               id="connection-url"
               className="mt-1.5 font-technical"
@@ -241,15 +263,31 @@ export function ConnectionDialog({
 
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Label htmlFor="connection-description">What this system is for</Label>
+              {/* The bug this field exists to fix: an agent wired to three
+                  connections was shown three names, and a name is not an
+                  answer to "which of these should I use". This sentence
+                  reaches the agent when it runs. */}
+              <LabelWithHelp
+                htmlFor="connection-description"
+                label="What this system is for"
+                help={
+                  <>
+                    <p>
+                      Told to the agent so it knows what this system is and when to reach for it.
+                      Leave it empty and the agent hears whatever the server says about itself,
+                      which is often nothing.
+                    </p>
+                    <p>
+                      Rewording is free. It is not part of a published agent, so improving it
+                      changes what every agent hears from the next message on.
+                    </p>
+                  </>
+                }
+              />
               <span className="rounded-full bg-surface px-1.5 py-0.5 text-micro font-medium text-surface-foreground">
                 Recommended
               </span>
             </div>
-            {/* The bug this field exists to fix: an agent wired to three
-                connections was shown three names, and a name is not an answer
-                to "which of these should I use". This sentence reaches the
-                agent when it runs. */}
             <Textarea
               id="connection-description"
               className="mt-1.5 min-h-20"
@@ -257,60 +295,68 @@ export function ConnectionDialog({
               maxLength={DESCRIPTION_LIMIT}
               value={description}
               onChange={(event) => setDescription(event.target.value)}
-              aria-describedby="connection-description-help"
             />
-            <div className="mt-1 flex flex-wrap items-start justify-between gap-2">
-              <p id="connection-description-help" className="text-caption text-muted-foreground">
-                Told to the agent so it knows what this system is and when to reach for it. A
-                sentence or two, up to {DESCRIPTION_LIMIT} characters. Leave it empty and the
-                agent hears whatever the server says about itself, which is often nothing.
-              </p>
-              <span className="tabular shrink-0 text-caption text-muted-foreground">
-                {description.length} / {DESCRIPTION_LIMIT}
-              </span>
+            <p className="tabular mt-1 text-right text-caption text-muted-foreground">
+              {description.length} / {DESCRIPTION_LIMIT}
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <LabelWithHelp
+                htmlFor="connection-allow"
+                label="Tools to allow"
+                help={
+                  <p>
+                    Tool names separated by commas. Empty allows everything this connection offers.
+                  </p>
+                }
+              />
+              <Input
+                id="connection-allow"
+                className="mt-1.5 font-technical"
+                placeholder="search_tickets, create_ticket"
+                value={allow}
+                onChange={(event) => setAllow(event.target.value)}
+              />
             </div>
-            <p className="mt-1 text-caption text-muted-foreground">
-              Rewording this is free. It is not part of a published agent, so improving it changes
-              what every agent hears from the next message on, and republishes nothing.
-            </p>
+
+            <div>
+              <LabelWithHelp
+                htmlFor="connection-preload"
+                label="Tools in the prompt"
+                help={
+                  <>
+                    {PRELOAD_OPTIONS.map((option) => (
+                      <p key={option.value}>
+                        <span className="font-medium text-foreground">{option.label}:</span>{" "}
+                        {option.hint}
+                      </p>
+                    ))}
+                  </>
+                }
+              />
+              <Select value={preload} onValueChange={(next) => setPreload(next as PreloadChoice)}>
+                <SelectTrigger id="connection-preload" className="mt-1.5 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRELOAD_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           <div>
-            <Label htmlFor="connection-allow">Tools to allow</Label>
-            <Input
-              id="connection-allow"
-              className="mt-1.5 font-technical"
-              placeholder="search_tickets, create_ticket"
-              value={allow}
-              onChange={(event) => setAllow(event.target.value)}
+            <LabelWithHelp
+              htmlFor="connection-authentication"
+              label="Authentication"
+              help={<p>How this server expects the playground to identify itself.</p>}
             />
-            <p className="mt-1 text-caption text-muted-foreground">
-              Separate names with commas. Leave it empty to allow everything this connection
-              offers.
-            </p>
-          </div>
-
-          <div>
-            <Label htmlFor="connection-preload">Tools in the prompt</Label>
-            <Select value={preload} onValueChange={(next) => setPreload(next as PreloadChoice)}>
-              <SelectTrigger id="connection-preload" className="mt-1.5 w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PRELOAD_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="mt-1 text-caption text-muted-foreground">
-              {PRELOAD_OPTIONS.find((option) => option.value === preload)?.hint}
-            </p>
-          </div>
-
-          <div>
-            <Label htmlFor="connection-authentication">Authentication</Label>
             <Select
               value={authentication}
               onValueChange={(next) => setAuthentication(next as Authentication)}
@@ -324,14 +370,19 @@ export function ConnectionDialog({
                 <SelectItem value="oauth">OAuth</SelectItem>
               </SelectContent>
             </Select>
-            <p className="mt-1 text-caption text-muted-foreground">
-              Choose how this server expects the Playground to identify itself.
-            </p>
           </div>
 
           {authentication === "bearer" && (
             <div className="rounded-xl border border-border bg-surface/35 p-4">
-              <Label htmlFor="connection-credential">Access token credential</Label>
+              <LabelWithHelp
+                htmlFor="connection-credential"
+                label="Access token credential"
+                help={
+                  <p>
+                    A name that gets looked up when the connection opens, not the secret itself.
+                  </p>
+                }
+              />
               <SecretSelect
                 id="connection-credential"
                 value={credential}
@@ -342,29 +393,25 @@ export function ConnectionDialog({
             </div>
           )}
 
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2">
-            <div>
-              <p className="text-body font-medium">Keep going without it</p>
-              <p className="text-caption text-muted-foreground">
-                If it is unreachable when a message arrives, the agent carries on without its
-                tools instead of failing.
-              </p>
-            </div>
-            <Switch checked={optional} onCheckedChange={setOptional} />
-          </div>
-
           {authentication === "oauth" && (
             <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface/35 p-4">
               <div>
-                <Label htmlFor="connection-grant">Sign-in style</Label>
+                <LabelWithHelp
+                  htmlFor="connection-grant"
+                  label="Sign-in style"
+                  help={
+                    <p>
+                      A browser sign-in asks a person once and waits for them; an app sign-in uses
+                      a client id and secret with nobody present.
+                    </p>
+                  }
+                />
                 <Select value={grant} onValueChange={(next) => setGrant(next as McpGrant)}>
                   <SelectTrigger id="connection-grant" className="mt-1.5 w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="client_credentials">
-                      This app signs in on its own
-                    </SelectItem>
+                    <SelectItem value="client_credentials">This app signs in on its own</SelectItem>
                     <SelectItem value="authorization_code">
                       A person signs in through a browser
                     </SelectItem>
@@ -372,7 +419,16 @@ export function ConnectionDialog({
                 </Select>
               </div>
               <div>
-                <Label htmlFor="connection-client-id">Client id</Label>
+                <LabelWithHelp
+                  htmlFor="connection-client-id"
+                  label="Client id"
+                  help={
+                    <p>
+                      Public, not a secret. Leave it empty if the server registers this app for
+                      itself.
+                    </p>
+                  }
+                />
                 <Input
                   id="connection-client-id"
                   className="mt-1.5 font-technical"
@@ -380,12 +436,13 @@ export function ConnectionDialog({
                   value={clientId}
                   onChange={(event) => setClientId(event.target.value)}
                 />
-                <p className="mt-1 text-caption text-muted-foreground">
-                  Leave it empty if the server registers this app for itself.
-                </p>
               </div>
               <div>
-                <Label htmlFor="connection-client-secret">Client secret</Label>
+                <LabelWithHelp
+                  htmlFor="connection-client-secret"
+                  label="Client secret"
+                  help={<p>The name of a stored secret, looked up when the connection opens.</p>}
+                />
                 <SecretSelect
                   id="connection-client-secret"
                   value={clientSecretCredential}
@@ -396,7 +453,16 @@ export function ConnectionDialog({
               </div>
               {grant === "client_credentials" && (
                 <div>
-                  <Label htmlFor="connection-oauth-issuer">Authorization server</Label>
+                  <LabelWithHelp
+                    htmlFor="connection-oauth-issuer"
+                    label="Authorization server"
+                    help={
+                      <p>
+                        The issuer that registered this client. Credentials are sent only to this
+                        authorization server.
+                      </p>
+                    }
+                  />
                   <Input
                     id="connection-oauth-issuer"
                     className="mt-1.5 font-technical"
@@ -404,14 +470,24 @@ export function ConnectionDialog({
                     value={issuer}
                     onChange={(event) => setIssuer(event.target.value)}
                   />
-                  <p className="mt-1 text-caption text-muted-foreground">
-                    The issuer that registered this client. Credentials are sent only to this
-                    authorization server.
-                  </p>
                 </div>
               )}
             </div>
           )}
+
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2">
+            <LabelWithHelp
+              htmlFor="connection-optional"
+              label="Keep going without it"
+              help={
+                <p>
+                  If it is unreachable when a message arrives, the agent carries on without its
+                  tools instead of failing.
+                </p>
+              }
+            />
+            <Switch id="connection-optional" checked={optional} onCheckedChange={setOptional} />
+          </div>
         </div>
 
         <DialogFooter className="border-t border-border pt-4">
@@ -420,9 +496,7 @@ export function ConnectionDialog({
           </Button>
           <Button
             onClick={() => void handleSubmit()}
-            disabled={
-              saving || trimmedName === "" || url.trim() === "" || !nameValid || nameTaken
-            }
+            disabled={saving || trimmedName === "" || url.trim() === "" || !nameValid || nameTaken}
           >
             {saving && <Loader2Icon className="animate-spin" />}
             {isEdit ? "Save changes" : "Add connection"}

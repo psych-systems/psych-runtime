@@ -34,6 +34,8 @@ export function selectorLabel(toolClass: ToolClass): string {
 
 export interface ToolClassCopy {
   title: string;
+  /** One line, for the row beside the checkbox. */
+  short: string;
   blurb: string;
   /** What choosing it costs, said once, so nobody has to infer it from the
    *  word "approval". */
@@ -43,17 +45,20 @@ export interface ToolClassCopy {
 export const TOOL_CLASS_COPY: Record<ToolClass, ToolClassCopy> = {
   "read-only": {
     title: "Looking things up",
+    short: "Reading, searching, fetching. Nothing changes.",
     blurb: "Reading a record, searching, fetching a page. Nothing changes.",
     consequence: "Asking here is safe but slow: most conversations pause several times.",
   },
   write: {
     title: "Making changes",
+    short: "Sending, filing, editing. Unlabelled tools count here.",
     blurb:
       "Creating or updating something: sending a message, filing a ticket, editing a record. A tool nobody labelled counts as this one.",
     consequence: "The conversation waits for you before anything is written.",
   },
   destructive: {
     title: "Deleting or replacing things",
+    short: "Removing, overwriting, cancelling.",
     blurb: "Removing a record, overwriting a file, cancelling an order.",
     consequence: "The conversation waits for you before anything is destroyed.",
   },

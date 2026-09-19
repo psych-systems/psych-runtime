@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 # The console, built once.
 # ---------------------------------------------------------------------------
-FROM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS web
+FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS web
 
 WORKDIR /build
 COPY examples/playground/web/package.json examples/playground/web/package-lock.json ./
@@ -62,7 +62,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Python dependencies, resolved into a virtualenv that gets copied whole.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS deps
+FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS deps
 
 # Build tools live here and nowhere near the final image. A wheel that needs
 # compiling gets compiled once, and the compiler stays behind.
@@ -96,7 +96,7 @@ RUN uv sync --frozen --no-dev --extra playground --extra mysql --extra dynamodb
 # ---------------------------------------------------------------------------
 # What actually ships: two runtimes, no toolchain.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS runtime
+FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS runtime
 
 # Node is needed at run time because the console is a server-rendered Next
 # app, not a static bundle. The npm CLI and the build toolchain are not.

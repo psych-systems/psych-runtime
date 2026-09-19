@@ -19,6 +19,8 @@ import { LabelWithHelp } from "@/components/ui/help";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FieldError, issuesByPath } from "@/components/settings/validation";
 import type { ProviderIn, ProviderOut } from "@/components/settings/types";
+import { ModelField } from "@/components/agents/model-field";
+import type { CatalogueModel, ModelQuote } from "@/lib/types";
 
 /**
  * A catalogue entry this dialog is opened against: the address and model are
@@ -39,6 +41,27 @@ export interface ProviderPrefill {
   requires: string[];
   /** Runs on the person's own machine, so it needs no key. */
   local: boolean;
+  /** What the vendor serves, with list prices, from the catalogue. */
+  models?: CatalogueModel[];
+}
+
+/** The catalogue's models as the combobox wants them: ids, and a quote for
+ *  each one the vendor prices. */
+function quotesFor(models: CatalogueModel[] | undefined): {
+  ids: string[];
+  prices: Record<string, ModelQuote>;
+} {
+  const ids: string[] = [];
+  const prices: Record<string, ModelQuote> = {};
+  for (const model of models ?? []) {
+    ids.push(model.id);
+    if (model.input !== null && model.output !== null) {
+      prices[model.id] = { input: model.input, output: model.output, note: model.note };
+    } else if (model.note) {
+      prices[model.id] = { note: model.note };
+    }
+  }
+  return { ids, prices };
 }
 
 interface ProviderDialogProps {
@@ -49,6 +72,9 @@ interface ProviderDialogProps {
   /** Where a key for the provider being edited comes from, when the
    *  catalogue knows. An offer carries its own in `prefill`. */
   keyUrl?: string | null;
+  /** The catalogue's models for the provider being edited, when it is one
+   *  the catalogue knows. An offer carries its own in `prefill`. */
+  catalogueModels?: CatalogueModel[];
   onSave: (edited: ProviderIn) => Promise<void>;
 }
 
@@ -73,8 +99,10 @@ export function ProviderDialog({
   provider,
   prefill = null,
   keyUrl = null,
+  catalogueModels,
   onSave,
 }: ProviderDialogProps) {
+  const offered = quotesFor(prefill?.models ?? catalogueModels);
   const isEdit = provider !== null;
   const addingKey = provider !== null && !provider.has_api_key;
   const getKeyUrl = prefill?.key_url ?? keyUrl;
@@ -225,14 +253,24 @@ export function ProviderDialog({
                 </p>
               }
             />
-            <Input
-              id="provider-model"
-              className="mt-1.5 font-technical"
-              placeholder="@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              aria-invalid={fieldErrors.model !== undefined}
-            />
+            <div className="mt-1.5">
+              <ModelField
+                id="provider-model"
+                value={model}
+                onChange={setModel}
+                models={offered.ids}
+                prices={offered.prices}
+                detail={
+                  Object.values(offered.prices).some((quote) => quote.input != null)
+                    ? "List prices per million tokens. Any other id can be typed."
+                    : offered.ids.length > 0
+                      ? "Any other id can be typed."
+                      : null
+                }
+                placeholder="@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+                invalid={fieldErrors.model !== undefined}
+              />
+            </div>
             <FieldError message={fieldErrors.model} />
           </div>
 

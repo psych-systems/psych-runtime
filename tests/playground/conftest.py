@@ -63,7 +63,7 @@ async def anonymous(
     monkeypatch.delenv("PSYCH_PLAYGROUND_SECRETS", raising=False)
     monkeypatch.delenv("PSYCH_PLAYGROUND_MCP_SERVERS", raising=False)
     monkeypatch.delenv("PSYCH_PLAYGROUND_API_KEY", raising=False)
-    # Off here, on in production. Signing up seeds twenty-six agents, eleven
+    # Off here, on in production. Signing up seeds twenty-six agents, thirteen
     # providers, twenty-five connectors and five workflows, and almost every
     # test in this suite asserts on what an account holds -- they would all be
     # counting the catalogue instead of what they published. `seeded_client`

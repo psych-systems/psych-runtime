@@ -33,18 +33,36 @@ class McpServerHintOut(_ApiModel):
     oauth_grant: str | None = None
 
 
+class ModelQuote(_ApiModel):
+    """List price for one model, USD per million tokens, for display beside
+    its id. Never a zero standing in for "unknown": a model with no known
+    rate is simply absent from the map."""
+
+    input: Decimal
+    output: Decimal
+    currency: str = "USD"
+    note: str = ""
+    """The catalogue's one-phrase description of the model, when it has one."""
+
+
 class ModelsResponse(_ApiModel):
     """``GET /api/models``: what the active provider will accept.
 
     ``models`` empty is not an error. ``known_models`` returns nothing when a
     provider will not say what it serves (DESIGN.md §19), which is the ordinary
     case for a proxy, so ``detail`` carries the reason in words a person can
-    act on and the form stays typeable either way.
+    act on and the form stays typeable either way. When the provider is one
+    the catalogue knows and it would not say, ``models`` carries the
+    catalogue's list instead, and ``detail`` says so.
     """
 
     models: list[str]
     detail: str
     provider_label: str | None = None
+    prices: dict[str, ModelQuote] = Field(default_factory=dict)
+    """What each listed model costs, where anything knows: the account's own
+    Prices page first, then the catalogue, then the library's bundled
+    snapshot. Keyed by model id; a model with no rate anywhere is not here."""
 
 
 class HealthResponse(_ApiModel):
@@ -1811,6 +1829,15 @@ class ProblemResponse(_ApiModel):
 # ---------------------------------------------------------------------------
 
 
+class CatalogueModelOut(_ApiModel):
+    """One model the provider serves, with its list price when published."""
+
+    id: str
+    input: Decimal | None = None
+    output: Decimal | None = None
+    note: str = ""
+
+
 class CatalogueProviderOut(_ApiModel):
     """One catalogue provider, and whether this account has configured it."""
 
@@ -1821,6 +1848,9 @@ class CatalogueProviderOut(_ApiModel):
     fill it; see ``requires``."""
     default_model: str
     suggested_models: list[str] = Field(default_factory=list)
+    models: list[CatalogueModelOut] = Field(default_factory=list)
+    """``suggested_models`` with prices. The ids repeat so an older console
+    keeps working; a current one reads this."""
     key_url: str
     docs_url: str
     requires: list[str] = Field(default_factory=list)

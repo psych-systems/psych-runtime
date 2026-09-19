@@ -14,6 +14,29 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import type { ModelQuote } from "@/lib/types";
+
+/**
+ * "$1.25 in · $10 out" per million tokens. Shown beside a model id wherever
+ * one is chosen, so the price is part of the choice rather than a surprise on
+ * the first Run's cost line. Nothing is shown for a model with no known
+ * rate: an unknown price is unknown, never zero.
+ */
+export function formatQuote(quote: ModelQuote | undefined): string | null {
+  if (quote === undefined || quote.input == null || quote.output == null) return null;
+  const currency = quote.currency ?? "USD";
+  const symbol = currency === "USD" ? "$" : `${currency} `;
+  return `${symbol}${trimRate(quote.input)} in · ${symbol}${trimRate(quote.output)} out /1M`;
+}
+
+function trimRate(value: number | string): string {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  // Whole dollars stay whole ($10), cents keep two places ($2.50, $0.20),
+  // and a rate that needs a third gets it ($0.075), never more.
+  if (n >= 1) return n.toFixed(2).replace(/\.00$/, "");
+  return n.toFixed(3).replace(/0$/, "");
+}
 
 /**
  * Picks the model an agent runs on: the names its provider actually serves,
@@ -48,6 +71,7 @@ export function ModelField({
   value,
   onChange,
   models,
+  prices,
   detail,
   placeholder,
   invalid,
@@ -58,6 +82,8 @@ export function ModelField({
   onChange: (next: string) => void;
   /** What the provider said it serves. Empty is normal, not an error. */
   models: string[];
+  /** List prices by model id, shown beside each one that has a rate. */
+  prices?: Record<string, ModelQuote>;
   /** The backend's own sentence about where this list came from, or why it is
    *  empty. Rendered verbatim rather than reworded, so the reason a list is
    *  short reaches the person who has to act on it. */
@@ -96,7 +122,14 @@ export function ModelField({
             <span className={cn("truncate", value === "" && "text-muted-foreground")}>
               {value === "" ? placeholder : value}
             </span>
-            <ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-50" />
+            <span className="flex shrink-0 items-center gap-2">
+              {value !== "" && formatQuote(prices?.[value]) && (
+                <span className="hidden text-micro text-muted-foreground sm:inline">
+                  {formatQuote(prices?.[value])}
+                </span>
+              )}
+              <ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-50" />
+            </span>
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-(--radix-popover-trigger-width) p-0" align="start">
@@ -126,14 +159,26 @@ export function ModelField({
               )}
               {models.length > 0 && (
                 <CommandGroup heading="Offered by this provider">
-                  {models.map((name) => (
-                    <CommandItem key={name} value={name} onSelect={() => choose(name)}>
-                      <CheckIcon
-                        className={cn("size-3.5", value === name ? "opacity-100" : "opacity-0")}
-                      />
-                      <span className="font-technical">{name}</span>
-                    </CommandItem>
-                  ))}
+                  {models.map((name) => {
+                    const quote = formatQuote(prices?.[name]);
+                    const note = prices?.[name]?.note;
+                    return (
+                      <CommandItem key={name} value={name} onSelect={() => choose(name)}>
+                        <CheckIcon
+                          className={cn("size-3.5", value === name ? "opacity-100" : "opacity-0")}
+                        />
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="truncate font-technical">{name}</span>
+                          {note && <span className="text-micro text-muted-foreground">{note}</span>}
+                        </span>
+                        {quote && (
+                          <span className="ml-2 shrink-0 text-micro text-muted-foreground">
+                            {quote}
+                          </span>
+                        )}
+                      </CommandItem>
+                    );
+                  })}
                 </CommandGroup>
               )}
             </CommandList>

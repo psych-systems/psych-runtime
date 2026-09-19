@@ -102,6 +102,7 @@ export function ProvidersSection({
       // An address the backend already filled in asks for nothing more.
       requires: entry.resolved === true ? [] : entry.requires,
       local: entry.local === true,
+      models: entry.models,
     });
     setDialogOpen(true);
   }
@@ -442,6 +443,7 @@ export function ProvidersSection({
         provider={editing}
         prefill={prefill}
         keyUrl={editing !== null ? (entries.get(editing.id)?.key_url ?? null) : null}
+        catalogueModels={editing !== null ? entries.get(editing.id)?.models : undefined}
         onSave={onSave}
       />
 

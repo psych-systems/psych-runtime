@@ -85,6 +85,7 @@ export function AgentEssentials({ form }: { form: AgentFormState }) {
           value={form.modelOverride ?? form.config?.model ?? ""}
           onChange={form.setModelOverride}
           models={form.models}
+          prices={form.modelPrices}
           detail={
             form.modelsDetail ??
             (form.config?.provider_label

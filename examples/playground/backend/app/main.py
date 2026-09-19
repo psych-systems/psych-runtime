@@ -78,6 +78,7 @@ from app.schemas import (
     CatalogueAuthOut,
     CatalogueConnectorAgentOut,
     CatalogueConnectorOut,
+    CatalogueModelOut,
     CatalogueProviderOut,
     CatalogueResponse,
     CatalogueWorkflowOut,
@@ -109,6 +110,7 @@ from app.schemas import (
     MessageOut,
     ModelOptionsIn,
     ModelPriceOut,
+    ModelQuote,
     ModelsResponse,
     OkResponse,
     PendingAuthorizationOut,
@@ -218,6 +220,7 @@ from psych_runtime.core.usage import Cost, Usage
 from psych_runtime.model.egress import HttpTransport
 from psych_runtime.model.openai_compat import OpenAICompatibleClient
 from psych_runtime.model.port import ModelRequest, StreamDone
+from psych_runtime.model.pricing import DEFAULT_PRICES
 from psych_runtime.report.model import RunReport, SubagentReport
 from psych_runtime.runtime.worker import Worker
 from psych_runtime.store.blob_fs import FilesystemBlobStore
@@ -1327,20 +1330,66 @@ async def list_models(request: Request) -> ModelsResponse:
         scope=scope_for(account),
         api_key=provider.api_key,
     )
+    catalogued = catalogue_data.provider_by_id(provider.id)
+    fallback = list(catalogued.suggested_models) if catalogued is not None else []
     try:
         models = list(await client.known_models())
     except Exception as err:
+        # Unreachable, but not unknown: a catalogue provider still offers the
+        # models the catalogue lists, so somebody editing an agent while
+        # their key is wrong or the vendor is down can still pick one.
         return ModelsResponse(
-            models=[],
-            detail=f"Could not reach {provider.label}: {err}",
+            models=fallback,
+            detail=f"Could not reach {provider.label}: {err}"
+            + (" Showing the catalogue's list instead." if fallback else ""),
             provider_label=provider.label,
+            prices=_model_quotes(workspace, catalogued, fallback),
         )
-    detail = (
-        f"{provider.label} offers {len(models)} model{'' if len(models) == 1 else 's'}."
-        if models
-        else f"{provider.label} does not list its models, so type the id you want."
+    if models:
+        detail = f"{provider.label} offers {len(models)} model{'' if len(models) == 1 else 's'}."
+    elif fallback:
+        models = fallback
+        detail = f"{provider.label} does not list its models; these are the ones it documents."
+    else:
+        detail = f"{provider.label} does not list its models, so type the id you want."
+    return ModelsResponse(
+        models=models,
+        detail=detail,
+        provider_label=provider.label,
+        prices=_model_quotes(workspace, catalogued, models),
     )
-    return ModelsResponse(models=models, detail=detail, provider_label=provider.label)
+
+
+def _model_quotes(
+    workspace: PlaygroundState,
+    catalogued: catalogue_data.CatalogueProvider | None,
+    models: Sequence[str],
+) -> dict[str, ModelQuote]:
+    """A price for each model that anything knows a price for.
+
+    Three sources, the account's own first because those are the rates it
+    actually pays, then the catalogue (the vendor's list price, and the only
+    source that knows Groq's or xAI's native ids), then the library's bundled
+    snapshot. The order matches ``prices_for`` exactly, so the number shown
+    beside a model is the number a Run on it is costed at.
+    """
+    own = {entry.model: entry for entry in workspace.model_prices}
+    quotes: dict[str, ModelQuote] = {}
+    for model in models:
+        if (entry := own.get(model)) is not None:
+            quotes[model] = ModelQuote(
+                input=entry.input, output=entry.output, currency=entry.currency
+            )
+            continue
+        known = catalogued.price_for(model) if catalogued is not None else None
+        if known is not None and known.input is not None and known.output is not None:
+            quotes[model] = ModelQuote(input=known.input, output=known.output, note=known.note)
+            continue
+        if (bundled := DEFAULT_PRICES.price_for(model)) is not None:
+            quotes[model] = ModelQuote(
+                input=bundled.input, output=bundled.output, currency=bundled.currency
+            )
+    return quotes
 
 
 # ---------------------------------------------------------------------------
@@ -3407,6 +3456,10 @@ async def _catalogue_response(state: AppState, account: Account) -> CatalogueRes
                 base_url=base_url,
                 default_model=entry.default_model,
                 suggested_models=list(entry.suggested_models),
+                models=[
+                    CatalogueModelOut(id=m.id, input=m.input, output=m.output, note=m.note)
+                    for m in entry.models
+                ],
                 key_url=entry.key_url,
                 docs_url=entry.docs_url,
                 requires=list(entry.requires),

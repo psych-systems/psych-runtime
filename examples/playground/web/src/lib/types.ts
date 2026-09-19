@@ -613,10 +613,25 @@ export interface ModelPrice {
  * serves returns nothing (DESIGN.md §19), which is ordinary for a proxy, so
  * `detail` says why in words and the model field stays typeable.
  */
+/** List price for one model, per million tokens. A model nothing knows a
+ *  price for is absent from the map rather than shown as free. */
+export interface ModelQuote {
+  /** Both absent when only a note is known, as for a model priced per
+   *  deployment or region. */
+  input?: number | string | null;
+  output?: number | string | null;
+  currency?: string;
+  /** The catalogue's one-phrase description, when it has one. */
+  note?: string;
+}
+
 export interface ModelsResponse {
   models: string[];
   detail: string;
   provider_label: string | null;
+  /** Keyed by model id: the account's own rate, else the catalogue's list
+   *  price, else the library's snapshot. The same order a Run is costed in. */
+  prices?: Record<string, ModelQuote>;
 }
 
 /** One A2A peer on `POST /api/agents`. Declares nothing about what the peer
@@ -2093,12 +2108,23 @@ export interface DeliverEventRequest {
  * Fields the backend added after the first draft of this contract are optional
  * here rather than required, so the console renders against either.
  */
+/** One model a catalogue provider serves, with its list price when the
+ *  vendor publishes one. */
+export interface CatalogueModel {
+  id: string;
+  input: number | string | null;
+  output: number | string | null;
+  note?: string;
+}
+
 export interface CatalogueProvider {
   id: string;
   label: string;
   base_url: string;
   default_model: string;
   suggested_models: string[];
+  /** `suggested_models` with prices, newest first. */
+  models?: CatalogueModel[];
   /** Where a person goes to get a key, when there is such a page. */
   key_url: string | null;
   docs_url: string | null;

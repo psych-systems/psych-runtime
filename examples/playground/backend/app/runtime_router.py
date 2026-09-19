@@ -48,6 +48,7 @@ one this backend could not previously offer for the model path.
 
 from __future__ import annotations
 
+from app.catalogue import catalogue_prices
 from app.ports import AccountToolPolicy, SandboxProvider
 from app.settings_store import PlaygroundState, ProviderConfig, SettingsStore
 from app.store_index import PlaygroundIndex
@@ -86,9 +87,15 @@ def prices_for(state: PlaygroundState) -> StaticPriceTable:
     table for the models they name and leave every other model alone, so
     configuring one price does not silently make another model look free.
     """
+    # The catalogue's list prices sit under the account's own and over the
+    # bundled snapshot: they know the ids the snapshot does not (Groq's,
+    # Mistral's, xAI's, Cloudflare's), and the console shows exactly these
+    # beside each model, so what a person saw when choosing is what the Run
+    # is costed at. The account's Prices page still overrides everything.
+    table = DEFAULT_PRICES.with_overrides(catalogue_prices())
     if not state.model_prices:
-        return DEFAULT_PRICES
-    return DEFAULT_PRICES.with_overrides(
+        return table
+    return table.with_overrides(
         {
             entry.model: ModelPrice(
                 input=entry.input,

@@ -68,10 +68,17 @@ and breaking changes are expected until the design survives a second consumer.
   Capabilities became tables with actions in the row.
 
 - **The playground is useful before anything is configured.** Creating an
-  account fills it from a catalogue (`app/catalogue.py`): eleven model
-  providers with their address, a default model and a "Get a key" link (no
+  account fills it from a catalogue (`app/catalogue.py`): thirteen model
+  providers (OpenAI, Anthropic, Azure OpenAI, AWS Bedrock, Cloudflare Workers
+  AI, Google Gemini, Groq, Mistral, OpenRouter, Together AI, xAI, DeepSeek and
+  a local Ollama) with their address, a "Get a key" link and the models each
+  one serves today with its list price per million tokens beside every id,
+  in the provider dialog and in every model picker on the agent form (no
   key is ever seeded; the first key saved takes over as the provider in
-  use), twenty-five vendor-run remote MCP connectors (GitHub, Notion,
+  use). Those list prices also cost a Run on a model the library's bundled
+  snapshot does not know, under the account's own Prices page. `GET
+  /api/models` now carries a price per model and falls back to the
+  catalogue's list when the provider will not list its own, twenty-five vendor-run remote MCP connectors (GitHub, Notion,
   Atlassian, Linear, Slack, Sentry, Stripe, Vercel, Cloudflare, Supabase,
   PostHog, ...) each connected by one click and a sign-in or a token, one
   specialist agent per connector, a **Psych** agent that holds every

@@ -302,6 +302,7 @@ function CompactionGrid({ form }: { form: AgentFormState }) {
             value={compaction.model}
             onChange={(model) => setCompaction({ ...compaction, model })}
             models={form.models}
+          prices={form.modelPrices}
             detail={null}
             placeholder="The agent's own model"
             invalid={fieldErrors["compaction.model"] !== undefined}

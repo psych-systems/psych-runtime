@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { ModelField } from "@/components/agents/model-field";
+import type { ModelQuote } from "@/lib/types";
 import {
   COMPACTION_BOUNDS,
   DEFAULT_COMPACTION,
@@ -21,6 +22,7 @@ interface CompactionFieldsProps {
   /** What the provider said it serves, for the summariser's own model. Empty
    *  is normal rather than an error, so the control still takes free text. */
   models: string[];
+  prices?: Record<string, ModelQuote>;
 }
 
 /**
@@ -30,7 +32,13 @@ interface CompactionFieldsProps {
  * and a form that asks four questions about a feature nobody enabled is four
  * questions of noise on every agent anybody publishes.
  */
-export function CompactionFields({ value, onChange, fieldErrors, models }: CompactionFieldsProps) {
+export function CompactionFields({
+  value,
+  onChange,
+  fieldErrors,
+  models,
+  prices,
+}: CompactionFieldsProps) {
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -160,6 +168,7 @@ export function CompactionFields({ value, onChange, fieldErrors, models }: Compa
             value={value.model}
             onChange={(next) => onChange({ ...value, model: next })}
             models={models}
+            prices={prices}
             detail={null}
             placeholder="The agent's own model"
             invalid={fieldErrors["compaction.model"] !== undefined}

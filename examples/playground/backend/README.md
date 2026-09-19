@@ -187,13 +187,22 @@ server where nobody is at a keyboard.
 Creating an account fills its workspace from `app/catalogue.py`, so there is
 something to press before anything has been read:
 
-- **Providers.** Eleven OpenAI-compatible backends -- OpenAI, Anthropic,
-  Cloudflare Workers AI, Gemini, Groq, Mistral, OpenRouter, Together, xAI,
-  DeepSeek and a local Ollama -- each with a base URL, a suggested default
-  model and a link to where a key comes from. No key is ever seeded: that is
-  the one thing only the person can supply. Cloudflare's base URL carries an
-  `{account_id}` placeholder, filled from `PSYCH_PLAYGROUND_CF_ACCOUNT_ID`
-  when it is set and left visible when it is not.
+- **Providers.** Thirteen OpenAI-compatible backends -- OpenAI, Anthropic,
+  Azure OpenAI, AWS Bedrock, Cloudflare Workers AI, Gemini, Groq, Mistral,
+  OpenRouter, Together, xAI, DeepSeek and a local Ollama -- each with a base
+  URL, a link to where a key comes from, and the models it serves today with
+  the vendor's list price per million tokens (`CatalogueModel`; the date the
+  prices were read is `PRICES_CHECKED`). The console shows the price beside
+  every model id it offers, `GET /api/models` carries one per model, and a
+  Run on a model the library's bundled snapshot does not know is costed at
+  the catalogue's rate unless the account's Prices page says otherwise. No
+  key is ever seeded: that is the one thing only the person can supply.
+  Three base URLs carry a placeholder the key dialog asks for: Cloudflare's
+  `{account_id}` (also filled from `PSYCH_PLAYGROUND_CF_ACCOUNT_ID` when it
+  is set), Azure's `{resource}` and Bedrock's `{region}`. On Azure the model
+  field names your deployment; on Bedrock the Chat Completions endpoint
+  serves the OpenAI open-weight models only, because Claude and Nova answer
+  on Bedrock's own APIs.
 - **Connectors.** Twenty-five remote MCP servers, every one of them run by
   the vendor whose data it exposes -- GitHub, Notion, Atlassian, Linear,
   Slack, Sentry, Stripe, Vercel, Cloudflare, Supabase, Neon, Netlify, Prisma,

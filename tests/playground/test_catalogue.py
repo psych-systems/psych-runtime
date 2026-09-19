@@ -15,6 +15,7 @@ settings (by id) than for the index (by `catalogue_id`).
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -22,6 +23,7 @@ import pytest
 from app import catalogue
 from app.catalogue import PSYCH_AGENT_ID
 
+from psych_runtime.model.pricing import DEFAULT_PRICES
 from tests.playground.conftest import (
     StubProvider,
     Turn,
@@ -72,9 +74,18 @@ class TestTheCatalogueItself:
         for connector in catalogue.CONNECTORS:
             assert set(connector.workflows) <= known, connector.name
 
-    def test_cloudflare_is_the_only_provider_needing_substitution(self) -> None:
-        needing = [p.id for p in catalogue.PROVIDERS if p.requires]
-        assert needing == ["cloudflare"]
+    def test_three_providers_need_a_value_in_their_address(self) -> None:
+        needing = {p.id: p.requires for p in catalogue.PROVIDERS if p.requires}
+        assert needing == {
+            "azure_openai": ("resource",),
+            "bedrock": ("region",),
+            "cloudflare": ("account_id",),
+        }
+        # Every placeholder named is really in the address, so the key dialog
+        # asking for it fills something rather than nothing.
+        for provider in catalogue.PROVIDERS:
+            for name in provider.requires:
+                assert "{" + name + "}" in provider.base_url, provider.id
         cloudflare = catalogue.provider_by_id("cloudflare")
         assert cloudflare is not None
         assert "{account_id}" in cloudflare.base_url
@@ -345,6 +356,83 @@ class TestTheStatusOnEachEntry:
         assert switched.status_code == 200, switched.text
         assert (await _catalogue(seeded_client))["provider_ready"] is True
 
+
+class TestModelsAndPrices:
+    """Every model a provider serves is offered with its list price, and the
+    price shown is the price a Run is costed at."""
+
+    async def test_every_provider_lists_its_models_with_prices(
+        self, seeded_client: httpx.AsyncClient
+    ) -> None:
+        body = await _catalogue(seeded_client)
+        for provider in body["providers"]:
+            assert provider["models"], provider["id"]
+            assert [m["id"] for m in provider["models"]] == provider["suggested_models"]
+            assert provider["default_model"] in provider["suggested_models"], provider["id"]
+            if provider["id"] in ("ollama", "azure_openai"):
+                # Local, or priced per region and deployment: no flat rate.
+                assert all(m["input"] is None for m in provider["models"])
+            else:
+                priced = [m for m in provider["models"] if m["input"] is not None]
+                assert priced, provider["id"]
+                for m in priced:
+                    assert Decimal(m["input"]) >= 0
+                    assert Decimal(m["output"]) > 0
+
+    async def test_models_route_falls_back_to_the_catalogue_with_prices(
+        self, seeded_client: httpx.AsyncClient
+    ) -> None:
+        # Anthropic is seeded without a key and nothing answers at its URL
+        # from the test suite, so the live listing fails; the catalogue's
+        # list stands in, each id with the rate the console will show.
+        switched = await seeded_client.post("/api/settings/providers/anthropic/activate")
+        assert switched.status_code == 200, switched.text
+        response = await seeded_client.get("/api/models")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        anthropic = catalogue.provider_by_id("anthropic")
+        assert anthropic is not None
+        assert body["models"] == list(anthropic.suggested_models)
+        assert "catalogue" in body["detail"]
+        quote = body["prices"]["claude-sonnet-5"]
+        assert Decimal(quote["input"]) == Decimal("2")
+        assert Decimal(quote["output"]) == Decimal("10")
+
+    async def test_the_account_rate_wins_over_the_catalogue(
+        self, seeded_client: httpx.AsyncClient
+    ) -> None:
+        switched = await seeded_client.post("/api/settings/providers/xai/activate")
+        assert switched.status_code == 200, switched.text
+        saved = await seeded_client.put(
+            "/api/settings/prices",
+            json={"prices": [{"model": "grok-4.6", "input": "1", "output": "1"}]},
+        )
+        assert saved.status_code == 200, saved.text
+        body = (await seeded_client.get("/api/models")).json()
+        assert Decimal(body["prices"]["grok-4.6"]["input"]) == Decimal("1")
+        # A model the person did not price keeps the catalogue's rate.
+        assert Decimal(body["prices"]["grok-4.5"]["input"]) == Decimal("2")
+
+    def test_runs_are_costed_at_the_catalogue_rate(self) -> None:
+        # The bundled snapshot knows nothing of xAI's native ids; the catalogue
+        # does, and sits under the account's own entries.
+        from app.runtime_router import prices_for
+        from app.settings_store import ModelPriceEntry, PlaygroundState
+
+        assert DEFAULT_PRICES.price_for("grok-4.6") is None
+        table = prices_for(PlaygroundState())
+        rate = table.price_for("grok-4.6")
+        assert rate is not None
+        assert rate.input == Decimal("2")
+        assert rate.output == Decimal("6")
+
+        own = PlaygroundState(
+            model_prices=[ModelPriceEntry(model="grok-4.6", input=Decimal(1), output=Decimal(1))]
+        )
+        overridden = prices_for(own).price_for("grok-4.6")
+        assert overridden is not None
+        assert overridden.input == Decimal(1)
+
     async def test_it_needs_an_account(self, anonymous: httpx.AsyncClient) -> None:
         assert (await anonymous.get("/api/catalogue")).status_code == 401
         assert (await anonymous.post("/api/catalogue/seed", json={})).status_code == 401
@@ -490,7 +578,7 @@ class TestTheDockerComposeFirstRun:
         active = [p for p in body["providers"] if p["active"]]
         assert len(active) == 1, active
         # And the console reports it, rather than "no provider configured"
-        # with eleven of them sitting in the list.
+        # with thirteen of them sitting in the list.
         assert (await seeded_first_boot.get("/api/config")).json()["provider_label"]
         # Honestly, though: seeding writes no key, so nothing reads configured.
         assert not any(p["configured"] for p in body["providers"] if not p["local"])

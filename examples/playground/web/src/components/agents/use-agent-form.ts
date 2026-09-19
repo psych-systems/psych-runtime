@@ -31,6 +31,7 @@ import { selectorLabel, type ToolClass } from "@/components/agents/policy";
 import type { AnswerStyleChoice } from "@/components/agents/answer-style";
 import type {
   AgentSummary,
+  ModelQuote,
   ConfigResponse,
   CreateAgentRequest,
   CreateAgentResponse,
@@ -136,6 +137,7 @@ export function useAgentForm() {
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [models, setModels] = useState<string[]>([]);
+  const [modelPrices, setModelPrices] = useState<Record<string, ModelQuote>>({});
   const [modelsDetail, setModelsDetail] = useState<string | null>(null);
   const [allAgents, setAllAgents] = useState<AgentSummary[]>([]);
 
@@ -157,6 +159,7 @@ export function useAgentForm() {
     void listModels()
       .then((response) => {
         setModels(response.models);
+        setModelPrices(response.prices ?? {});
         setModelsDetail(response.detail);
       })
       .catch(() => undefined);
@@ -495,6 +498,7 @@ export function useAgentForm() {
     toolsError,
     config,
     models,
+    modelPrices,
     modelsDetail,
     allAgents,
 

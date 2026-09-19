@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping, Sequence
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -98,6 +99,7 @@ from app.schemas import (
     ValuePathIn,
     ValueRefIn,
 )
+from psych_runtime.model.pricing import ModelPrice
 
 __all__ = [
     "AGENTS",
@@ -108,9 +110,11 @@ __all__ = [
     "WORKFLOWS",
     "CatalogueAgent",
     "CatalogueConnector",
+    "CatalogueModel",
     "CatalogueProvider",
     "CatalogueWorkflow",
     "ConnectorAuth",
+    "catalogue_prices",
     "connector_by_name",
     "provider_by_id",
     "resolve_base_url",
@@ -128,6 +132,48 @@ with a ``{account_id}`` placeholder the person has to notice and fix.
 PSYCH_AGENT_ID = "psych"
 """The catalogue id of the orchestrator. Named here rather than spelled into
 three modules, because the frontend pins it and the seeder publishes it last."""
+
+
+class CatalogueModel(BaseModel):
+    """One model a provider serves, with its published list price.
+
+    Rates are USD per million tokens at the standard tier, read from the
+    vendor's own pricing page on the date in ``PRICES_CHECKED``. ``None`` means
+    the vendor publishes no per-token price (a model that runs on your own
+    machine, or one billed per request), and the console then shows nothing
+    rather than a zero: DESIGN.md §13.2, an unknown cost is unknown.
+
+    These are the prices the console shows beside a model id before anybody
+    has chosen it, and the rates a Run is costed at when the account has not
+    entered its own (see ``catalogue_prices``). They are a snapshot, and
+    vendors change them; the account's Prices page overrides them.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    input: Decimal | None = None
+    output: Decimal | None = None
+    note: str = ""
+    """One short phrase when the id alone does not say enough: "reasoning",
+    "fastest", "open weights"."""
+
+    @property
+    def priced(self) -> bool:
+        return self.input is not None and self.output is not None
+
+
+def m(
+    model_id: str, inp: str | None = None, out: str | None = None, note: str = ""
+) -> CatalogueModel:
+    """``CatalogueModel`` from string rates, so the table below reads as prices
+    do on a pricing page and never passes through a float."""
+    return CatalogueModel(
+        id=model_id,
+        input=Decimal(inp) if inp is not None else None,
+        output=Decimal(out) if out is not None else None,
+        note=note,
+    )
 
 
 class CatalogueProvider(BaseModel):
@@ -157,20 +203,38 @@ class CatalogueProvider(BaseModel):
     default_model: str
     """A suggestion, not a promise. See the module docstring: the live
     ``GET /api/models`` listing wins over this the moment a key exists."""
-    suggested_models: tuple[str, ...] = ()
-    """A few more ids worth offering before a key makes the real list
-    reachable. Same caveat as ``default_model``."""
+    models: tuple[CatalogueModel, ...] = ()
+    """What the vendor serves today, with list prices, newest first. Offered
+    before a key makes the live list reachable, and beside the live list once
+    it is, because ``/models`` returns ids and never prices. Same caveat as
+    ``default_model``: a snapshot, and the vendor's own listing wins."""
     key_url: str
     """Where a person goes to get a key. The single most useful link on the
     page, and the one a catalogue that only listed base URLs would omit."""
     docs_url: str
     requires: tuple[str, ...] = ()
     """Names that must be substituted into ``base_url`` before it can be
-    called, as ``{name}``. Empty for every provider but Cloudflare."""
+    called, as ``{name}``: Cloudflare's account id, Azure's resource name,
+    Bedrock's region. The console asks for each one in the key dialog."""
     local: bool = False
     """Runs on the person's own machine and needs no key. Ollama only. The
     console shows it differently: there is no key to paste and no signup to
     link to, and a "get a key" button next to it would be nonsense."""
+    key_header: str = ""
+    """Set when the vendor does not read ``Authorization: Bearer``. Empty for
+    every provider that does, which is all of them today; kept as a field so
+    the fact is recorded where the URL is rather than in a comment."""
+
+    @property
+    def suggested_models(self) -> tuple[str, ...]:
+        """The model ids alone, in catalogue order."""
+        return tuple(model.id for model in self.models)
+
+    def price_for(self, model_id: str) -> CatalogueModel | None:
+        for model in self.models:
+            if model.id == model_id:
+                return model
+        return None
 
 
 class ConnectorAuth(BaseModel):
@@ -484,118 +548,301 @@ def psych_agent_request(
 # Providers
 # ---------------------------------------------------------------------------
 
+PRICES_CHECKED = "2026-09-19"
+"""The date every rate below was read from its vendor's pricing page. Shown
+nowhere yet; kept so the next person refreshing the table knows how stale it
+is without reading git history."""
+
 PROVIDERS: tuple[CatalogueProvider, ...] = (
     CatalogueProvider(
         id="openai",
         label="OpenAI",
         base_url="https://api.openai.com/v1",
-        default_model="gpt-4o-mini",
-        suggested_models=("gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"),
+        default_model="gpt-5.6-terra",
+        models=(
+            m("gpt-6-astra", "10", "50", "most capable"),
+            m("gpt-5.6-sol", "4", "20"),
+            m("gpt-5.6-terra", "2", "12", "capable, mid-price"),
+            m("gpt-5.6-luna", "0.20", "1.20", "fast and cheap"),
+            m("gpt-5.5", "5", "30"),
+            m("gpt-5.5-pro", "30", "180"),
+            m("gpt-5.4", "2.50", "15"),
+            m("gpt-5.4-mini", "0.75", "4.50"),
+            m("gpt-5.4-nano", "0.20", "1.25"),
+            m("gpt-5.4-pro", "30", "180"),
+            m("gpt-5.2", "1.75", "14"),
+            m("gpt-5.2-pro", "21", "168"),
+            m("gpt-5.1", "1.25", "10"),
+            m("gpt-5", "1.25", "10"),
+            m("gpt-5-mini", "0.25", "2"),
+            m("gpt-5-nano", "0.05", "0.40"),
+            m("gpt-5-pro", "15", "120"),
+            m("gpt-4.1", "2", "8"),
+            m("gpt-4.1-mini", "0.40", "1.60"),
+            m("gpt-4.1-nano", "0.10", "0.40"),
+            m("gpt-4o", "2.50", "10"),
+            m("gpt-4o-mini", "0.15", "0.60"),
+            m("o3", "2", "8", "reasoning"),
+            m("o4-mini", "1.10", "4.40", "reasoning"),
+        ),
         key_url="https://platform.openai.com/api-keys",
-        docs_url="https://platform.openai.com/docs/api-reference/chat",
+        docs_url="https://developers.openai.com/api/docs/pricing",
     ),
     CatalogueProvider(
         id="anthropic",
         label="Anthropic",
-        # Anthropic's own OpenAI-SDK compatibility endpoint, not the native
-        # Messages API: the playground speaks one wire format to every
-        # provider, and this is the one Anthropic documents for exactly that.
         base_url="https://api.anthropic.com/v1",
-        default_model="claude-sonnet-4-5",
-        suggested_models=("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"),
+        default_model="claude-sonnet-5",
+        models=(
+            m("claude-fable-5-1", "10", "50", "most capable"),
+            m("claude-opus-5", "5", "25"),
+            m("claude-sonnet-5", "2", "10", "capable, mid-price"),
+            m("claude-haiku-4-5", "1", "5", "fastest"),
+            m("claude-fable-5", "10", "50"),
+            m("claude-opus-4-8", "5", "25"),
+            m("claude-opus-4-7", "5", "25"),
+            m("claude-opus-4-6", "5", "25"),
+            m("claude-sonnet-4-6", "3", "15"),
+            m("claude-opus-4-5", "5", "25"),
+            m("claude-sonnet-4-5", "3", "15"),
+        ),
         key_url="https://console.anthropic.com/settings/keys",
-        docs_url="https://docs.anthropic.com/en/api/openai-sdk",
+        docs_url="https://platform.claude.com/docs/en/about-claude/pricing",
+    ),
+    CatalogueProvider(
+        id="azure_openai",
+        label="Azure OpenAI",
+        base_url="https://{resource}.openai.azure.com/openai/v1",
+        # The model field names your *deployment*, not an OpenAI model id.
+        # Microsoft's own samples deploy under the model's name, which is why
+        # the ids below are OpenAI's; rename them if your deployments differ.
+        default_model="gpt-5.6-terra",
+        models=(
+            m("gpt-6-astra", note="your deployment name"),
+            m("gpt-5.6-sol", note="your deployment name"),
+            m("gpt-5.6-terra", note="your deployment name"),
+            m("gpt-5.6-luna", note="your deployment name"),
+            m("gpt-5.4", note="your deployment name"),
+            m("gpt-5.4-mini", note="your deployment name"),
+            m("gpt-4.1", note="your deployment name"),
+            m("gpt-4o", note="your deployment name"),
+            m("gpt-4o-mini", note="your deployment name"),
+        ),
+        key_url="https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/OpenAI",
+        docs_url="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/supported-languages",
+        requires=("resource",),
+    ),
+    CatalogueProvider(
+        id="bedrock",
+        label="AWS Bedrock",
+        base_url="https://bedrock-runtime.{region}.amazonaws.com/openai/v1",
+        # Bedrock's Chat Completions endpoint serves the OpenAI open-weight
+        # models. Claude, Nova and the rest answer only on Bedrock's own
+        # Converse and Messages APIs, which are not OpenAI-compatible, so
+        # they are not listed here. The key is a Bedrock API key, sent as a
+        # bearer token. Prices are us-east-1 on-demand.
+        default_model="openai.gpt-oss-120b-1:0",
+        models=(
+            m("openai.gpt-oss-120b-1:0", "0.15", "0.60", "open weights"),
+            m("openai.gpt-oss-20b-1:0", "0.07", "0.20", "open weights, smaller"),
+        ),
+        key_url="https://console.aws.amazon.com/bedrock/home#/api-keys",
+        docs_url="https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html",
+        requires=("region",),
     ),
     CatalogueProvider(
         id="cloudflare",
         label="Cloudflare Workers AI",
         base_url="https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
-        default_model="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-        suggested_models=(
-            "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-            "@cf/meta/llama-3.1-8b-instruct",
-            "@cf/qwen/qwen2.5-coder-32b-instruct",
+        default_model="@cf/openai/gpt-oss-120b",
+        models=(
+            m("@cf/openai/gpt-oss-120b", "0.35", "0.75", "open weights"),
+            m("@cf/openai/gpt-oss-20b", "0.20", "0.30"),
+            m("@cf/zai-org/glm-5.3", "1.40", "4.40"),
+            m("@cf/zai-org/glm-5.3-flash", "0.15", "0.50"),
+            m("@cf/zai-org/glm-5.2", "1.40", "4.40"),
+            m("@cf/zai-org/glm-4.7-flash", "0.06", "0.40"),
+            m("@cf/moonshotai/kimi-k2.7-code", "0.95", "4"),
+            m("@cf/moonshotai/kimi-k2.6", "0.95", "4"),
+            m("@cf/moonshotai/kimi-k2.5", "0.60", "3"),
+            m("@cf/deepseek-ai/deepseek-v4-pro-0813", "1.32", "3.96"),
+            m("@cf/deepseek-ai/deepseek-v4-flash-0731", "0.44", "1.32"),
+            m("@cf/nvidia/nemotron-3-120b-a12b", "0.50", "1.50"),
+            m("@cf/qwen/qwen3.8-27b", "0.45", "3.20"),
+            m("@cf/qwen/qwen3-30b-a3b-fp8", "0.051", "0.335"),
+            m("@cf/google/gemma-4-26b-a4b-it", "0.10", "0.30"),
+            m("@cf/google/gemma-3-12b-it", "0.345", "0.556"),
+            m("@cf/meta/llama-4-scout-17b-16e-instruct", "0.27", "0.85"),
+            m("@cf/meta/llama-3.3-70b-instruct-fp8-fast", "0.293", "2.253"),
+            m("@cf/meta/llama-3.1-8b-instruct-fp8-fast", "0.045", "0.384"),
+            m("@cf/mistralai/mistral-small-3.1-24b-instruct", "0.351", "0.555"),
+            m("@cf/ibm-granite/granite-4.0-h-micro", "0.017", "0.112"),
         ),
         key_url="https://dash.cloudflare.com/profile/api-tokens",
-        docs_url="https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/",
+        docs_url="https://developers.cloudflare.com/workers-ai/platform/pricing/",
         requires=("account_id",),
     ),
     CatalogueProvider(
         id="gemini",
         label="Google Gemini",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-        default_model="gemini-2.5-flash",
-        suggested_models=("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"),
+        default_model="gemini-3.8-flash",
+        models=(
+            m("gemini-3.8-flash", "0.75", "3.75", "capable, mid-price"),
+            m("gemini-3.7-flash", "0.75", "3.75"),
+            m("gemini-3.6-flash", "0.75", "3.75"),
+            m("gemini-3.5-flash", "1.50", "9"),
+            m("gemini-3.5-flash-lite", "0.30", "2.50", "fast and cheap"),
+            m("gemini-3.1-pro-preview", "2", "12", "up to 200k context; more above"),
+            m("gemini-3.1-flash-lite", "0.25", "1.50"),
+            m("gemini-3-flash-preview", "0.50", "3"),
+            m("gemini-2.5-pro", "1.25", "10", "up to 200k context; more above"),
+            m("gemini-2.5-flash", "0.30", "2.50"),
+            m("gemini-2.5-flash-lite", "0.10", "0.40"),
+        ),
         key_url="https://aistudio.google.com/apikey",
-        docs_url="https://ai.google.dev/gemini-api/docs/openai",
+        docs_url="https://ai.google.dev/gemini-api/docs/pricing",
     ),
     CatalogueProvider(
         id="groq",
         label="Groq",
         base_url="https://api.groq.com/openai/v1",
-        default_model="llama-3.3-70b-versatile",
-        suggested_models=("llama-3.3-70b-versatile", "llama-3.1-8b-instant"),
+        default_model="openai/gpt-oss-120b",
+        models=(
+            m("openai/gpt-oss-120b", "0.15", "0.60", "open weights"),
+            m("openai/gpt-oss-20b", "0.075", "0.30"),
+            m("llama-3.3-70b-versatile", note="enterprise pricing"),
+            m("llama-3.1-8b-instant", note="enterprise pricing"),
+            m("groq/compound", note="agentic system, priced per request"),
+            m("groq/compound-mini", note="agentic system, priced per request"),
+        ),
         key_url="https://console.groq.com/keys",
-        docs_url="https://console.groq.com/docs/openai",
+        docs_url="https://console.groq.com/docs/models",
     ),
     CatalogueProvider(
         id="mistral",
         label="Mistral",
         base_url="https://api.mistral.ai/v1",
-        default_model="mistral-large-latest",
-        suggested_models=("mistral-large-latest", "mistral-small-latest", "codestral-latest"),
+        default_model="mistral-large-2512",
+        models=(
+            m("mistral-large-2512", "0.50", "1.50", "Mistral Large 3"),
+            m("mistral-small-2603", "0.15", "0.60", "Mistral Small 4"),
+            m("ministral-3-14b-2512", "0.20", "0.20"),
+            m("ministral-3-8b-2512", "0.15", "0.15"),
+            m("ministral-3-3b-2512", "0.10", "0.10"),
+            m("codestral-latest", "0.30", "0.90", "code"),
+        ),
         key_url="https://console.mistral.ai/api-keys",
-        docs_url="https://docs.mistral.ai/api/",
+        docs_url="https://mistral.ai/pricing/api",
     ),
     CatalogueProvider(
         id="openrouter",
         label="OpenRouter",
         base_url="https://openrouter.ai/api/v1",
-        default_model="openai/gpt-4o-mini",
-        suggested_models=(
-            "openai/gpt-4o-mini",
-            "anthropic/claude-sonnet-4.5",
-            "google/gemini-2.5-flash",
+        default_model="anthropic/claude-sonnet-5",
+        models=(
+            m("anthropic/claude-fable-5.1", "10", "50"),
+            m("anthropic/claude-opus-5", "5", "25"),
+            m("anthropic/claude-sonnet-5", "2", "10", "capable, mid-price"),
+            m("anthropic/claude-haiku-4.5", "1", "5"),
+            m("openai/gpt-6-astra", "10", "50"),
+            m("openai/gpt-5.6-sol", "2", "10"),
+            m("openai/gpt-5.6-terra", "2", "12"),
+            m("openai/gpt-5.6-luna", "0.20", "1.20"),
+            m("openai/gpt-oss-120b", "0.15", "0.60"),
+            m("google/gemini-3.8-flash", "0.75", "3.75"),
+            m("google/gemini-3.1-pro-preview", "2", "12"),
+            m("x-ai/grok-4.6", "2", "6"),
+            m("qwen/qwen3.8-max-0902", "2", "6"),
+            m("z-ai/glm-5.3", "0.91", "2.86"),
+            m("z-ai/glm-5.3-flash", "0.09", "0.30"),
+            m("moonshotai/kimi-k3", "1.70", "8.50"),
+            m("deepseek/deepseek-v4.1-flash", "0.15", "0.60"),
+            m("minimax/minimax-m3", "0.30", "1.20"),
+            m("meta/muse-spark-1.3", "1.25", "4.25"),
         ),
         key_url="https://openrouter.ai/keys",
-        docs_url="https://openrouter.ai/docs/api-reference/overview",
+        docs_url="https://openrouter.ai/models",
     ),
     CatalogueProvider(
         id="together",
         label="Together AI",
         base_url="https://api.together.xyz/v1",
-        default_model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        suggested_models=(
-            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            "Qwen/Qwen2.5-72B-Instruct-Turbo",
+        default_model="zai-org/GLM-5.3",
+        models=(
+            m("zai-org/GLM-5.3", "1.40", "4.40", "capable, mid-price"),
+            m("zai-org/GLM-5.3-Flash", "0.15", "0.50"),
+            m("zai-org/GLM-5.2", "1.40", "4.40"),
+            m("moonshotai/Kimi-K3", "3", "15"),
+            m("Qwen/Qwen3.8-2.4T-A95B", "2", "6"),
+            m("Qwen/Qwen3.8-Flash", "0.15", "0.47"),
+            m("Qwen/Qwen3.7-Max", "2.50", "7.50"),
+            m("Qwen/Qwen3.7-Plus", "0.32", "1.28"),
+            m("Qwen/Qwen3.6-Plus", "0.50", "3"),
+            m("Qwen/Qwen3.5-9B", "0.17", "0.25"),
+            m("deepseek-ai/DeepSeek-V4-Pro-0813", "1.32", "3.96"),
+            m("deepseek-ai/DeepSeek-V4.1-Flash", "0.30", "1.20"),
+            m("deepseek-ai/DeepSeek-V4-Flash-0731", "0.14", "0.28"),
+            m("MiniMaxAI/MiniMax-M3", "0.30", "1.20"),
+            m("openai/gpt-oss-120b", "0.15", "0.60"),
+            m("meta-models/Muse-Glimmer-30B", "0.35", "1.50"),
+            m("thinkingmachines/Inkling", "1", "4.05"),
+            m("meta-llama/Llama-3.3-70B-Instruct-Turbo", "1.04", "1.04"),
         ),
         key_url="https://api.together.ai/settings/api-keys",
-        docs_url="https://docs.together.ai/docs/openai-api-compatibility",
+        docs_url="https://www.together.ai/pricing",
     ),
     CatalogueProvider(
         id="xai",
         label="xAI",
         base_url="https://api.x.ai/v1",
-        default_model="grok-4",
-        suggested_models=("grok-4", "grok-3", "grok-3-mini"),
+        default_model="grok-4.6",
+        models=(
+            m("grok-4.6", "2", "6", "up to 200k context; more above"),
+            m("grok-4.5", "2", "6"),
+            m("grok-4.3", "1.25", "2.50"),
+            m("grok-4.20-0309-reasoning", "1.25", "2.50", "reasoning"),
+            m("grok-4.20-0309-non-reasoning", "1.25", "2.50"),
+            m("grok-4.20-multi-agent-0309", "1.25", "2.50"),
+            m("grok-build-0.1", "1", "2", "code"),
+        ),
         key_url="https://console.x.ai/",
-        docs_url="https://docs.x.ai/docs/api-reference",
+        docs_url="https://docs.x.ai/docs/models",
     ),
     CatalogueProvider(
         id="deepseek",
         label="DeepSeek",
         base_url="https://api.deepseek.com/v1",
-        default_model="deepseek-chat",
-        suggested_models=("deepseek-chat", "deepseek-reasoner"),
+        default_model="deepseek-v4-pro",
+        models=(
+            m("deepseek-v4-pro", "1.32", "3.96", "peak rate; half off-peak"),
+            m("deepseek-flash", "0.30", "1.20", "peak rate; half off-peak"),
+        ),
         key_url="https://platform.deepseek.com/api_keys",
-        docs_url="https://api-docs.deepseek.com/",
+        docs_url="https://api-docs.deepseek.com/quick_start/pricing",
     ),
     CatalogueProvider(
         id="ollama",
         label="Ollama (local)",
         base_url="http://localhost:11434/v1",
-        default_model="llama3.2",
-        suggested_models=("llama3.2", "qwen2.5", "mistral"),
+        default_model="qwen3.6",
+        models=(
+            m("qwen3.6", note="most pulled"),
+            m("qwen3.8"),
+            m("glm-5.3"),
+            m("glm-5.3-flash"),
+            m("deepseek-v4.1-flash"),
+            m("deepseek-v4-flash"),
+            m("minimax-m3"),
+            m("nemotron3"),
+            m("kimi-k2.7-code", note="code"),
+            m("mistral-medium-3.5"),
+            m("granite4.2"),
+            m("gemma3"),
+            m("llama3.2"),
+            m("llama3.1"),
+            m("qwen3"),
+        ),
         key_url="https://ollama.com/download",
         docs_url="https://docs.ollama.com/openai",
         local=True,
@@ -607,14 +854,43 @@ def provider_by_id(provider_id: str) -> CatalogueProvider | None:
     return next((p for p in PROVIDERS if p.id == provider_id), None)
 
 
+def catalogue_prices() -> dict[str, ModelPrice]:
+    """Every priced model in the catalogue, keyed by id, as the runtime's
+    ``ModelPrice``.
+
+    Sits between the account's own rates and the library's bundled snapshot in
+    ``prices_for``: the snapshot is broad and dated, and knows nothing of the
+    ids Groq, Mistral, xAI or Cloudflare use natively, so a Run on one of
+    those recorded an unknown cost. Ids are vendor-specific (``gpt-4o-mini``
+    and ``openai/gpt-4o-mini`` are different strings), so a later provider in
+    the table never overwrites an earlier one by accident; where two vendors
+    really share an id -- Azure deployments named after OpenAI models -- the
+    prices agree, and the account's own entry wins over both regardless.
+    """
+    prices: dict[str, ModelPrice] = {}
+    for provider in PROVIDERS:
+        for model in provider.models:
+            if model.input is None or model.output is None or model.id in prices:
+                continue
+            prices[model.id] = ModelPrice(
+                input=model.input,
+                output=model.output,
+                cache_read=Decimal(0),
+                cache_write=Decimal(0),
+            )
+    return prices
+
+
 def resolve_base_url(provider: CatalogueProvider, env: Mapping[str, str] | None = None) -> str:
     """``provider.base_url`` with whatever placeholders the environment can fill.
 
-    Only Cloudflare has one today. Substituting it here means an operator who
-    set ``PSYCH_PLAYGROUND_CF_ACCOUNT_ID`` gets a provider that works as soon
-    as a key is pasted, while everybody else gets the literal ``{account_id}``
-    placeholder -- which the settings page shows, and which fails loudly rather
-    than quietly calling the wrong URL.
+    Only Cloudflare's account id is read from the environment. Substituting it
+    here means an operator who set ``PSYCH_PLAYGROUND_CF_ACCOUNT_ID`` gets a
+    provider that works as soon as a key is pasted, while everybody else gets
+    the literal ``{account_id}`` placeholder -- which the settings page shows
+    and asks for, and which fails loudly rather than quietly calling the wrong
+    URL. Azure's ``{resource}`` and Bedrock's ``{region}`` are always asked
+    for in the console: neither has a value an image could sensibly ship.
     """
     source = os.environ if env is None else env
     if "account_id" in provider.requires:

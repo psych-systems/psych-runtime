@@ -44,6 +44,25 @@ function inlineScriptHashes(html) {
   return hashes;
 }
 
+/**
+ * Next.js streams a page's RSC payload as a run of adjacent
+ * `<script>self.__next_f.push(...)</script>` tags, and a long reference page
+ * has thirty of them: thirty hashes, and a header past Cloudflare's limit on
+ * its own. Pushing the same chunks, in the same order, from one script is
+ * the same program, so the run is folded into one tag and one hash. Only
+ * runs are touched; the bootstrap tag that creates `self.__next_f` and every
+ * other inline script keep their own hash.
+ */
+function mergeFlightScripts(html) {
+  return html.replace(
+    /(?:<script>self\.__next_f\.push\([\s\S]*?\)<\/script>\s*){2,}/g,
+    (run) => {
+      const bodies = [...run.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+      return `<script>${bodies.join(";")}</script>`;
+    },
+  );
+}
+
 function patternFor(route) {
   const match = route.match(
     /^\/docs\/(next|v\d+\.\d+)\/(changelog|concepts|design|development|get-started|guides|reference)(?:\/(.+))?$/,
@@ -69,6 +88,7 @@ const grouped = new Map();
 for (const file of files) {
   let html = await readFile(file, "utf8");
   html = html.replace(/\s*<meta http-equiv="Content-Security-Policy"[^>]*>/gi, "");
+  html = mergeFlightScripts(html);
   await writeFile(file, html, "utf8");
   const pattern = patternFor(routeFor(file));
   const hashes = grouped.get(pattern) ?? new Set();

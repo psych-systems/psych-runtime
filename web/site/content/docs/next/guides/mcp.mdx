@@ -139,6 +139,12 @@ Defaulting `optional` to `True` would produce an agent that confidently tells a
 customer it cannot issue refunds today. Being wrong loudly beats being wrong
 quietly, so the default is the strict one.
 
+`McpServerUnreachable.reason` is always a sentence worth showing: a transport
+error with no text of its own (an `asyncio.TimeoutError`, a bare `OSError`)
+reads "the connection timed out" or names the exception type, and the message
+carries no trailing colon when there is nothing to put after it. A console can
+put `str(error)` in the row of the connection that failed as it is.
+
 ## A catalogue too large to accept
 
 A Streamable HTTP server writes each response as one server-sent event, and an

@@ -57,16 +57,13 @@ _INSTRUCTIONS = (
 )
 
 _SUCCESS = (
-    "prices = {}\n"
-    "for order in ('A-100', 'B-200'):\n"
-    "    status = await lookup_order(order_id=order)\n"
-    "    prices[order] = status['status']\n"
-    "rows = [f'{order},{status}' for order, status in prices.items()]\n"
+    "stamp = await current_time()\n"
+    "orders = {'A-100': 250, 'B-200': 400}\n"
+    "rows = [f'{order},{cents}' for order, cents in orders.items()]\n"
     "with open('orders.csv', 'w') as f:\n"
-    "    f.write('order,status\\n' + '\\n'.join(rows) + '\\n')\n"
-    "print(f'checked {len(prices)} orders')\n"
-    "shipped = sum(1 for s in prices.values() if s == 'shipped')\n"
-    "return {'checked': len(prices), 'shipped': shipped}\n"
+    "    f.write('order,cents\\n' + '\\n'.join(rows) + '\\n')\n"
+    "print(f'priced {len(orders)} orders on {stamp['date']}')\n"
+    "return {'priced': len(orders), 'total': sum(orders.values()), 'date': stamp['date']}\n"
 )
 
 _FAILURE = (
@@ -138,7 +135,7 @@ async def seed_code_execution_demo(
         description="A review agent whose conversations show every code-execution state.",
         instructions=_INSTRUCTIONS,
         model=psych_runtime.ModelRef(model="review-fixture"),
-        tools=(psych_runtime.CodeTool(name="lookup_order"),),
+        tools=(psych_runtime.CodeTool(name="current_time"),),
         code_execution=psych_runtime.CodeExecution(
             isolation=psych_runtime.IsolationLevel.PROCESS,
             limits=psych_runtime.CodeExecutionLimits(wall_seconds=2.0, cpu_seconds=2.0),
@@ -171,7 +168,7 @@ async def seed_code_execution_demo(
             description=spec.description,
             instructions=spec.instructions,
             model=spec.model.model,
-            tools=("lookup_order",),
+            tools=("current_time",),
             mcp_servers=(),
             limits=spec.limits.model_dump(),
             suspension=spec.suspension.model_dump(exclude={"may_ask_questions"}),

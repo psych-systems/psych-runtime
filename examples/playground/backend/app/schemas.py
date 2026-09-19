@@ -1799,3 +1799,141 @@ class ProblemResponse(_ApiModel):
 
     detail: str
     issues: list[ValidationProblem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# The out-of-the-box catalogue
+#
+# `GET /api/catalogue` answers with `app.catalogue`'s four lists, each entry
+# carrying the asking account's own status beside the catalogue's facts. One
+# response rather than four, because the console's first-run page shows all of
+# it at once and four round trips would make it flash in pieces.
+# ---------------------------------------------------------------------------
+
+
+class CatalogueProviderOut(_ApiModel):
+    """One catalogue provider, and whether this account has configured it."""
+
+    id: str
+    label: str
+    base_url: str
+    """With any ``{placeholder}`` still in it when the environment could not
+    fill it; see ``requires``."""
+    default_model: str
+    suggested_models: list[str] = Field(default_factory=list)
+    key_url: str
+    docs_url: str
+    requires: list[str] = Field(default_factory=list)
+    """Names the caller must substitute into ``base_url`` as ``{name}`` before
+    it can be called. Only Cloudflare has one."""
+    local: bool = False
+    resolved: bool = True
+    """False when ``base_url`` still carries a placeholder, so the console
+    knows to ask for it rather than offering a URL that cannot work."""
+    configured: bool = False
+    """This account has a provider with this id *and* an API key on it."""
+    seeded: bool = False
+    """This account has a provider with this id at all."""
+    active: bool = False
+    provider_id: str | None = None
+    """The account's own ``ProviderConfig.id``, which equals the catalogue id
+    for a seeded one and is ``None`` before seeding."""
+
+
+class CatalogueAuthOut(_ApiModel):
+    """How one connector authenticates. One flat model, never a union; see
+    ``app.catalogue.ConnectorAuth`` for why."""
+
+    kind: Literal["oauth", "api_key"]
+    dynamic_registration: bool = True
+    token_alternative: bool = False
+    credential_hint: str = ""
+    optional: bool = False
+
+
+class CatalogueConnectorAgentOut(_ApiModel):
+    """The specialist a connector comes with, named so the console can link
+    from a connector straight to the agent it published."""
+
+    catalogue_id: str
+    name: str
+    description: str
+
+
+class CatalogueConnectorOut(_ApiModel):
+    """One vendor-run MCP server, and this account's connection to it."""
+
+    name: str
+    """Also the seeded ``McpServerPreset.name``; a console joins on it."""
+    label: str
+    category: Literal["code", "work", "chat", "payments", "infra", "data", "design", "automation"]
+    description: str
+    url: str
+    transport: Literal["http", "sse"]
+    auth: CatalogueAuthOut
+    docs_url: str
+    read_only_default: bool = False
+    agent: CatalogueConnectorAgentOut
+    workflows: list[str] = Field(default_factory=list)
+    seeded: bool = False
+    state: Literal["not_seeded", "disconnected", "connected", "error"] = "not_seeded"
+    connected: bool = False
+    tool_count: int | None = None
+    detail: str = ""
+    """What the last connection attempt said, so a failed Connect explains
+    itself without a second request."""
+    credential: str | None = None
+    """The secret name this account's preset resolves its token through, and
+    whether that secret exists is ``credential_set``. Never a value."""
+    credential_set: bool = False
+
+
+class CatalogueAgentOut(_ApiModel):
+    """One catalogue agent, and whether this account has published it."""
+
+    catalogue_id: str
+    name: str
+    description: str
+    connector: str | None = None
+    subagents: list[str] = Field(default_factory=list)
+    seeded: bool = False
+    agent_id: str | None = None
+
+
+class CatalogueWorkflowOut(_ApiModel):
+    """One catalogue workflow, and whether this account has published it."""
+
+    catalogue_id: str
+    name: str
+    description: str
+    connectors: list[str] = Field(default_factory=list)
+    agents: list[str] = Field(default_factory=list)
+    seeded: bool = False
+    workflow_id: str | None = None
+
+
+class CatalogueResponse(_ApiModel):
+    provider_ready: bool = False
+    """The provider in use can answer: it holds a key, or it is a local one
+    that needs none. Seeding leaves a keyless provider in use, so a console
+    cannot read "something is in use" as "step one is done"; this is the one
+    bit that says so."""
+    providers: list[CatalogueProviderOut]
+    connectors: list[CatalogueConnectorOut]
+    agents: list[CatalogueAgentOut]
+    workflows: list[CatalogueWorkflowOut]
+
+
+class SeedCatalogueRequest(_ApiModel):
+    kinds: list[Literal["providers", "connectors", "agents", "workflows"]] | None = None
+    """Which halves to seed. ``None`` seeds all four. Dependency order is
+    fixed by the seeder whatever order this names them in."""
+
+
+class SeedCatalogueResponse(_ApiModel):
+    added: dict[str, list[str]]
+    """What this call added, per kind, by catalogue id. Empty everywhere on a
+    second call: that is what idempotent means here."""
+    catalogue: CatalogueResponse
+    """The whole catalogue afterwards, so a console needs no second request to
+    redraw."""

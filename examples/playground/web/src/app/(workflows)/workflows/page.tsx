@@ -6,6 +6,8 @@ import { AlertTriangleIcon, MoreHorizontalIcon, PlugIcon, PlusIcon, Trash2Icon, 
 import { toast } from "sonner";
 
 import { useWorkflows } from "@/components/workflows/use-workflows";
+import { AddFromCatalogue, CatalogueChip } from "@/components/catalogue/catalogue-bits";
+import { useCatalogue } from "@/hooks/use-catalogue";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -32,7 +34,19 @@ import type { WorkflowSummary } from "@/lib/types";
 
 export default function WorkflowsPage() {
   const { workflows, loading, error, refresh } = useWorkflows();
+  const catalogue = useCatalogue();
   const [pendingDelete, setPendingDelete] = useState<WorkflowSummary | null>(null);
+
+  const catalogueWorkflows = catalogue.catalogue?.workflows ?? [];
+  const cataloguedById = new Map(
+    catalogueWorkflows
+      .filter((entry) => entry.workflow_id !== null)
+      .map((entry) => [entry.workflow_id!, entry.catalogue_id]),
+  );
+  const missingWorkflows = catalogueWorkflows.filter((entry) => entry.workflow_id === null).length;
+  const missingAgents = (catalogue.catalogue?.agents ?? []).filter(
+    (entry) => entry.agent_id === null,
+  ).length;
 
   async function remove(workflow: WorkflowSummary) {
     try {
@@ -65,11 +79,23 @@ export default function WorkflowsPage() {
             </span>
           }
           actions={
-            <Button asChild>
-              <Link href="/workflows/new">
-                <PlusIcon /> New workflow
-              </Link>
-            </Button>
+            <span className="flex flex-wrap items-center gap-2">
+              <AddFromCatalogue
+                kinds={["agents", "workflows"]}
+                missing={missingAgents + missingWorkflows}
+                onSeed={async (kinds) => {
+                  await catalogue.seed(kinds);
+                  // The grid reads the published list, not the catalogue, so
+                  // seeding without this adds things nothing shows.
+                  await refresh();
+                }}
+              />
+              <Button asChild>
+                <Link href="/workflows/new">
+                  <PlusIcon /> New workflow
+                </Link>
+              </Button>
+            </span>
           }
         />
 
@@ -117,12 +143,17 @@ export default function WorkflowsPage() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 flex-col gap-1">
-                    <Link
-                      href={`/workflows/${encodeURIComponent(workflow.workflow_id)}`}
-                      className="truncate text-base font-semibold hover:underline"
-                    >
-                      {workflow.name}
-                    </Link>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <Link
+                        href={`/workflows/${encodeURIComponent(workflow.workflow_id)}`}
+                        className="truncate text-base font-semibold hover:underline"
+                      >
+                        {workflow.name}
+                      </Link>
+                      {(workflow.catalogue_id ??
+                        cataloguedById.get(workflow.workflow_id) ??
+                        null) !== null && <CatalogueChip />}
+                    </span>
                     <p className="text-caption text-muted-foreground">
                       Edited {formatDayLabel(workflow.updated_at)}. {workflow.steps.length} step
                       {workflow.steps.length === 1 ? "" : "s"}.

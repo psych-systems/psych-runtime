@@ -57,15 +57,38 @@ and breaking changes are expected until the design survives a second consumer.
   who are not engineers.** Every explanatory paragraph now lives behind a
   "?" beside the thing it explains (hover for one line, click to pin), and
   settings read as tables of labelled rows with toggles rather than stacks
-  of cards. A new agent publishes from a template in two clicks: essentials
-  on top, then what it can use, how it behaves and, behind "Show advanced",
-  limits and model options. Everything that works out of the box is on by
+  of cards. A new agent publishes in two clicks: essentials on top, then
+  what it can use, how it behaves and, behind "Show advanced", limits and
+  model options. Everything that works out of the box is on by
   default (questions, plans, components, helpers, summarising, approvals for
   risky actions, code execution when a sandbox is available, every registered
   tool and connection); code execution asks for the isolation the default
   profile actually provides. Settings gained a sticky section navigation and
   tables for providers, secrets, skills and prices; Connections and
   Capabilities became tables with actions in the row.
+
+- **The playground is useful before anything is configured.** Creating an
+  account fills it from a catalogue (`app/catalogue.py`): eleven model
+  providers with their address, a default model and a "Get a key" link (no
+  key is ever seeded; the first key saved takes over as the provider in
+  use), twenty-five vendor-run remote MCP connectors (GitHub, Notion,
+  Atlassian, Linear, Slack, Sentry, Stripe, Vercel, Cloudflare, Supabase,
+  PostHog, ...) each connected by one click and a sign-in or a token, one
+  specialist agent per connector, a **Psych** agent that holds every
+  specialist as a named helper and can spawn more, and five use-case
+  workflows (a GitHub activity report, a Jira sprint digest, inbox-and-issues
+  triage, release notes, an incident summary). Psych carries the host tools
+  `list_agents`, `create_agent`, `update_agent`, `list_workflows`,
+  `create_workflow` and `run_workflow`, so a conversation can build what the
+  catalogue lacks; each write is approved in the console before it takes
+  effect. `GET /api/catalogue` reports every entry with this account's status
+  and `POST /api/catalogue/seed` adds what is missing, idempotently; a "Get
+  started" card ticks off the three steps between a new account and a working
+  conversation. The console's demo tools (`lookup_order`, `issue_refund`,
+  `check_inventory`) and the three agent form templates are gone; a seeded
+  provider without a key reads "Needs a key" and asks for exactly that, and
+  a provider whose address carries a placeholder (Cloudflare's account id)
+  asks for it in the same dialog.
 
 ### Changed
 
@@ -77,6 +100,10 @@ and breaking changes are expected until the design survives a second consumer.
 
 ### Fixed
 
+- `McpServerUnreachable` no longer ends in a bare colon when the transport
+  error carried no text: an `asyncio.TimeoutError` now reads "the connection
+  timed out", and a reason-less failure names the exception type. The
+  console showed "is unreachable: " for a connector that took too long.
 - The Capabilities page could show placeholders forever on a machine without
   the databases: the four-stores scenario's availability probe sat in a
   connect that never returned. Every probe is now bounded and they run

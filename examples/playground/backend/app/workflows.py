@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 import psych_runtime
 from app.schemas import (
@@ -94,9 +94,17 @@ class WorkflowService:
         return self._index
 
     async def publish(
-        self, owner: str, definition: WorkflowDefinition, *, workflow_id: str | None = None
+        self,
+        owner: str,
+        definition: WorkflowDefinition,
+        *,
+        workflow_id: str | None = None,
+        catalogue_id: str | None = None,
     ) -> tuple[WorkflowEntry, bool]:
         """Publish ``definition`` as ``owner``'s workflow.
+
+        ``catalogue_id`` marks a workflow ``app.catalogue_seed`` shipped, so a
+        re-seed skips it and a console can label it.
 
         Raises:
             WorkflowRefused: a step names something this account does not
@@ -105,8 +113,16 @@ class WorkflowService:
         """
         if workflow_id is None:
             workflow_id = new_workflow_id()
-        elif await self._index.get_workflow(owner, workflow_id) is None:
-            raise WorkflowRefused(404, f"no workflow {workflow_id!r}")
+        else:
+            editing = await self._index.get_workflow(owner, workflow_id)
+            if editing is None:
+                raise WorkflowRefused(404, f"no workflow {workflow_id!r}")
+            # Inherited on an edit, for the reason `app.agent_publish` spells
+            # out: an entry is rewritten per Version, and dropping this would
+            # make a re-seed publish a second copy of a catalogue workflow
+            # somebody had merely edited.
+            if catalogue_id is None:
+                catalogue_id = editing.catalogue_id
 
         # One accumulator for the whole tree. A tool named inside a branch arm
         # or a loop body has to reach `WorkflowSpec.tools` exactly as a
@@ -158,6 +174,7 @@ class WorkflowService:
             workflow_id=workflow_id,
             version_hash=VersionHash(version.hash),
             name=spec.name,
+            catalogue_id=catalogue_id,
             description=spec.description,
             steps=tuple(entries),
             tools=tuple(tools),
@@ -431,9 +448,26 @@ def summary_of(entry: WorkflowEntry) -> dict[str, Any]:
 
 
 class ToolWorkflowPublisher(WorkflowPublisher):
-    """``create_workflow``'s door into the service. A tool call composes tool
-    steps only: an agent or nested workflow step is a person's decision made
-    on the Workflows page, where the ids are visible."""
+    """``create_workflow``'s door into the service.
+
+    A tool call composes any of the twelve step kinds, agent and nested
+    workflow steps included. It did not always: when the only catalogue was
+    three demo tools there was nothing worth delegating to, and restricting the
+    tool to ``tool`` steps saved validating a recursive union. With a specialist
+    agent per connector there is, and a model asked to "set up the weekly
+    report" that could not put an agent in a step would build something worse
+    out of the tools it had.
+
+    The steps arrive as plain objects -- ``list[dict]`` on the tool's schema --
+    and are validated here against ``WorkflowStepIn``, the same discriminated
+    union ``POST /api/workflows`` validates a request body against. One
+    ``TypeAdapter`` over the alias rather than a match on ``kind``: the union is
+    recursive, and a hand-written dispatch would have to recurse too, and would
+    be the copy that drifts.
+
+    Dispatching is here as well (``dispatch_for``) rather than on a second port,
+    because the application object a tool needs for either is the same one.
+    """
 
     def __init__(self, service: WorkflowService) -> None:
         self._service = service
@@ -442,11 +476,8 @@ class ToolWorkflowPublisher(WorkflowPublisher):
         self, tenant: str, *, name: str, description: str, steps: list[dict[str, Any]]
     ) -> dict[str, Any]:
         try:
-            definition = WorkflowDefinition(
-                name=name,
-                description=description,
-                steps=[ToolStepIn(**step) for step in steps],
-            )
+            parsed = _STEPS.validate_python(steps)
+            definition = WorkflowDefinition(name=name, description=description, steps=parsed)
             entry, created = await self._service.publish(tenant, definition)
         except (WorkflowRefused, ValidationError) as err:
             # Handed back as the tool's failure, so the model reads why and
@@ -456,3 +487,16 @@ class ToolWorkflowPublisher(WorkflowPublisher):
 
     async def list_for(self, tenant: str) -> list[dict[str, Any]]:
         return [summary_of(entry) for entry in await self._service.index.list_workflows(tenant)]
+
+    async def dispatch_for(
+        self, tenant: str, *, workflow_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        raise NotImplementedError(
+            "run_workflow needs the application's dispatch path; see app.main"
+        )
+
+
+_STEPS: TypeAdapter[list[WorkflowStepIn]] = TypeAdapter(list[WorkflowStepIn])
+"""``WorkflowStepIn`` is an ``Annotated`` union alias, not a model, so it is
+validated through an adapter. Built once: constructing one per call rebuilds a
+recursive schema on every tool call."""

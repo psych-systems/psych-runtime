@@ -22,6 +22,8 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAgents } from "@/hooks/use-agents";
+import { useCatalogue } from "@/hooks/use-catalogue";
+import { GetStartedCard } from "@/components/catalogue/get-started-card";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { useRunHistory } from "@/hooks/use-run-history";
 import { useRunStatus } from "@/hooks/use-run-status";
@@ -31,7 +33,7 @@ import { dispatchRun, interruptRun, resumeRun, sendToRun } from "@/lib/api";
 import { branchChoice, newestOnBranch } from "@/lib/branches";
 import { describeApiError } from "@/lib/errors";
 import type { Lifecycle } from "@/components/ui/status";
-import type { QueueKind } from "@/lib/types";
+import { PSYCH_CATALOGUE_ID, type QueueKind } from "@/lib/types";
 
 const AGENT_KEY = "psych.playground.agent";
 // There is no tenant or principal key here any more. Both used to be typed
@@ -63,6 +65,9 @@ const BUSY: ReadonlySet<Lifecycle> = new Set<Lifecycle>([
 export function ChatWorkspace({ routeRunId }: { routeRunId: string | null }) {
   const router = useRouter();
   const { agents, loading: agentsLoading, error: agentsError } = useAgents();
+  const { catalogue } = useCatalogue();
+  const psychAgentId =
+    catalogue?.agents.find((entry) => entry.catalogue_id === PSYCH_CATALOGUE_ID)?.agent_id ?? null;
   const { status: backendStatus } = useBackendConfig();
 
   const [runId, setRunId] = useState(routeRunId);
@@ -153,9 +158,14 @@ export function ChatWorkspace({ routeRunId }: { routeRunId: string | null }) {
   const conversationAgent =
     agents?.find((agent) => agent.version_hash === conversation.versionHash) ??
     null;
+  // Psych is the default a new conversation falls back to: it is the one that
+  // talks to the others, so it answers more questions than whichever agent
+  // happens to be first in the list. An explicit `?agent=` and a remembered
+  // choice both still win.
   const chosenAgent =
     agents?.find((agent) => agent.agent_id === requestedAgent) ??
     agents?.find((agent) => agent.agent_id === storedAgent) ??
+    agents?.find((agent) => agent.agent_id === psychAgentId) ??
     agents?.[0] ??
     null;
   const agentLocked = runId !== null;
@@ -347,6 +357,15 @@ export function ChatWorkspace({ routeRunId }: { routeRunId: string | null }) {
               of text the eye cannot track back from; one that never grows
               leaves a stripe down the middle of a 27 inch screen. */}
           <div className="mx-auto flex w-full max-w-3xl flex-col px-6 xl:max-w-4xl">
+            {/* Only on a new conversation, and only while one of the three
+                steps is still undone: it disappears of its own accord rather
+                than asking to be dismissed. */}
+            {runId === null && (
+              <div className="mt-6">
+                <GetStartedCard catalogue={catalogue} />
+              </div>
+            )}
+
             {runId === null && (
               <NewChatHero
                 agents={agents}

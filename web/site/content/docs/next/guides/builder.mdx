@@ -99,13 +99,22 @@ spec = (
     .tool_step("create", "create_account", arguments_from={"email": ref("input.email")})
     .branch(
         "tier",
-        ("paid", when("input.plan", "ne", "free"),
-         psych_runtime.ToolStep(name="bill", tool="charge",
-                                arguments_from={"account": ref("steps.create.output.result")})),
+        (
+            "paid",
+            when("input.plan", "ne", "free"),
+            psych_runtime.ToolStep(
+                name="bill",
+                tool="charge",
+                arguments_from={"account": ref("steps.create.output.result")},
+            ),
+        ),
         otherwise=psych_runtime.MapStep(name="free", output={"charged": lit(False)}),
     )
-    .agent_step("welcome", psych_runtime.agent("greeter").model("gpt-4o-mini"),
-                input={"message": ref("input.email")})
+    .agent_step(
+        "welcome",
+        psych_runtime.agent("greeter").model("gpt-4o-mini"),
+        input={"message": ref("input.email")},
+    )
     .output(account=ref("steps.create.output.result"))
     .build()
 )

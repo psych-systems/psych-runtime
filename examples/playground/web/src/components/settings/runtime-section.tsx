@@ -236,7 +236,7 @@ export function RuntimeSection({
             value={deniedText}
             spellCheck={false}
             className="font-technical"
-            placeholder="Empty means none. e.g. issue_refund"
+            placeholder="Empty means none. e.g. delete_record"
             onChange={(e) => setDeniedText(e.target.value)}
           />
         </FeatureRow>

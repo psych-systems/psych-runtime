@@ -90,7 +90,7 @@ async def wait_until_waiting(client: httpx.AsyncClient, run_id: str) -> dict[str
 
 
 # The pipeline the tree tests run: one of every composite kind, over tools
-# that need no model. `look_a` reads a shipped order, so the branch takes its
+# that need no model. `look_a` computes 1+1, so the branch takes its
 # one case and the `otherwise` arm is left skipped -- which is the thing a
 # graph has to be able to draw and this file's first assertion.
 TREE_STEPS: list[dict[str, Any]] = [
@@ -102,14 +102,14 @@ TREE_STEPS: list[dict[str, Any]] = [
             {
                 "kind": "tool",
                 "name": "look_a",
-                "tool": "lookup_order",
-                "arguments_from": {"order_id": path("input.order_id")},
+                "tool": "calculate",
+                "arguments_from": {"expression": path("input.expression")},
             },
             {
                 "kind": "tool",
                 "name": "look_b",
-                "tool": "lookup_order",
-                "arguments": {"order_id": "A2"},
+                "tool": "calculate",
+                "arguments": {"expression": "2+2"},
             },
         ],
     },
@@ -118,15 +118,15 @@ TREE_STEPS: list[dict[str, Any]] = [
         "name": "decide",
         "cases": [
             {
-                "name": "shipped",
+                "name": "two",
                 "when": {
-                    "path": "steps.fan.output.look_a.result.status",
+                    "path": "steps.fan.output.look_a.result.result",
                     "op": "eq",
-                    "value": "shipped",
+                    "value": 2.0,
                 },
                 "step": {
                     "kind": "map",
-                    "name": "note_shipped",
+                    "name": "note_two",
                     "output": {"note": literal("ship")},
                 },
             }
@@ -156,7 +156,9 @@ class TestTheStepTree:
         created = await publish(client, name="triage", steps=TREE_STEPS)
         workflow_id = created["workflow_id"]
 
-        run_id = await dispatch(client, workflow_id, input={"order_id": "A1", "skus": ["S1", "S2"]})
+        run_id = await dispatch(
+            client, workflow_id, input={"expression": "1+1", "skus": ["S1", "S2"]}
+        )
         status = await wait_for(client, run_id)
         assert status["lifecycle"] == "done", status
 
@@ -164,12 +166,12 @@ class TestTheStepTree:
         assert tree["workflow"] == "triage"
         assert tree["state"] == {"stage": "checking"}
         steps = flatten(tree["steps"])
-        assert steps["look_a"]["output"] == {"result": {"order_id": "A1", "status": "shipped"}}
-        assert steps["note_shipped"]["status"] == "completed"
+        assert steps["look_a"]["output"] == {"result": {"expression": "1+1", "result": 2.0}}
+        assert steps["note_two"]["status"] == "completed"
         # The arm that was not taken is in the tree and marked, rather than
         # missing: a graph shows where the Run could have gone.
         assert steps["note_other"]["status"] == "skipped"
-        assert steps["decide"]["cases"] == ["shipped"]
+        assert steps["decide"]["cases"] == ["two"]
         # A foreach has as many children as the list had elements, which the
         # Spec cannot count and the log can.
         assert len(steps["each_sku"]["children"]) == 2
@@ -193,7 +195,7 @@ class TestTheStepTree:
         copied in, not executed again, so their side effects happen once."""
         created = await publish(client, name="triage_again", steps=TREE_STEPS)
         run_id = await dispatch(
-            client, created["workflow_id"], input={"order_id": "A1", "skus": ["S1"]}
+            client, created["workflow_id"], input={"expression": "1+1", "skus": ["S1"]}
         )
         assert (await wait_for(client, run_id))["lifecycle"] == "done"
 
@@ -248,8 +250,8 @@ class TestWaitingOnAnEvent:
                 {
                     "kind": "tool",
                     "name": "look",
-                    "tool": "lookup_order",
-                    "arguments": {"order_id": "A1"},
+                    "tool": "calculate",
+                    "arguments": {"expression": "1+1"},
                 },
                 {"kind": "wait", "name": "hold", "event": "payment_confirmed"},
                 {
@@ -292,8 +294,8 @@ class TestWaitingOnAnEvent:
                 {
                     "kind": "tool",
                     "name": "only",
-                    "tool": "lookup_order",
-                    "arguments": {"order_id": "A1"},
+                    "tool": "calculate",
+                    "arguments": {"expression": "1+1"},
                 }
             ],
         )
@@ -318,14 +320,14 @@ class TestBreakpoints:
                 {
                     "kind": "tool",
                     "name": "first",
-                    "tool": "lookup_order",
-                    "arguments": {"order_id": "A1"},
+                    "tool": "calculate",
+                    "arguments": {"expression": "1+1"},
                 },
                 {
                     "kind": "tool",
                     "name": "second",
-                    "tool": "lookup_order",
-                    "arguments": {"order_id": "A3"},
+                    "tool": "calculate",
+                    "arguments": {"expression": "3+3"},
                 },
             ],
         )
@@ -347,7 +349,7 @@ class TestBreakpoints:
 
         assert (await wait_for(client, run_id))["lifecycle"] == "done"
         steps = flatten((await view(client, run_id))["steps"])
-        assert steps["second"]["output"] == {"result": {"order_id": "A3", "status": "delivered"}}
+        assert steps["second"]["output"] == {"result": {"expression": "3+3", "result": 6.0}}
 
 
 def subset(smaller: Any, larger: Any, where: str) -> None:
@@ -390,8 +392,8 @@ class TestTheDefinitionRoundTrips:
                 {
                     "kind": "tool",
                     "name": "inner_look",
-                    "tool": "lookup_order",
-                    "arguments": {"order_id": "A1"},
+                    "tool": "calculate",
+                    "arguments": {"expression": "1+1"},
                 }
             ],
         )
@@ -401,15 +403,15 @@ class TestTheDefinitionRoundTrips:
             {
                 "kind": "tool",
                 "name": "s_tool",
-                "tool": "lookup_order",
+                "tool": "calculate",
                 "description": "Read the order.",
-                "arguments": {"order_id": "A1"},
-                "arguments_from": {"order_id": path("input.order_id")},
+                "arguments": {"expression": "1+1"},
+                "arguments_from": {"expression": path("input.expression")},
                 "retry": {"max_attempts": 3, "backoff_seconds": 0.5},
                 "timeout_seconds": 30.0,
                 "on_failure": "continue",
                 "output_schema": {"type": "object"},
-                "when": {"path": "input.order_id", "op": "exists"},
+                "when": {"path": "input.expression", "op": "exists"},
             },
             {
                 "kind": "agent",
@@ -421,7 +423,7 @@ class TestTheDefinitionRoundTrips:
                 "kind": "workflow",
                 "name": "s_workflow",
                 "workflow_id": inner["workflow_id"],
-                "input": {"order_id": path("input.order_id")},
+                "input": {"expression": path("input.expression")},
             },
             {
                 "kind": "parallel",
@@ -496,7 +498,7 @@ class TestTheDefinitionRoundTrips:
             "name": "every_kind",
             "description": "One of each.",
             "steps": steps,
-            "input_schema": {"type": "object", "properties": {"order_id": {"type": "string"}}},
+            "input_schema": {"type": "object", "properties": {"expression": {"type": "string"}}},
             "initial_state": {"total": 0},
             "output": {"done": path("steps.s_map.output.done")},
             "retry": {"max_attempts": 2},
@@ -514,7 +516,7 @@ class TestTheDefinitionRoundTrips:
         assert summary["output"] == {"done": path("steps.s_map.output.done")}
         assert summary["retry"]["max_attempts"] == 2
         # Every tool in the tree, not only the top-level ones.
-        assert summary["tools"] == ["lookup_order"]
+        assert summary["tools"] == ["calculate"]
         # An embedded child reports the hash this Version pinned, which is what
         # lets the console say "this copy is older than that agent runs today".
         embedded = {step["name"]: step for step in summary["steps"]}
@@ -562,8 +564,8 @@ class TestTheDefinitionRoundTrips:
                 {
                     "kind": "tool",
                     "name": "one",
-                    "tool": "lookup_order",
-                    "arguments": {"order_id": "A1"},
+                    "tool": "calculate",
+                    "arguments": {"expression": "1+1"},
                 }
             ],
         )
@@ -610,7 +612,7 @@ class TestOlderIndexFiles:
         adapter: TypeAdapter[Any] = TypeAdapter(WorkflowStepIn)
         legacy = [
             WorkflowStepEntry(
-                kind="tool", name="look", tool="lookup_order", arguments={"order_id": "A1"}
+                kind="tool", name="look", tool="calculate", arguments={"expression": "1+1"}
             ),
             WorkflowStepEntry(kind="agent", name="ask", agent_id="agt_1", version_hash="sha256:aa"),
             WorkflowStepEntry(
@@ -621,7 +623,7 @@ class TestOlderIndexFiles:
             assert entry.definition["kind"] == entry.kind
             assert entry.definition["name"] == entry.name
             adapter.validate_python(entry.definition)
-        assert legacy[0].definition["arguments"] == {"order_id": "A1"}
+        assert legacy[0].definition["arguments"] == {"expression": "1+1"}
         assert legacy[1].definition["version_hash"] == "sha256:aa"
 
     def test_a_legacy_entry_serialises_through_the_whole_read_path(self) -> None:
@@ -642,7 +644,7 @@ class TestOlderIndexFiles:
             name="old",
             steps=(
                 WorkflowStepEntry(
-                    kind="tool", name="look", tool="lookup_order", arguments={"order_id": "A1"}
+                    kind="tool", name="look", tool="calculate", arguments={"expression": "1+1"}
                 ),
             ),
             published_at=now,

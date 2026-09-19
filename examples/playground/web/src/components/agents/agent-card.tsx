@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { CapabilityChips } from "@/components/agents/chips";
+import { CatalogueChip } from "@/components/catalogue/catalogue-bits";
 import { truncate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AgentSummary } from "@/lib/types";
@@ -42,9 +43,15 @@ function abilities(agent: AgentSummary): string[] {
  */
 export function AgentCard({
   agent,
+  fromCatalogue = false,
+  note = null,
   onDelete,
 }: {
   agent: AgentSummary;
+  /** Came with the console rather than being written here. */
+  fromCatalogue?: boolean;
+  /** One line above the description, for an agent whose job needs saying. */
+  note?: string | null;
   onDelete: (agent: AgentSummary) => void;
 }) {
   const href = `/agents/${encodeURIComponent(agent.agent_id)}`;
@@ -59,9 +66,13 @@ export function AgentCard({
     <article className="flex flex-col gap-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10 transition-shadow hover:ring-foreground/20">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <Link href={href} className="truncate text-base font-semibold hover:underline">
-            {agent.name}
-          </Link>
+          <span className="flex flex-wrap items-center gap-2">
+            <Link href={href} className="truncate text-base font-semibold hover:underline">
+              {agent.name}
+            </Link>
+            {fromCatalogue && <CatalogueChip />}
+          </span>
+          {note !== null && <p className="text-caption text-foreground">{note}</p>}
           <p className="line-clamp-2 text-caption text-muted-foreground">{line}</p>
         </div>
         <DropdownMenu>

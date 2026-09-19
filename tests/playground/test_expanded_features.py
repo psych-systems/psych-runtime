@@ -31,7 +31,7 @@ AGENT = {
     "name": "support",
     "instructions": "Help the customer with their order.",
     "model": "test-model",
-    "tools": ["lookup_order"],
+    "tools": ["current_time"],
 }
 
 
@@ -153,7 +153,7 @@ class TestFullAgentSpecParity:
             client,
             subagents_enabled=True,
             spawn={
-                "tools": ["lookup_order"],
+                "tools": ["current_time"],
                 "models": [],
                 "max_depth": 3,
                 "max_alive": 5,
@@ -244,14 +244,14 @@ class TestWorkflows:
                     {
                         "kind": "tool",
                         "name": "first",
-                        "tool": "lookup_order",
-                        "arguments": {"order_id": "A1"},
+                        "tool": "calculate",
+                        "arguments": {"expression": "1+1"},
                     },
                     {
                         "kind": "tool",
                         "name": "second",
-                        "tool": "lookup_order",
-                        "arguments": {"order_id": "A2"},
+                        "tool": "calculate",
+                        "arguments": {"expression": "2+2"},
                     },
                 ],
             },
@@ -324,8 +324,8 @@ class TestWorkflows:
                     {
                         "kind": "tool",
                         "name": "look_up",
-                        "tool": "lookup_order",
-                        "arguments": {"order_id": "A1"},
+                        "tool": "calculate",
+                        "arguments": {"expression": "1+1"},
                     },
                     {"kind": "agent", "name": "wrap_up", "agent_id": agent.json()["agent_id"]},
                 ],
@@ -374,7 +374,7 @@ class TestRuntimeSettings:
                     "wall_seconds": 5,
                 },
                 "egress_allow": ["api.example.com"],
-                "denied_tools": ["issue_refund"],
+                "denied_tools": ["update_agent"],
             },
         )
         assert updated.status_code == 200, updated.text
@@ -382,7 +382,7 @@ class TestRuntimeSettings:
         assert runtime["cost_policy"] == "computed"
         assert runtime["blob_offload_bytes"] == 123456
         assert runtime["egress_allow"] == ["api.example.com"]
-        assert runtime["denied_tools"] == ["issue_refund"]
+        assert runtime["denied_tools"] == ["update_agent"]
 
     async def test_publishing_an_agent_is_unaffected_by_runtime_settings(
         self, client: httpx.AsyncClient
@@ -406,7 +406,7 @@ class TestRuntimeSettings:
                     "wall_seconds": 1,
                 },
                 "egress_allow": ["nowhere.example.com"],
-                "denied_tools": ["lookup_order"],
+                "denied_tools": ["current_time"],
             },
         )
         after = await client.post("/api/agents", json={**AGENT, "agent_id": None})
@@ -471,7 +471,7 @@ class TestA2ARoundTrip:
                 "description": "Looks up an order's shipping status.",
                 "instructions": "Answer questions about orders.",
                 "model": "stub-model",
-                "tools": ["lookup_order"],
+                "tools": ["current_time"],
             },
         )
         assert target.status_code == 201, target.text
@@ -523,7 +523,7 @@ class TestA2ARoundTrip:
         stub_provider.says(
             Turn(
                 tool_calls=(
-                    ("orders_peer__lookup_order", {"message": "What is the status of order A1?"}),
+                    ("orders_peer__current_time", {"message": "What is the status of order A1?"}),
                 ),
                 prompt_tokens=10,
             ),
@@ -543,7 +543,7 @@ class TestA2ARoundTrip:
         report = (await client.get(f"/api/runs/{run_id}/report")).json()
         tool_calls = report["tool_calls"]
         assert any(
-            call["tool"] == "orders_peer__lookup_order" and call["outcome"] == "ok"
+            call["tool"] == "orders_peer__current_time" and call["outcome"] == "ok"
             for call in tool_calls
         ), tool_calls
 

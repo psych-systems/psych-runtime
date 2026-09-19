@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import Link from "next/link";
 import { AlertTriangleIcon, PlugIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import { AppearanceSection } from "@/components/settings/appearance-section";
 import { MemorySection } from "@/components/settings/memory-section";
 import { PricingSection } from "@/components/settings/pricing-section";
 import { ProvidersSection } from "@/components/settings/providers-section";
+import { useCatalogue } from "@/hooks/use-catalogue";
 import { RuntimeSection } from "@/components/settings/runtime-section";
 import { SandboxSection } from "@/components/settings/sandbox-section";
 import { SETTINGS_SECTIONS, SectionNav } from "@/components/settings/section-nav";
@@ -54,6 +56,7 @@ export default function SettingsPage() {
     saveRuntime,
     checkSandbox,
   } = useSettings();
+  const catalogue = useCatalogue();
 
   // For the rate rows' model picker. Best-effort: a provider that will not
   // list its models, or is down, leaves the field typeable rather than
@@ -124,9 +127,29 @@ export default function SettingsPage() {
         <div className="flex flex-col gap-10">
           <ProvidersSection
             providers={settings.providers}
+            catalogue={catalogue.catalogue?.providers ?? []}
             activeProviderId={settings.active_provider_id}
-            onSave={saveProvider}
-            onDelete={removeProvider}
+            onSave={async (edited) => {
+              // Decided before the save, from the catalogue's own word: was
+              // the provider in use able to answer? If not, the key being
+              // saved is this account's first working one, and it takes over
+              // rather than sitting behind a "Use" button nobody knows to
+              // press. A working setup is never switched under somebody.
+              const wasReady = catalogue.catalogue?.provider_ready ?? true;
+              await saveProvider(edited);
+              const gainedKey = (edited.api_key ?? "").length > 0;
+              if (!wasReady && gainedKey && edited.id !== undefined) {
+                await activate(edited.id);
+                toast.success(`${edited.label} is now in use`);
+              }
+              // A key added here turns a catalogue offer into a provider, and
+              // the offer's row has to stop offering it.
+              await catalogue.refresh();
+            }}
+            onDelete={async (id) => {
+              await removeProvider(id);
+              await catalogue.refresh();
+            }}
             onActivate={activate}
             onTest={runTest}
           />

@@ -8,7 +8,6 @@ import {
   Loader2Icon,
   MessageSquareIcon,
   PencilIcon,
-  SparklesIcon,
   WrenchIcon,
 } from "lucide-react";
 
@@ -17,13 +16,21 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DetailRow, Section, TechnicalDetails } from "@/components/ui/page";
 import { HelpTip } from "@/components/ui/help";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useAgents } from "@/hooks/use-agents";
 import { IssuesSummary } from "@/components/settings/validation";
 import { AgentEssentials } from "@/components/agents/agent-essentials";
 import { CapabilitiesTable } from "@/components/agents/capabilities-table";
 import { BehaviourTable } from "@/components/agents/behaviour-table";
 import { AdvancedTable } from "@/components/agents/advanced-table";
 import { VersionHash } from "@/components/agents/version-hash";
-import { STARTERS, useAgentForm, type AgentFormState } from "@/components/agents/use-agent-form";
+import { useAgentForm, type AgentFormState } from "@/components/agents/use-agent-form";
 import type { CreateAgentResponse } from "@/lib/types";
 
 /**
@@ -50,7 +57,7 @@ export function CreateAgentForm() {
 
   return (
     <div className="flex flex-col gap-7 pb-24">
-      {form.duplicateOf === null && <Starters form={form} />}
+      {form.duplicateOf === null && <DuplicatePicker />}
 
       {form.duplicatedFrom !== null && (
         <Alert>
@@ -94,33 +101,50 @@ export function CreateAgentForm() {
   );
 }
 
-/** Templates, as chips. The card of three sub-cards this replaces spent a
- *  third of the first screen on three sentences nobody reads twice. */
-function Starters({ form }: { form: AgentFormState }) {
+/**
+ * Start from an agent that already exists, for anyone who would rather edit
+ * than write.
+ *
+ * What this replaces was three "start from" templates whose only effect was
+ * to type three sentences into three fields -- a menu of fake choices on the
+ * first screen of a form whose real first decision is the name. An agent
+ * somebody already published is a starting point that is actually about this
+ * account.
+ */
+function DuplicatePicker() {
+  const { agents } = useAgents();
+  const router = useRouter();
+
+  if (agents === null || agents.length === 0) return null;
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="inline-flex items-center gap-1.5 text-caption text-muted-foreground">
-        <SparklesIcon className="size-3.5" aria-hidden />
-        Start from
-        <HelpTip title="Start from" short="Fills in the name, description and instructions.">
-          A starting point, not a category. It fills the name, what it does and the instructions;
-          everything else stays as it is and all of it is yours to change.
+        <CopyIcon className="size-3.5" aria-hidden />
+        Duplicate an existing agent
+        <HelpTip title="Duplicate an existing agent" short="Fills this form from one you have.">
+          <p>
+            Fills this form from an agent you already published. It becomes a second agent; the
+            original is left exactly where it is.
+          </p>
         </HelpTip>
       </span>
-      {STARTERS.map((starter) => (
-        <button
-          key={starter.name}
-          type="button"
-          onClick={() => {
-            form.setName(starter.name);
-            form.setDescription(starter.description);
-            form.setInstructions(starter.instructions);
-          }}
-          className="rounded-full border border-border bg-card px-3 py-1 text-caption transition-colors hover:border-primary/50 hover:bg-primary/5 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-        >
-          {starter.label}
-        </button>
-      ))}
+      <Select
+        onValueChange={(agentId) =>
+          router.push(`/agents/new?from=${encodeURIComponent(agentId)}`)
+        }
+      >
+        <SelectTrigger className="w-64" aria-label="Agent to duplicate">
+          <SelectValue placeholder="Start from scratch" />
+        </SelectTrigger>
+        <SelectContent>
+          {agents.map((agent) => (
+            <SelectItem key={agent.agent_id} value={agent.agent_id}>
+              {agent.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }

@@ -144,7 +144,11 @@ class McpServerUnreachable(PsychError):
     def __init__(self, server: str, reason: str) -> None:
         self.server = server
         self.reason = reason
-        super().__init__(f"MCP server {server!r} is unreachable: {reason}")
+        # No trailing colon over nothing. A console shows this text in the
+        # row of the connection that failed, and "is unreachable:" with an
+        # empty reason reads as a truncated message rather than a diagnosis.
+        message = f"MCP server {server!r} is unreachable"
+        super().__init__(f"{message}: {reason}" if reason else message)
 
 
 class McpResponseTooLarge(PsychError):
@@ -1174,8 +1178,23 @@ def _sdk_exception(  # noqa: PLR0911 - ordered boundary translation
     if isinstance(error, ValidationError):
         return McpProtocolError(f"MCP server {server!r} returned an invalid response: {error}")
     if isinstance(error, (httpx.HTTPError, httpx2.HTTPError, TimeoutError, OSError)):
-        return McpServerUnreachable(server, str(error))
+        return McpServerUnreachable(server, _transport_reason(error))
     return McpProtocolError(f"MCP server {server!r} failed protocol handling: {error}")
+
+
+def _transport_reason(error: BaseException) -> str:
+    """What to say about a transport failure whose ``str()`` may be empty.
+
+    ``asyncio.TimeoutError`` and a bare ``OSError`` carry no text, and the
+    console showed "is unreachable: " for a connector that simply took too
+    long. The reason names the condition instead.
+    """
+    text = str(error).strip()
+    if text:
+        return text
+    if isinstance(error, TimeoutError):
+        return "the connection timed out"
+    return type(error).__name__
 
 
 def _consume_future_exception(future: asyncio.Future[Any]) -> None:

@@ -19,13 +19,41 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { AgentCard } from "@/components/agents/agent-card";
+import { AddFromCatalogue } from "@/components/catalogue/catalogue-bits";
+import { GetStartedCard } from "@/components/catalogue/get-started-card";
+import { useCatalogue } from "@/hooks/use-catalogue";
+import { PSYCH_CATALOGUE_ID } from "@/lib/types";
 import { deleteAgent } from "@/lib/api";
 import { describeApiError } from "@/lib/errors";
 import type { AgentSummary } from "@/lib/types";
 
 export default function AgentsPage() {
   const { agents, loading, error, refresh } = useAgents();
+  const catalogue = useCatalogue();
   const [pendingDelete, setPendingDelete] = useState<AgentSummary | null>(null);
+
+  const catalogueAgents = catalogue.catalogue?.agents ?? [];
+  // Which published agents came from the catalogue. The backend reports it on
+  // the agent itself; the catalogue's own list is the fallback for a backend
+  // that does not yet.
+  const cataloguedById = new Map(
+    catalogueAgents
+      .filter((entry) => entry.agent_id !== null)
+      .map((entry) => [entry.agent_id!, entry.catalogue_id]),
+  );
+  const psychId =
+    catalogueAgents.find((entry) => entry.catalogue_id === PSYCH_CATALOGUE_ID)?.agent_id ?? null;
+  const missingAgents = catalogueAgents.filter((entry) => entry.agent_id === null).length;
+  const missingWorkflows = (catalogue.catalogue?.workflows ?? []).filter(
+    (entry) => entry.workflow_id === null,
+  ).length;
+
+  // Psych first: it is the one that talks to the others, so a list that buries
+  // it among its own specialists reads as a pile of agents with no way in.
+  const ordered = [...(agents ?? [])].sort((a, b) => {
+    const rank = (agent: AgentSummary) => (agent.agent_id === psychId ? 0 : 1);
+    return rank(a) - rank(b);
+  });
 
   async function removeAgent(agent: AgentSummary) {
     try {
@@ -44,13 +72,27 @@ export default function AgentsPage() {
           title="Agents"
           description="What you can talk to."
           actions={
-            <Button asChild>
-              <Link href="/agents/new">
-                <PlusIcon /> New agent
-              </Link>
-            </Button>
+            <span className="flex flex-wrap items-center gap-2">
+              <AddFromCatalogue
+                kinds={["agents", "workflows"]}
+                missing={missingAgents + missingWorkflows}
+                onSeed={async (kinds) => {
+                  await catalogue.seed(kinds);
+                  // The grid reads the published list, not the catalogue, so
+                  // seeding without this adds things nothing shows.
+                  await refresh();
+                }}
+              />
+              <Button asChild>
+                <Link href="/agents/new">
+                  <PlusIcon /> New agent
+                </Link>
+              </Button>
+            </span>
           }
         />
+
+        <GetStartedCard catalogue={catalogue.catalogue} />
 
         {loading && agents === null && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -89,8 +131,18 @@ export default function AgentsPage() {
 
         {agents && agents.length > 0 && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {agents.map((agent) => (
-              <AgentCard key={agent.agent_id} agent={agent} onDelete={setPendingDelete} />
+            {ordered.map((agent) => (
+              <AgentCard
+                key={agent.agent_id}
+                agent={agent}
+                fromCatalogue={
+                  (agent.catalogue_id ?? cataloguedById.get(agent.agent_id) ?? null) !== null
+                }
+                note={
+                  agent.agent_id === psychId ? "Talks to every other agent for you." : null
+                }
+                onDelete={setPendingDelete}
+              />
             ))}
           </div>
         )}

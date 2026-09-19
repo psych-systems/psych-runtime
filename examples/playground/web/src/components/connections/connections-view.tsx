@@ -30,6 +30,8 @@ import { ConnectionRow } from "@/components/connections/connection-row";
 import { ConnectionDialog } from "@/components/connections/connection-dialog";
 import { A2APeersSection } from "@/components/connections/a2a-peers-section";
 import { useConnectionTests } from "@/components/connections/use-connection-tests";
+import { ConnectorsSection } from "@/components/connections/connectors-section";
+import { useCatalogue } from "@/hooks/use-catalogue";
 import type { McpServerPreset } from "@/components/settings/types";
 
 /**
@@ -55,10 +57,17 @@ export function ConnectionsView() {
     refresh,
     savePreset,
     removePreset,
+    saveSecret,
     savePeers,
     addOwnAgentAsPeer,
   } = useSettings();
-  const tests = useConnectionTests(refresh);
+  const catalogue = useCatalogue();
+  // A connect writes the backend's stored record, and both this page's tables
+  // read it, so both are re-read when one settles.
+  const tests = useConnectionTests(async () => {
+    await refresh();
+    await catalogue.refresh();
+  });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<McpServerPreset | null>(null);
@@ -89,7 +98,14 @@ export function ConnectionsView() {
     }
   }
 
-  const connections = settings?.mcp_servers ?? [];
+  const allConnections = settings?.mcp_servers ?? [];
+  const connectors = catalogue.catalogue?.connectors ?? [];
+  const catalogueNames = new Set(connectors.map((connector) => connector.name));
+  // The table below is for connections somebody added by hand. A catalogue
+  // connector is the same preset underneath, but it has a row of its own
+  // above, and printing it twice would offer two Connect buttons for one
+  // system.
+  const connections = allConnections.filter((preset) => !catalogueNames.has(preset.name));
 
   return (
     <Page>
@@ -111,9 +127,9 @@ export function ConnectionsView() {
           </span>
         }
         actions={
-          settings !== null && connections.length > 0 ? (
-            <Button onClick={openAdd}>
-              <PlusIcon /> Add connection
+          settings !== null ? (
+            <Button variant="outline" onClick={openAdd}>
+              <PlusIcon /> Add your own
             </Button>
           ) : null
         }
@@ -164,7 +180,24 @@ export function ConnectionsView() {
         </Alert>
       )}
 
-      {settings !== null && connections.length === 0 && (
+      {settings !== null && connectors.length > 0 && (
+        <ConnectorsSection
+          connectors={connectors}
+          catalogueAgents={catalogue.catalogue?.agents ?? []}
+          presets={allConnections}
+          testing={tests.testing}
+          onConnect={(name, options) => void tests.run(name, options)}
+          onDisconnect={(name) => void tests.disconnect(name)}
+          savePreset={savePreset}
+          saveSecret={saveSecret}
+          onSeed={async () => {
+            await catalogue.seed(["connectors"]);
+            await refresh();
+          }}
+        />
+      )}
+
+      {settings !== null && connections.length === 0 && connectors.length === 0 && (
         <EmptyState
           icon={PlugIcon}
           title="No connections yet"
@@ -179,6 +212,7 @@ export function ConnectionsView() {
 
       {settings !== null && connections.length > 0 && (
         <Section>
+          <h2 className="text-base font-semibold">Your own connections</h2>
           <div className="overflow-hidden rounded-xl border border-border bg-card">
             <Table>
               <TableHeader>

@@ -233,6 +233,18 @@ class AgentEntry(BaseModel):
     happens at the same moment the settings file's legacy workspace is adopted
     (``app.settings_store.SettingsStore.adopt_legacy``).
     """
+    catalogue_id: str | None = None
+    """Which ``app.catalogue`` entry this came from, or ``None`` for anything
+    a person built.
+
+    Provenance, and the reason re-seeding is idempotent: the seeder looks for
+    an entry already carrying the id rather than matching on a name somebody
+    may have renamed. Kept on the *index* entry rather than on any settings
+    model because the index is the only store of these that nothing rewrites
+    wholesale -- a settings PUT replaces its list from a request body that has
+    no field to carry this in, and the marker would be silently dropped on the
+    first save.
+    """
     name: str
     description: str = ""
     instructions: str
@@ -369,6 +381,18 @@ class WorkflowEntry(BaseModel):
     owner: str
     version_hash: VersionHash
     history: tuple[VersionHash, ...]
+    catalogue_id: str | None = None
+    """Which ``app.catalogue`` entry this came from, or ``None`` for anything
+    a person built.
+
+    Provenance, and the reason re-seeding is idempotent: the seeder looks for
+    an entry already carrying the id rather than matching on a name somebody
+    may have renamed. Kept on the *index* entry rather than on any settings
+    model because the index is the only store of these that nothing rewrites
+    wholesale -- a settings PUT replaces its list from a request body that has
+    no field to carry this in, and the marker would be silently dropped on the
+    first save.
+    """
     name: str
     description: str = ""
     steps: tuple[WorkflowStepEntry, ...]
@@ -930,6 +954,7 @@ class PlaygroundIndex:
         version_hash: VersionHash,
         name: str,
         description: str,
+        catalogue_id: str | None = None,
         steps: tuple[WorkflowStepEntry, ...],
         tools: tuple[str, ...],
         limits: dict[str, Any],
@@ -952,6 +977,7 @@ class PlaygroundIndex:
                 version_hash=version_hash,
                 history=(*history, version_hash),
                 name=name,
+                catalogue_id=catalogue_id,
                 description=description,
                 steps=steps,
                 tools=tools,

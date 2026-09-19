@@ -61,6 +61,7 @@ from psych_runtime.tools.mcp import (
     McpToolError,
     McpTools,
     McpUnsupportedProtocolVersionError,
+    _sdk_exception,
     resolve_mcp_server,
     resolve_mcp_servers,
 )
@@ -414,6 +415,17 @@ class TestUnreachable:
         assert resolution.reachable is False
         assert resolution.tools == ()
         assert resolution.unavailable_reason is not None
+
+    def test_a_timeout_names_its_condition(self) -> None:
+        # ``asyncio.TimeoutError`` carries no text. The console showed
+        # "is unreachable: " for a connector that took too long to answer.
+        error = _sdk_exception("asana", TimeoutError())
+        assert isinstance(error, McpServerUnreachable)
+        assert error.reason == "the connection timed out"
+        assert str(error) == "MCP server 'asana' is unreachable: the connection timed out"
+
+    def test_a_blank_reason_gets_no_colon(self) -> None:
+        assert str(McpServerUnreachable("asana", "")) == "MCP server 'asana' is unreachable"
 
 
 # ---------------------------------------------------------------------------

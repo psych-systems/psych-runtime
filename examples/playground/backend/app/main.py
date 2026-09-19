@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 import psych_runtime
+from app import catalogue as catalogue_data
 from app.a2a import (
     A2ADeps,
     A2AService,
@@ -39,6 +40,7 @@ from app.a2a import (
     load_signing_key,
 )
 from app.accounts import Account, Session, hash_session_token, new_session_token
+from app.agent_publish import PublishedAgent, publish_agent
 from app.auth import (
     PUBLIC_PATHS,
     account_from_request,
@@ -52,9 +54,10 @@ from app.auth import (
     sign_out,
 )
 from app.auth import create_account as register_account
+from app.catalogue_seed import ALL_KINDS, seed_catalogue
 from app.config import Settings, load_allowed_origins, load_settings
 from app.demo import seed_code_execution_demo
-from app.errors import ApiProblem, from_pydantic, from_spec_validation
+from app.errors import ApiProblem
 from app.memory_store import FileMemoryStore
 from app.oauth_redirect import BrowserAuthorizationRedirect
 from app.observability import Observability, build_telemetry, configure_logging
@@ -71,6 +74,13 @@ from app.schemas import (
     AgentVersionSummary,
     AnswerResponse,
     BranchRequest,
+    CatalogueAgentOut,
+    CatalogueAuthOut,
+    CatalogueConnectorAgentOut,
+    CatalogueConnectorOut,
+    CatalogueProviderOut,
+    CatalogueResponse,
+    CatalogueWorkflowOut,
     CompactionIn,
     ConfigResponse,
     CreateAgentRequest,
@@ -90,6 +100,7 @@ from app.schemas import (
     McpLiveConnectionOut,
     McpOAuthIn,
     McpServerHintOut,
+    McpServerIn,
     McpServerPresetIn,
     McpServerPresetOut,
     McpTestResponse,
@@ -119,6 +130,8 @@ from app.schemas import (
     ScenarioProgressEvent,
     ScenarioRunResultOut,
     SecretsResponse,
+    SeedCatalogueRequest,
+    SeedCatalogueResponse,
     SendRequest,
     SendResponse,
     SettingsResponse,
@@ -166,22 +179,17 @@ from app.settings_store import (
     StateFile,
     new_provider_id,
 )
-from app.spec_builder import build_agent_spec, code_execution_in
+from app.spec_builder import code_execution_in
 from app.store_index import (
     AgentEntry,
     AgentPointer,
-    CompactionEntry,
-    HttpToolEntry,
     PlaygroundIndex,
     RunEntry,
-    SkillEntry,
-    SubagentRefEntry,
     WorkflowEntry,
-    new_agent_id,
     new_branch_id,
     new_conversation_id,
 )
-from app.tools import install_workflow_publisher, registry
+from app.tools import AgentPublisher, install_agent_publisher, install_workflow_publisher, registry
 from app.workflows import (
     ToolWorkflowPublisher,
     WorkflowDefinition,
@@ -197,7 +205,6 @@ from psych_runtime.core.errors import (
     RunEndedWithoutAnswer,
     RunNotFound,
     RunNotSuspended,
-    SpecValidationError,
     SuspensionExpired,
     TransientError,
     WorkflowRequired,
@@ -205,11 +212,9 @@ from psych_runtime.core.errors import (
 from psych_runtime.core.ids import RunId, VersionHash
 from psych_runtime.core.messages import UserMessage
 from psych_runtime.core.records import QueueKind, RunAdmitted
-from psych_runtime.core.spec import CodeTool, HttpTool
 from psych_runtime.core.status import SETTLED_LIFECYCLE
 from psych_runtime.core.thread_view import message_views
 from psych_runtime.core.usage import Cost, Usage
-from psych_runtime.core.validation import ValidationContext
 from psych_runtime.model.egress import HttpTransport
 from psych_runtime.model.openai_compat import OpenAICompatibleClient
 from psych_runtime.model.port import ModelRequest, StreamDone
@@ -730,9 +735,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 - one 
     # and validate and are never offered to the model.
     a2a_tools = A2ATools(A2APool(transport=transport, secrets=secrets))
     workflows = WorkflowService(store=store, index=index, registry=registry)
-    # The `create_workflow` tool's way in (`app.tools`): a Run's agent can
-    # publish a workflow for the account that dispatched it.
-    install_workflow_publisher(ToolWorkflowPublisher(workflows))
+
+    def _playground() -> AppState:
+        # Read late, not captured: the publishers are installed here, while
+        # `AppState` is still being assembled a few dozen lines below, and a
+        # tool call cannot happen until a Run does -- long after boot.
+        state: AppState = app.state.playground
+        return state
+
+    # The workflow and agent tools' way in (`app.tools`): a Run's agent can
+    # publish and dispatch for the account that dispatched it, through the same
+    # paths the routes use.
+    install_workflow_publisher(_PlaygroundWorkflowPublisher(workflows, _playground))
+    install_agent_publisher(_PlaygroundAgentPublisher(_playground))
     sandbox = SandboxProvider(
         transport=transport, secrets=secrets, allow_same_uid=same_uid_opt_in()
     )
@@ -1196,6 +1211,13 @@ async def signup(body: SignUpRequest, request: Request, response: Response) -> A
     # agents in the index and the settings that published them stay one thing.
     await state.settings_store.adopt_legacy(account.id)
     await state.index.adopt_legacy(account.id)
+    # And then the catalogue: providers to pick from, connectors to press
+    # Connect on, a specialist per connector and the orchestrator over them.
+    # After `adopt_legacy`, so an inherited provider stays the active one and a
+    # seeded agent is published with the model that provider names rather than
+    # with a catalogue default nobody chose.
+    if state.settings.seed_catalogue:
+        await seed_catalogue(state, account.id)
     await _refresh_all_descriptions(state.descriptions, state.settings_store)
     set_session_cookie(response, token, secure=state.settings.cookie_secure)
     _LOG.info("account created: %s", account.id)
@@ -1328,137 +1350,30 @@ async def list_models(request: Request) -> ModelsResponse:
 
 @app.post("/api/agents", status_code=201, response_model=CreateAgentResponse)
 async def create_agent(body: CreateAgentRequest, request: Request) -> CreateAgentResponse:
+    """Publish an agent, or a new Version of one.
+
+    The body of this route lives in ``app.agent_publish`` so that the seeder
+    and the ``create_agent`` tool publish through exactly the same code rather
+    than through three things that agree today.
+    """
     state = _state(request)
     account = await _account(request)
-
-    # Resolved before anything is published, so an edit naming an agent that is
-    # not this account's fails without leaving a Version behind that nothing
-    # points at.
-    if body.agent_id is None:
-        agent_id = new_agent_id()
-    elif await state.index.get_agent(account.id, body.agent_id) is None:
-        raise ApiProblem(404, f"no agent {body.agent_id!r}")
-    else:
-        agent_id = body.agent_id
-
-    # Each child is this account's own agent, copied in at its *current*
-    # Version. Resolved before anything is published so a roster naming an
-    # agent that is not this account's fails without a Version left behind.
-    subagent_specs: dict[str, psych_runtime.AgentSpec] = {}
-    child_hashes: dict[str, VersionHash] = {}
-    for ref in body.subagents:
-        if ref.agent_id == agent_id:
-            raise ApiProblem(400, f"subagent {ref.name!r} cannot be the agent being published")
-        found = await state.index.get_agent(account.id, ref.agent_id)
-        if found is None:
-            raise ApiProblem(404, f"subagent {ref.name!r} names no agent {ref.agent_id!r}")
-        child_version = await state.store.get_version(found[0].version_hash)
-        if child_version is None or not isinstance(child_version.spec, psych_runtime.AgentSpec):
-            raise ApiProblem(409, f"agent {ref.agent_id!r} has no published agent Version")
-        subagent_specs[ref.agent_id] = child_version.spec
-        child_hashes[ref.agent_id] = child_version.hash
-
-    try:
-        spec = build_agent_spec(
-            body,
-            oauth_redirect_uri=state.settings.oauth_callback_url,
-            subagent_specs=subagent_specs,
-        )
-    except ValidationError as err:
-        raise from_pydantic("the agent's fields did not validate", err) from err
-
     workspace = await state.settings_store.load(account.id)
-    try:
-        version = await psych_runtime.publish(
-            state.store,
-            spec,
-            context=ValidationContext(
-                registered_tools=registry.names,
-                # The profiles this account can actually offer, so an agent
-                # naming one that is not configured is refused now rather
-                # than at its first program.
-                sandbox_profiles=state.sandbox.profile_names(workspace.runtime),
-            ),
-        )
-    except SpecValidationError as err:
-        raise from_spec_validation(err) from err
-
-    approval_selectors = (
-        tuple(body.approval_selectors)
-        if body.approval_selectors is not None
-        else state.settings.default_approval_selectors
-    )
-    # `psych_runtime.publish` is not scoped: a Version is an immutable content-hashed
-    # publication, so two accounts publishing the same Spec correctly share one
-    # Version in the Store. Ownership and identity are this index's dimensions,
-    # not Psych's, which is why an entry is keyed by
-    # `(owner, agent_id, version_hash)`.
-    created = await state.index.record_publish(
-        AgentEntry(
-            version_hash=version.hash,
-            agent_id=agent_id,
-            owner=account.id,
-            name=spec.name,
-            description=spec.description,
-            instructions=spec.instructions,
-            model=spec.model.model,
-            model_options=spec.model.model_dump(exclude={"model", "temperature"}),
-            tools=tuple(tool.name for tool in spec.tools if isinstance(tool, CodeTool)),
-            http_tools=tuple(
-                HttpToolEntry(**tool.model_dump(exclude={"kind"}))
-                for tool in spec.tools
-                if isinstance(tool, HttpTool)
-            ),
-            subagents=tuple(
-                SubagentRefEntry(
-                    name=ref.name,
-                    description=ref.description,
-                    agent_id=entry.agent_id,
-                    version_hash=str(child_hashes[entry.agent_id]),
-                )
-                for ref, entry in zip(spec.subagents, body.subagents, strict=True)
-            ),
-            spawn=spec.spawn.model_dump() if spec.spawn is not None else None,
-            suspension=spec.suspension.model_dump(exclude={"may_ask_questions"}),
-            limits=spec.limits.model_dump(),
-            # From the Spec, not from the request body: the Spec is what was
-            # actually published, and its validator normalises and sorts. An
-            # entry built from the request would disagree with the Version the
-            # moment either of those did anything.
-            skills=tuple(
-                SkillEntry(name=skill.name, description=skill.description, body=skill.body)
-                for skill in spec.skills
-            ),
-            mcp_servers=tuple(server.name for server in spec.mcp_servers),
-            a2a_peers=tuple(peer.name for peer in spec.a2a_peers),
-            answer_style=spec.answer_style,
-            may_ask_questions=spec.suspension.may_ask_questions,
-            tasks_enabled=spec.tasks_enabled,
-            components_enabled=spec.components_enabled,
-            subagents_enabled=spec.spawn is not None,
-            compaction=(
-                CompactionEntry(
-                    trigger_tokens=spec.compaction.trigger_tokens,
-                    keep_recent_turns=spec.compaction.keep_recent_turns,
-                    model=spec.compaction.model,
-                    max_summary_tokens=spec.compaction.max_summary_tokens,
-                    summary_instructions=spec.compaction.summary_instructions,
-                )
-                if spec.compaction is not None
-                else None
-            ),
-            code_execution=(
-                spec.code_execution.model_dump(mode="json")
-                if spec.code_execution is not None
-                else None
-            ),
-            published_at=version.published_at,
-            approval_selectors=approval_selectors,
-        ),
-        now=datetime.now(UTC),
+    published = await publish_agent(
+        body,
+        owner=account.id,
+        store=state.store,
+        index=state.index,
+        registry=registry,
+        sandbox_profiles=state.sandbox.profile_names(workspace.runtime),
+        oauth_redirect_uri=state.settings.oauth_callback_url,
+        default_approval_selectors=state.settings.default_approval_selectors,
     )
     return CreateAgentResponse(
-        agent_id=agent_id, version_hash=version.hash, name=spec.name, created=created
+        agent_id=published.agent_id,
+        version_hash=published.version_hash,
+        name=published.name,
+        created=published.created,
     )
 
 
@@ -1718,6 +1633,268 @@ async def _start_run(
         )
     )
     return DispatchResponse(run_id=dispatched.run_id)
+
+
+# ---------------------------------------------------------------------------
+# The console's own surfaces, offered to an agent as tools
+#
+# `app.tools` declares two base classes and installs whatever implements them
+# at boot. These are the implementations, and they live here rather than beside
+# the tool definitions because what they need is this module's application
+# object -- the same index, the same store, the same dispatch path the routes
+# use. That is the point: an agent built by `create_agent` must be the agent
+# the Agents page would have built, and a workflow started by `run_workflow`
+# must be the Run the Runs page would have started, or the console would be
+# showing a second class of thing that merely looks the same.
+# ---------------------------------------------------------------------------
+
+
+class _PlaygroundAgentPublisher(AgentPublisher):
+    """``list_agents``, ``create_agent`` and ``update_agent``, for the account
+    whose Run is calling."""
+
+    def __init__(self, state_ref: Callable[[], AppState]) -> None:
+        self._state = state_ref
+        # A callable rather than the `AppState` itself: the publisher is
+        # installed inside `lifespan` while the object is still being
+        # assembled, and a late lookup keeps the two from having to be ordered.
+
+    async def _account_for(self, tenant: str) -> Account:
+        state = self._state()
+        file = await state.settings_store.load_file()
+        account = file.accounts.by_id(tenant)
+        if account is None:
+            raise ValueError(f"no account {tenant!r}")
+        return account
+
+    async def list_for(self, tenant: str) -> list[dict[str, Any]]:
+        state = self._state()
+        return [
+            {
+                "agent_id": pointer.agent_id,
+                "name": entry.name,
+                "description": entry.description,
+                "model": entry.model,
+                "tools": list(entry.tools),
+                "connectors": list(entry.mcp_servers),
+                "catalogue_id": entry.catalogue_id,
+            }
+            for pointer, entry in await state.index.list_agents(tenant)
+        ]
+
+    def _servers(self, workspace: PlaygroundState, names: Sequence[str]) -> list[McpServerIn]:
+        """Connector names as the MCP entries a publish takes.
+
+        This account's own presets first, then the catalogue. The order matters:
+        somebody who edited the seeded ``github`` preset -- narrowed its allow
+        list, pointed it at an enterprise host -- means *their* one, and taking
+        the catalogue's would quietly publish an agent against a different
+        server than the Connect button they pressed.
+        """
+        presets = {server.name: server for server in workspace.mcp_servers}
+        servers: list[McpServerIn] = []
+        for name in names:
+            preset = presets.get(name)
+            if preset is not None:
+                servers.append(
+                    McpServerIn(
+                        name=preset.name,
+                        url=preset.url,
+                        transport=preset.transport,
+                        credential=preset.credential,
+                        allow=list(preset.allow),
+                        # Optional whatever the preset says, for the same reason
+                        # the catalogue seeds them optional: an agent composed in
+                        # a conversation must publish and run before anybody has
+                        # finished an OAuth flow for it.
+                        optional=True,
+                        preload=preset.preload,
+                        oauth=(
+                            McpOAuthIn(**preset.oauth.model_dump())
+                            if preset.oauth is not None
+                            else None
+                        ),
+                    )
+                )
+                continue
+            connector = catalogue_data.connector_by_name(name)
+            if connector is None:
+                raise ValueError(
+                    f"no connector {name!r}; this workspace has "
+                    f"{sorted(presets) or 'none configured'}"
+                )
+            servers.append(connector.mcp_server())
+        return servers
+
+    async def create_for(
+        self,
+        tenant: str,
+        *,
+        name: str,
+        instructions: str,
+        description: str,
+        connectors: list[str],
+        tools: list[str],
+    ) -> dict[str, Any]:
+        state = self._state()
+        account = await self._account_for(tenant)
+        workspace = await state.settings_store.load(account.id)
+        provider = active_provider(workspace)
+        body = CreateAgentRequest(
+            name=name,
+            description=description,
+            instructions=instructions,
+            model=(
+                provider.model
+                if provider is not None
+                else catalogue_data.PROVIDERS[0].default_model
+            ),
+            tools=tools,
+            mcp=self._servers(workspace, connectors),
+            may_ask_questions=True,
+            tasks_enabled=True,
+            components_enabled=True,
+        )
+        published = await self._publish(state, account, workspace, body)
+        return {
+            "agent_id": published.agent_id,
+            "name": published.name,
+            "version_hash": str(published.version_hash),
+            "created": published.created,
+        }
+
+    async def update_for(
+        self,
+        tenant: str,
+        *,
+        agent_id: str,
+        instructions: str | None,
+        description: str | None,
+        connectors: list[str] | None,
+    ) -> dict[str, Any]:
+        state = self._state()
+        account = await self._account_for(tenant)
+        found = await state.index.get_agent(account.id, agent_id)
+        if found is None:
+            raise ValueError(f"no agent {agent_id!r} in this workspace")
+        _, entry = found
+        # Refused rather than silently flattened. `AgentEntry` records a
+        # roster, peers, HTTP tools, skills and a code-execution policy that
+        # this tool's four arguments cannot express, and republishing from the
+        # arguments alone would drop them -- which on the `psych` orchestrator
+        # means quietly deleting its twenty-five-agent roster and its spawn
+        # envelope, with nothing in the approval prompt to show for it.
+        carries = {
+            "a delegation roster": bool(entry.subagents),
+            "A2A peers": bool(entry.a2a_peers),
+            "HTTP tools": bool(entry.http_tools),
+            "skills": bool(entry.skills),
+            "code execution": entry.code_execution is not None,
+        }
+        refused = [name for name, present in carries.items() if present]
+        if refused:
+            raise ValueError(
+                f"agent {agent_id!r} is built with {', '.join(refused)}, which this tool "
+                "cannot change without dropping. Edit it on the Agents page instead."
+            )
+        workspace = await state.settings_store.load(account.id)
+        body = CreateAgentRequest(
+            agent_id=agent_id,
+            name=entry.name,
+            description=entry.description if description is None else description,
+            instructions=entry.instructions if instructions is None else instructions,
+            model=entry.model,
+            model_options=ModelOptionsIn(**entry.model_options) if entry.model_options else None,
+            tools=list(entry.tools),
+            mcp=self._servers(
+                workspace, list(entry.mcp_servers) if connectors is None else connectors
+            ),
+            # Carried forward from the entry, not defaulted: an agent whose
+            # turn budget or expiries somebody tuned must not have them reset
+            # by a description change.
+            limits=dict(entry.limits) or None,
+            suspension=SuspensionIn(**entry.suspension) if entry.suspension else None,
+            answer_style=entry.answer_style,
+            compaction=(
+                CompactionIn(**entry.compaction.model_dump())
+                if entry.compaction is not None
+                else None
+            ),
+            may_ask_questions=entry.may_ask_questions,
+            tasks_enabled=entry.tasks_enabled,
+            components_enabled=entry.components_enabled,
+            approval_selectors=list(entry.approval_selectors),
+        )
+        published = await self._publish(state, account, workspace, body)
+        return {
+            "agent_id": published.agent_id,
+            "name": published.name,
+            "version_hash": str(published.version_hash),
+            "created": published.created,
+        }
+
+    async def _publish(
+        self,
+        state: AppState,
+        account: Account,
+        workspace: PlaygroundState,
+        body: CreateAgentRequest,
+    ) -> PublishedAgent:
+        try:
+            return await publish_agent(
+                body,
+                owner=account.id,
+                store=state.store,
+                index=state.index,
+                registry=registry,
+                sandbox_profiles=state.sandbox.profile_names(workspace.runtime),
+                oauth_redirect_uri=state.settings.oauth_callback_url,
+                default_approval_selectors=state.settings.default_approval_selectors,
+            )
+        except ApiProblem as err:
+            # A tool's failure, not an HTTP response: the model reads it and
+            # fixes the request rather than the Run dying on a status code.
+            raise ValueError(err.detail) from err
+
+
+class _PlaygroundWorkflowPublisher(ToolWorkflowPublisher):
+    """``ToolWorkflowPublisher`` plus the one thing the service cannot do on
+    its own: start a Run."""
+
+    def __init__(self, service: WorkflowService, state_ref: Callable[[], AppState]) -> None:
+        super().__init__(service)
+        self._state = state_ref
+
+    async def dispatch_for(
+        self, tenant: str, *, workflow_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        state = self._state()
+        file = await state.settings_store.load_file()
+        account = file.accounts.by_id(tenant)
+        if account is None:
+            raise ValueError(f"no account {tenant!r}")
+        workflow = await state.index.get_workflow(account.id, workflow_id)
+        if workflow is None:
+            raise ValueError(f"no workflow {workflow_id!r} in this workspace")
+        # The same `_start_run` `POST /api/runs` uses, so the Run this tool
+        # starts is indexed, scoped and pinned exactly like one somebody
+        # started from the console.
+        dispatched = await _start_run(
+            state,
+            account,
+            message="",
+            continues=None,
+            version_hash=workflow.version_hash,
+            agent_id="",
+            branch_id=new_branch_id(),
+            conversation_id=new_conversation_id(),
+            input=payload,
+        )
+        return {
+            "run_id": str(dispatched.run_id),
+            "workflow_id": workflow_id,
+            "name": workflow.name,
+        }
 
 
 @app.post("/api/runs", status_code=201, response_model=DispatchResponse)
@@ -3170,6 +3347,178 @@ def _live_connections(state: AppState, account: Account) -> dict[str, McpConnect
     return {
         status.server: status for status in state.mcp.connections() if status.tenant == account.id
     }
+
+
+# ---------------------------------------------------------------------------
+# The out-of-the-box catalogue
+# ---------------------------------------------------------------------------
+
+
+def _catalogue_state(
+    preset: McpServerPreset | None,
+) -> tuple[Literal["not_seeded", "disconnected", "connected", "error"], int | None, str]:
+    """One connector's connection state, from what the last attempt recorded.
+
+    The stored record rather than the live pool: a pool entry exists only while
+    a connection is warm, and a page loaded ten minutes after a successful
+    Connect should still say connected. ``error`` is distinguished from
+    ``disconnected`` because they need different words on the button -- one is
+    "try again, and here is why it failed", the other is "you have not done
+    this yet".
+    """
+    if preset is None:
+        return "not_seeded", None, ""
+    record = preset.last_connection
+    if record is None:
+        return "disconnected", None, ""
+    if record.ok:
+        return "connected", len(record.tools), record.detail
+    return "error", None, record.detail
+
+
+async def _catalogue_response(state: AppState, account: Account) -> CatalogueResponse:
+    """``app.catalogue``'s four lists, each entry carrying this account's status."""
+    workspace = await state.settings_store.load(account.id)
+    providers = {p.id: p for p in workspace.providers}
+    presets = {server.name: server for server in workspace.mcp_servers}
+    agents = {
+        entry.catalogue_id: pointer.agent_id
+        for pointer, entry in await state.index.list_agents(account.id)
+        if entry.catalogue_id
+    }
+    workflows = {
+        entry.catalogue_id: entry.workflow_id
+        for entry in await state.index.list_workflows(account.id)
+        if entry.catalogue_id
+    }
+
+    local_ids = {entry.id for entry in catalogue_data.PROVIDERS if entry.local}
+    active = providers.get(workspace.active_provider_id or "")
+    provider_ready = active is not None and (bool(active.api_key) or active.id in local_ids)
+
+    provider_out: list[CatalogueProviderOut] = []
+    for entry in catalogue_data.PROVIDERS:
+        configured = providers.get(entry.id)
+        base_url = configured.base_url if configured else catalogue_data.resolve_base_url(entry)
+        provider_out.append(
+            CatalogueProviderOut(
+                id=entry.id,
+                label=entry.label,
+                base_url=base_url,
+                default_model=entry.default_model,
+                suggested_models=list(entry.suggested_models),
+                key_url=entry.key_url,
+                docs_url=entry.docs_url,
+                requires=list(entry.requires),
+                local=entry.local,
+                resolved=not any("{" + name + "}" in base_url for name in entry.requires),
+                # A `local` provider needs no key, so "configured" for Ollama
+                # is "it is in the list at all". Asking somebody to paste a key
+                # that does not exist is how a first-run page loses them.
+                configured=configured is not None and (entry.local or bool(configured.api_key)),
+                seeded=configured is not None,
+                active=workspace.active_provider_id == entry.id,
+                provider_id=configured.id if configured else None,
+            )
+        )
+
+    connector_out: list[CatalogueConnectorOut] = []
+    for connector in catalogue_data.CONNECTORS:
+        preset = presets.get(connector.name)
+        connection_state, tool_count, detail = _catalogue_state(preset)
+        credential = preset.credential if preset is not None else None
+        connector_out.append(
+            CatalogueConnectorOut(
+                name=connector.name,
+                label=connector.label,
+                category=connector.category,
+                description=connector.description,
+                url=connector.url,
+                transport=connector.transport,
+                auth=CatalogueAuthOut(**connector.auth.model_dump()),
+                docs_url=connector.docs_url,
+                read_only_default=connector.read_only_default,
+                agent=CatalogueConnectorAgentOut(
+                    catalogue_id=connector.name,
+                    name=connector.name,
+                    description=connector.agent_description,
+                ),
+                workflows=list(connector.workflows),
+                seeded=preset is not None,
+                state=connection_state,
+                connected=connection_state == "connected",
+                tool_count=tool_count,
+                detail=detail,
+                credential=credential,
+                # Whether the secret exists, never what it holds. The settings
+                # response narrows keys away for exactly this reason, and so
+                # does this one.
+                credential_set=credential is not None and credential in workspace.secrets,
+            )
+        )
+
+    return CatalogueResponse(
+        provider_ready=provider_ready,
+        providers=provider_out,
+        connectors=connector_out,
+        agents=[
+            CatalogueAgentOut(
+                catalogue_id=agent.catalogue_id,
+                name=agent.name,
+                description=agent.description,
+                connector=agent.connector,
+                subagents=list(agent.subagents),
+                seeded=agent.catalogue_id in agents,
+                agent_id=agents.get(agent.catalogue_id),
+            )
+            for agent in catalogue_data.AGENTS
+        ],
+        workflows=[
+            CatalogueWorkflowOut(
+                catalogue_id=flow.catalogue_id,
+                name=flow.name,
+                description=flow.description,
+                connectors=list(flow.connectors),
+                agents=list(flow.agents),
+                seeded=flow.catalogue_id in workflows,
+                workflow_id=workflows.get(flow.catalogue_id),
+            )
+            for flow in catalogue_data.WORKFLOWS
+        ],
+    )
+
+
+@app.get("/api/catalogue", response_model=CatalogueResponse)
+async def get_catalogue(request: Request) -> CatalogueResponse:
+    """What this playground ships with, and how far this account has got with it.
+
+    Both halves in one response on purpose. The catalogue alone is a brochure;
+    the account's state alone is a settings page. What a first-run screen needs
+    is "here is GitHub, and you have not connected it yet" on one line.
+    """
+    state = _state(request)
+    return await _catalogue_response(state, await _account(request))
+
+
+@app.post("/api/catalogue/seed", response_model=SeedCatalogueResponse)
+async def seed_catalogue_route(
+    body: SeedCatalogueRequest, request: Request
+) -> SeedCatalogueResponse:
+    """Add whatever of the catalogue this account is missing.
+
+    Signup does this already; this route is for an account made before the
+    catalogue existed, for one whose owner deleted something and wants it back,
+    and for the console's own "restore the defaults". Idempotent: a second call
+    adds nothing and says so.
+    """
+    state = _state(request)
+    account = await _account(request)
+    result = await seed_catalogue(state, account.id, kinds=body.kinds or ALL_KINDS)
+    if result.connectors:
+        await _refresh_all_descriptions(state.descriptions, state.settings_store)
+    return SeedCatalogueResponse(
+        added=result.as_dict(), catalogue=await _catalogue_response(state, account)
+    )
 
 
 @app.get("/api/settings", response_model=SettingsResponse)

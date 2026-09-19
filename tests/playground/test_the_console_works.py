@@ -115,7 +115,7 @@ class TestAConversation:
         self, talking: httpx.AsyncClient, stub_provider: StubProvider
     ) -> None:
         stub_provider.says(
-            Turn(tool_calls=(("lookup_order", {"order_id": "A1"}),), prompt_tokens=412),
+            Turn(tool_calls=(("current_time", {}),), prompt_tokens=412),
             Turn(text="A1 has shipped.", prompt_tokens=461, completion_tokens=9),
         )
         run_id = await dispatch(talking, await publish_agent(talking), "where is order A1?")
@@ -127,7 +127,7 @@ class TestAConversation:
 
         report = (await talking.get(f"/api/runs/{run_id}/report")).json()
         assert [(call["tool"], call["outcome"]) for call in report["tool_calls"]] == [
-            ("lookup_order", "ok")
+            ("current_time", "ok")
         ]
 
     async def test_usage_keeps_cached_reads_disjoint_from_input(
@@ -135,7 +135,7 @@ class TestAConversation:
     ) -> None:
         stub_provider.says(
             Turn(
-                tool_calls=(("lookup_order", {"order_id": "A1"}),),
+                tool_calls=(("current_time", {}),),
                 prompt_tokens=412,
                 completion_tokens=23,
             ),
@@ -169,7 +169,7 @@ class TestAConversation:
         self, talking: httpx.AsyncClient, stub_provider: StubProvider
     ) -> None:
         stub_provider.says(
-            Turn(tool_calls=(("lookup_order", {"order_id": "A1"}),)),
+            Turn(tool_calls=(("current_time", {}),)),
             Turn(text="A1 has shipped."),
         )
         run_id = await dispatch(talking, await publish_agent(talking), "where is order A1?")
@@ -184,7 +184,7 @@ class TestAConversation:
         self, talking: httpx.AsyncClient, stub_provider: StubProvider
     ) -> None:
         stub_provider.says(
-            Turn(tool_calls=(("lookup_order", {"order_id": "A1"}),)),
+            Turn(tool_calls=(("current_time", {}),)),
             Turn(text="A1 has shipped."),
         )
         run_id = await dispatch(talking, await publish_agent(talking), "where is order A1?")
@@ -198,24 +198,33 @@ class TestAConversation:
 
 
 class TestAnApprovalHeldForAPerson:
+    """The destructive tool in the registry is ``update_agent``: it publishes a
+    new Version and moves an agent's pointer at it, which every future Run of
+    that agent then behaves by, and the console offers no undo. So it is the
+    one an agent's ``approval_selectors`` are pointed at here, exactly as
+    ``issue_refund`` was before the demo storefront was retired -- same
+    suspension, same resume, same refusal path."""
+
     async def test_it_suspends_before_the_destructive_call(
         self, talking: httpx.AsyncClient, stub_provider: StubProvider
     ) -> None:
+        agent_id = await _editor(talking)
+        arguments = {"agent_id": agent_id, "description": "Edits agents."}
         stub_provider.says(
-            Turn(tool_calls=(("issue_refund", {"order_id": "A1", "cents": 4200}),)),
-            Turn(text="Refunded."),
+            Turn(tool_calls=(("update_agent", arguments),)),
+            Turn(text="Updated."),
         )
-        run_id = await dispatch(talking, await _refunder(talking), "refund A1")
+        run_id = await dispatch(talking, agent_id, "give yourself a description")
 
         status = await wait_for(talking, run_id, settled=False)
 
         assert status["lifecycle"] == "waiting", status
         pending = status["pending_approval"]
         assert pending is not None, "the Run stopped without saying what for"
-        assert pending["tool"] == "issue_refund"
+        assert pending["tool"] == "update_agent"
         # The exact arguments, so a console shows what it is approving rather
         # than only which tool.
-        assert pending["arguments"] == {"order_id": "A1", "cents": 4200}
+        assert pending["arguments"] == arguments
 
         report = (await talking.get(f"/api/runs/{run_id}/report")).json()
         assert [c for c in report["tool_calls"] if c["outcome"] is not None] == []
@@ -223,11 +232,16 @@ class TestAnApprovalHeldForAPerson:
     async def test_approving_lets_it_through(
         self, talking: httpx.AsyncClient, stub_provider: StubProvider
     ) -> None:
+        agent_id = await _editor(talking)
         stub_provider.says(
-            Turn(tool_calls=(("issue_refund", {"order_id": "A1", "cents": 4200}),)),
-            Turn(text="Refunded 4200 cents on order A1."),
+            Turn(
+                tool_calls=(
+                    ("update_agent", {"agent_id": agent_id, "description": "Edits agents."}),
+                ),
+            ),
+            Turn(text="Described."),
         )
-        run_id = await dispatch(talking, await _refunder(talking), "refund A1")
+        run_id = await dispatch(talking, agent_id, "give yourself a description")
         await wait_for(talking, run_id, settled=False)
 
         response = await talking.post(
@@ -237,17 +251,25 @@ class TestAnApprovalHeldForAPerson:
 
         assert (await wait_for(talking, run_id))["terminal_state"] == "completed"
         report = (await talking.get(f"/api/runs/{run_id}/report")).json()
-        refund = next(c for c in report["tool_calls"] if c["tool"] == "issue_refund")
-        assert refund["outcome"] == "ok"
+        edit = next(c for c in report["tool_calls"] if c["tool"] == "update_agent")
+        assert edit["outcome"] == "ok"
+        # It really ran: the agent carries the new description afterwards.
+        summary = (await talking.get(f"/api/agents/{agent_id}")).json()
+        assert summary["description"] == "Edits agents."
 
     async def test_denying_settles_the_call_as_an_error_and_never_runs_it(
         self, talking: httpx.AsyncClient, stub_provider: StubProvider
     ) -> None:
+        agent_id = await _editor(talking)
         stub_provider.says(
-            Turn(tool_calls=(("issue_refund", {"order_id": "A1", "cents": 4200}),)),
-            Turn(text="I was not able to issue that refund."),
+            Turn(
+                tool_calls=(
+                    ("update_agent", {"agent_id": agent_id, "description": "Edits agents."}),
+                ),
+            ),
+            Turn(text="I was not able to make that change."),
         )
-        run_id = await dispatch(talking, await _refunder(talking), "refund A1")
+        run_id = await dispatch(talking, agent_id, "give yourself a description")
         await wait_for(talking, run_id, settled=False)
 
         await talking.post(
@@ -260,19 +282,27 @@ class TestAnApprovalHeldForAPerson:
         assert status["terminal_state"] == "completed"
 
         report = (await talking.get(f"/api/runs/{run_id}/report")).json()
-        refund = next(c for c in report["tool_calls"] if c["tool"] == "issue_refund")
-        assert refund["outcome"] == "error"
-        assert refund["failure"]["kind"] == "denied"
-        assert refund["result"] is None, "a refused call produced a result"
+        edit = next(c for c in report["tool_calls"] if c["tool"] == "update_agent")
+        assert edit["outcome"] == "error"
+        assert edit["failure"]["kind"] == "denied"
+        assert edit["result"] is None, "a refused call produced a result"
+        # And nothing changed, which is the half a status code cannot prove.
+        summary = (await talking.get(f"/api/agents/{agent_id}")).json()
+        assert summary["description"] == "Edits agents, once somebody agrees."
 
     async def test_a_stranger_cannot_decide_it(
         self, talking: httpx.AsyncClient, stub_provider: StubProvider
     ) -> None:
+        agent_id = await _editor(talking)
         stub_provider.says(
-            Turn(tool_calls=(("issue_refund", {"order_id": "A1", "cents": 4200}),)),
-            Turn(text="Refunded."),
+            Turn(
+                tool_calls=(
+                    ("update_agent", {"agent_id": agent_id, "description": "Edits agents."}),
+                ),
+            ),
+            Turn(text="Described."),
         )
-        run_id = await dispatch(talking, await _refunder(talking), "refund A1")
+        run_id = await dispatch(talking, agent_id, "give yourself a description")
         await wait_for(talking, run_id, settled=False)
 
         from app.main import app
@@ -284,14 +314,15 @@ class TestAnApprovalHeldForAPerson:
 
             response = await stranger.post(f"/api/runs/{run_id}/resume", json={"approved": True})
 
-        assert response.status_code == 404, "another account decided somebody else's refund"
+        assert response.status_code == 404, "another account decided somebody else's edit"
 
 
-async def _refunder(client: httpx.AsyncClient) -> str:
+async def _editor(client: httpx.AsyncClient) -> str:
     return await publish_agent(
         client,
-        name="refunds",
-        tools=["lookup_order", "issue_refund"],
+        name="editor",
+        description="Edits agents, once somebody agrees.",
+        tools=["list_agents", "update_agent"],
         approval_selectors=["@destructive"],
     )
 

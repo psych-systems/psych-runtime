@@ -20,7 +20,7 @@ AGENT = {
     "name": "coder",
     "instructions": "Work things out with code.",
     "model": "test-model",
-    "tools": ["lookup_order"],
+    "tools": ["current_time"],
 }
 
 
@@ -137,7 +137,7 @@ class TestAgentTerms:
             code_execution={
                 "isolation": "process",
                 "limits": {"wall_seconds": 5},
-                "bindings": ["lookup_order"],
+                "bindings": ["current_time"],
                 "preview_bytes": 2048,
             },
         )
@@ -147,7 +147,7 @@ class TestAgentTerms:
         assert terms["enabled"] is True
         assert terms["isolation"] == "process"
         assert terms["limits"]["wall_seconds"] == 5
-        assert terms["bindings"] == ["lookup_order"]
+        assert terms["bindings"] == ["current_time"]
         assert terms["preview_bytes"] == 2048
         plain_out = await client.get(f"/api/agents/{plain['agent_id']}")
         assert plain_out.json()["code_execution"] is None
@@ -156,7 +156,7 @@ class TestAgentTerms:
         self, client: httpx.AsyncClient
     ) -> None:
         response = await client.post(
-            "/api/agents", json={**AGENT, "code_execution": {"bindings": ["issue_refund"]}}
+            "/api/agents", json={**AGENT, "code_execution": {"bindings": ["update_agent"]}}
         )
         assert response.status_code == 400, response.text
 

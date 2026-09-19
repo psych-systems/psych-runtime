@@ -161,11 +161,15 @@ ENV PSYCH_API_PROXY=http://127.0.0.1:8080 \
     PSYCH_PLAYGROUND_STATE_FILE=/data/state.json \
     PSYCH_PLAYGROUND_INDEX_FILE=/data/index.json \
     PSYCH_PLAYGROUND_MEMORY_FILE=/data/memory.json \
+    PSYCH_PLAYGROUND_OAUTH_CALLBACK_URL=http://localhost:3000/api/oauth/callback \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
 # The backend binds loopback, so nothing reaches it except through the
-# console's proxy. One way in, one place to reason about.
+# console's proxy. One way in, one place to reason about. That is also why
+# the OAuth callback is the console's address: a connector's sign-in sends
+# the person's browser back to it, and the browser can only reach the port
+# this image publishes. Override it when the console is served elsewhere.
 EXPOSE 3000
 
 USER psych

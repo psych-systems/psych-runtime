@@ -794,6 +794,9 @@ export interface CreateAgentResponse {
  */
 export interface AgentSummary {
   agent_id: string;
+  /** Set when this agent came from the catalogue, naming the entry it was
+   *  seeded from. Optional: an older backend does not report it. */
+  catalogue_id?: string | null;
   version_hash: string;
   name: string;
   description: string;
@@ -1206,6 +1209,8 @@ export interface CreateWorkflowRequest {
 
 export interface WorkflowSummary {
   workflow_id: string;
+  /** Set when this workflow came from the catalogue. See `AgentSummary`. */
+  catalogue_id?: string | null;
   version_hash: string;
   name: string;
   description: string;
@@ -2071,3 +2076,174 @@ export interface DeliverEventRequest {
   payload: Record<string, unknown>;
   by?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Catalogue
+// ---------------------------------------------------------------------------
+
+/**
+ * What the console offers out of the box.
+ *
+ * A catalogue entry is an offer, not a thing that exists: a provider is listed
+ * before anybody has a key for it, a connector before anybody has signed in.
+ * Each entry says whether the real thing exists yet and carries its id once it
+ * does, which is how a row knows whether it is still an offer or something to
+ * open.
+ *
+ * Fields the backend added after the first draft of this contract are optional
+ * here rather than required, so the console renders against either.
+ */
+export interface CatalogueProvider {
+  id: string;
+  label: string;
+  base_url: string;
+  default_model: string;
+  suggested_models: string[];
+  /** Where a person goes to get a key, when there is such a page. */
+  key_url: string | null;
+  docs_url: string | null;
+  /** Extra values this provider needs beyond a key, by name. The address
+   *  carries a `{name}` placeholder for each one. Cloudflare's account id is
+   *  the only one today. */
+  requires: string[];
+  /** Every placeholder in the address is already filled, so nothing extra is
+   *  asked for. */
+  resolved?: boolean;
+  /** Runs on the person's own machine, so it needs no key at all. */
+  local?: boolean;
+  configured: boolean;
+  active?: boolean;
+  provider_id: string | null;
+}
+
+export type ConnectorCategory =
+  | "code"
+  | "work"
+  | "chat"
+  | "payments"
+  | "infra"
+  | "data"
+  | "design"
+  | "automation";
+
+/**
+ * Where a connector has got to.
+ *
+ * `not_seeded` means the preset does not exist in this account yet, which is
+ * a different thing from existing and never having connected
+ * (`disconnected`).
+ */
+export type ConnectorState =
+  | "not_seeded"
+  | "disconnected"
+  | "connected"
+  | "error"
+  | "not_connected"
+  | "pending_authorization"
+  | "failed"
+  | "needs_credential";
+
+/**
+ * How this console proves who it is to a connector.
+ *
+ * One flat shape rather than a union: `token_alternative` says a bearer token
+ * works where the usual answer is a sign-in, and `dynamic_registration: false`
+ * says the sign-in needs a client id somebody registered first.
+ */
+export interface ConnectorAuth {
+  kind: "oauth" | "api_key";
+  dynamic_registration?: boolean;
+  /** A token or key is accepted instead of signing in. */
+  token_alternative?: boolean;
+  /** What the key is, in the words its own docs use. */
+  credential_hint?: string | null;
+  /** It connects with no credential at all. */
+  optional?: boolean;
+}
+
+/** The specialist agent a connector comes with, before it is published. */
+export interface CatalogueAgentRef {
+  catalogue_id: string;
+  name: string;
+  description: string;
+}
+
+export interface CatalogueConnector {
+  /** The same name as the seeded MCP preset in settings. Everything the row
+   *  can do -- connect, disconnect, read the tool catalogue -- joins on it. */
+  name: string;
+  label: string;
+  category: ConnectorCategory;
+  description: string;
+  url: string;
+  transport: McpTransport;
+  auth: ConnectorAuth;
+  docs_url: string | null;
+  read_only_default?: boolean;
+  /** The name the preset's credential is stored under, set only where a key
+   *  is the primary way in. An OAuth connector reports null even when a token
+   *  would also work: naming a secret nothing has stored yet would fail the
+   *  sign-in before it opened a browser. */
+  credential?: string | null;
+  /** Whether a secret is stored under that name. */
+  credential_set?: boolean;
+  connected: boolean;
+  state: ConnectorState;
+  tool_count?: number | null;
+  /** The last attempt's own words, when it has any. */
+  detail?: string;
+  failure_reason?: string | null;
+  seeded?: boolean;
+  /** The specialist agent published for this system. */
+  agent?: CatalogueAgentRef | null;
+  agent_id?: string | null;
+  /** Catalogue ids of the workflows built on this connector. */
+  workflows?: string[];
+}
+
+export interface CatalogueAgent {
+  catalogue_id: string;
+  name: string;
+  description: string;
+  /** The connector it speaks through, or null for the one that talks to the
+   *  other agents rather than to a system. */
+  connector: string | null;
+  /** Catalogue ids of the agents this one can hand work to. */
+  subagents?: string[];
+  seeded?: boolean;
+  agent_id: string | null;
+}
+
+export interface CatalogueWorkflow {
+  catalogue_id: string;
+  name: string;
+  description: string;
+  connectors: string[];
+  agents?: string[];
+  seeded?: boolean;
+  workflow_id: string | null;
+}
+
+/** `GET /api/catalogue`. */
+export interface CatalogueResponse {
+  /** The provider in use can answer: it holds a key, or runs locally and
+   *  needs none. Seeding leaves a keyless provider in use, so "one is in
+   *  use" is not the same as "step one is done". */
+  provider_ready?: boolean;
+  providers: CatalogueProvider[];
+  connectors: CatalogueConnector[];
+  agents: CatalogueAgent[];
+  workflows: CatalogueWorkflow[];
+}
+
+export type CatalogueKind = "providers" | "connectors" | "agents" | "workflows";
+
+/** `POST /api/catalogue/seed`: what it added, by kind, and the catalogue as it
+ *  stands afterwards. Adding twice adds nothing the second time. */
+export interface CatalogueSeedResponse {
+  added: Record<CatalogueKind, string[]>;
+  catalogue?: CatalogueResponse;
+}
+
+/** The catalogue id of the agent that talks to the others for you. */
+export const PSYCH_CATALOGUE_ID = "psych";

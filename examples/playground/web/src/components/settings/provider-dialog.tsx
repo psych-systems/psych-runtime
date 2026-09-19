@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Loader2Icon } from "lucide-react";
 
 import { ApiError } from "@/lib/api";
@@ -20,35 +20,99 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FieldError, issuesByPath } from "@/components/settings/validation";
 import type { ProviderIn, ProviderOut } from "@/components/settings/types";
 
+/**
+ * A catalogue entry this dialog is opened against: the address and model are
+ * already known, so all a person has to add is the key.
+ *
+ * Deliberately not a fake `ProviderOut`. `provider` being non-null is what
+ * makes this dialog an edit -- the title, the key placeholder and the re-seed
+ * guard all key on it -- and a catalogue offer is a first add, not an edit.
+ */
+export interface ProviderPrefill {
+  id: string;
+  label: string;
+  base_url: string;
+  model: string;
+  key_url: string | null;
+  /** Values the address needs, by name. Each one fills a `{name}` placeholder
+   *  in the address. */
+  requires: string[];
+  /** Runs on the person's own machine, so it needs no key. */
+  local: boolean;
+}
+
 interface ProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   provider: ProviderOut | null;
+  prefill?: ProviderPrefill | null;
+  /** Where a key for the provider being edited comes from, when the
+   *  catalogue knows. An offer carries its own in `prefill`. */
+  keyUrl?: string | null;
   onSave: (edited: ProviderIn) => Promise<void>;
 }
 
-export function ProviderDialog({ open, onOpenChange, provider, onSave }: ProviderDialogProps) {
+/** Every `{name}` the address still needs a value for, each once. */
+function placeholdersIn(baseUrl: string): string[] {
+  const names = new Set<string>();
+  for (const match of baseUrl.matchAll(/\{([a-z0-9_]+)\}/gi)) names.add(match[1]);
+  return [...names];
+}
+
+/** The address with each `{name}` replaced by what was typed for it. */
+function fillPlaceholders(baseUrl: string, values: Record<string, string>): string {
+  return Object.entries(values).reduce(
+    (url, [name, value]) => url.split(`{${name}}`).join(value.trim()),
+    baseUrl,
+  );
+}
+
+export function ProviderDialog({
+  open,
+  onOpenChange,
+  provider,
+  prefill = null,
+  keyUrl = null,
+  onSave,
+}: ProviderDialogProps) {
   const isEdit = provider !== null;
-  const [label, setLabel] = useState(provider?.label ?? "");
-  const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
-  const [model, setModel] = useState(provider?.model ?? "");
+  const addingKey = provider !== null && !provider.has_api_key;
+  const getKeyUrl = prefill?.key_url ?? keyUrl;
+  const [label, setLabel] = useState(provider?.label ?? prefill?.label ?? "");
+  const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? prefill?.base_url ?? "");
+  const [model, setModel] = useState(provider?.model ?? prefill?.model ?? "");
   const [apiKey, setApiKey] = useState("");
+  const [extras, setExtras] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   // Re-seed local state whenever the dialog is opened for a (possibly
   // different) provider, rather than on every render.
-  const [seededFor, setSeededFor] = useState(provider?.id ?? null);
-  if (open && seededFor !== (provider?.id ?? null)) {
-    setSeededFor(provider?.id ?? null);
-    setLabel(provider?.label ?? "");
-    setBaseUrl(provider?.base_url ?? "");
-    setModel(provider?.model ?? "");
+  const seedKey = provider?.id ?? (prefill !== null ? `catalogue:${prefill.id}` : null);
+  const [seededFor, setSeededFor] = useState(seedKey);
+  if (open && seededFor !== seedKey) {
+    setSeededFor(seedKey);
+    setLabel(provider?.label ?? prefill?.label ?? "");
+    setBaseUrl(provider?.base_url ?? prefill?.base_url ?? "");
+    setModel(provider?.model ?? prefill?.model ?? "");
     setApiKey("");
+    setExtras({});
     setFormError(null);
     setFieldErrors({});
   }
+
+  // Read from the address itself rather than from who opened the dialog: a
+  // seeded provider carries its `{account_id}` into an edit exactly as a
+  // catalogue offer does, and either way the person is asked for it here
+  // rather than left to edit a URL by hand.
+  const requires = useMemo(() => placeholdersIn(baseUrl), [baseUrl]);
+  const missingExtra = requires.some((name) => (extras[name] ?? "").trim() === "");
+
+  // Focus goes to the first thing left to type. Without this the dialog
+  // lands on the first "?" and opens its tooltip over the form.
+  const focusRef = useRef<HTMLInputElement>(null);
+  const focusKey = (provider?.label ?? prefill?.label ?? "") !== "";
 
   async function handleSubmit() {
     setSaving(true);
@@ -56,9 +120,9 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
     setFieldErrors({});
     try {
       await onSave({
-        id: provider?.id,
+        id: provider?.id ?? prefill?.id,
         label: label.trim(),
-        base_url: baseUrl.trim(),
+        base_url: fillPlaceholders(baseUrl.trim(), extras),
         model: model.trim(),
         ...(apiKey.length > 0 ? { api_key: apiKey } : {}),
       });
@@ -77,11 +141,25 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent
+        className="sm:max-w-md"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          focusRef.current?.focus();
+        }}
+      >
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Edit provider" : "Add a provider"}</DialogTitle>
+          <DialogTitle>
+            {addingKey
+              ? `Add your ${provider.label} key`
+              : isEdit
+                ? "Edit provider"
+                : prefill !== null
+                  ? `Add ${prefill.label}`
+                  : "Add a provider"}
+          </DialogTitle>
           <DialogDescription>
-            Saving does not switch to it. That is a separate step.
+            If nothing in use has a key yet, this one takes over as soon as it is saved.
           </DialogDescription>
         </DialogHeader>
 
@@ -100,6 +178,7 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
             />
             <Input
               id="provider-label"
+              ref={focusKey ? undefined : focusRef}
               className="mt-1.5"
               placeholder="Cloudflare Workers AI"
               value={label}
@@ -157,6 +236,28 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
             <FieldError message={fieldErrors.model} />
           </div>
 
+          {requires.map((name) => (
+            <div key={name}>
+              <LabelWithHelp
+                htmlFor={`provider-extra-${name}`}
+                label={name.replace(/_/g, " ")}
+                help={
+                  <p>
+                    This provider&apos;s address is per-account, so it goes into the address in
+                    place of <code>{`{${name}}`}</code>.
+                  </p>
+                }
+              />
+              <Input
+                id={`provider-extra-${name}`}
+                className="mt-1.5 font-technical"
+                autoComplete="off"
+                value={extras[name] ?? ""}
+                onChange={(e) => setExtras((current) => ({ ...current, [name]: e.target.value }))}
+              />
+            </div>
+          ))}
+
           <div>
             {/* An edit that leaves this blank must send no `api_key` at all.
                 Sending an empty string clears the stored key, which is how an
@@ -180,15 +281,31 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
             />
             <Input
               id="provider-api-key"
+              ref={focusKey ? focusRef : undefined}
               type="password"
               autoComplete="off"
               className="mt-1.5 font-technical"
-              placeholder={isEdit ? "Leave blank to keep the stored key" : "sk-..."}
+              placeholder={provider?.has_api_key ? "Leave blank to keep the stored key" : "sk-..."}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               aria-invalid={fieldErrors.api_key !== undefined}
             />
             <FieldError message={fieldErrors.api_key} />
+            {getKeyUrl && (
+              <a
+                href={getKeyUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1.5 inline-block text-caption font-medium text-primary underline underline-offset-2"
+              >
+                Get a key
+              </a>
+            )}
+            {prefill?.local === true && (
+              <p className="mt-1.5 text-caption text-muted-foreground">
+                This one runs on your own machine and needs no key.
+              </p>
+            )}
           </div>
         </div>
 
@@ -198,10 +315,16 @@ export function ProviderDialog({ open, onOpenChange, provider, onSave }: Provide
           </Button>
           <Button
             onClick={() => void handleSubmit()}
-            disabled={saving || label.trim() === "" || baseUrl.trim() === "" || model.trim() === ""}
+            disabled={
+              saving ||
+              label.trim() === "" ||
+              baseUrl.trim() === "" ||
+              model.trim() === "" ||
+              missingExtra
+            }
           >
             {saving && <Loader2Icon className="animate-spin" />}
-            {isEdit ? "Save changes" : "Add provider"}
+            {addingKey ? "Save key" : isEdit ? "Save changes" : "Add provider"}
           </Button>
         </DialogFooter>
       </DialogContent>

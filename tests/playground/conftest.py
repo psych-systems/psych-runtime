@@ -63,6 +63,12 @@ async def anonymous(
     monkeypatch.delenv("PSYCH_PLAYGROUND_SECRETS", raising=False)
     monkeypatch.delenv("PSYCH_PLAYGROUND_MCP_SERVERS", raising=False)
     monkeypatch.delenv("PSYCH_PLAYGROUND_API_KEY", raising=False)
+    # Off here, on in production. Signing up seeds twenty-six agents, eleven
+    # providers, twenty-five connectors and five workflows, and almost every
+    # test in this suite asserts on what an account holds -- they would all be
+    # counting the catalogue instead of what they published. `seeded_client`
+    # below turns it back on for the tests that are about the catalogue.
+    monkeypatch.setenv("PSYCH_PLAYGROUND_SEED_CATALOGUE", "0")
 
     from app.main import app
 
@@ -85,6 +91,42 @@ async def client(anonymous: httpx.AsyncClient) -> AsyncIterator[httpx.AsyncClien
     """
     await sign_up(anonymous, "owner@example.com")
     yield anonymous
+
+
+@pytest_asyncio.fixture
+async def seeded_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[httpx.AsyncClient]:
+    """A backend that seeds the catalogue on signup, with one account signed in.
+
+    A whole fixture of its own rather than a flag on `client`, because the env
+    var is read once at boot and `anonymous` has already turned it off by the
+    time a test could ask. Deliberately *not* module-scoped: a seeded signup
+    publishes twenty-six agents, and sharing one across tests would let an
+    earlier test's edits reach a later one -- which is the failure mode this
+    suite's per-test `tmp_path` exists to prevent.
+    """
+    monkeypatch.setenv("PSYCH_PLAYGROUND_BASE_URL", "http://127.0.0.1:1/v1")
+    monkeypatch.setenv("PSYCH_PLAYGROUND_MODEL", "test-model")
+    monkeypatch.setenv("PSYCH_PLAYGROUND_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setenv("PSYCH_PLAYGROUND_INDEX_FILE", str(tmp_path / "index.json"))
+    monkeypatch.setenv("PSYCH_PLAYGROUND_MEMORY_FILE", str(tmp_path / "memory.json"))
+    monkeypatch.setenv("PSYCH_PLAYGROUND_SEED_CATALOGUE", "1")
+    monkeypatch.delenv("PSYCH_PLAYGROUND_POSTGRES_DSN", raising=False)
+    monkeypatch.delenv("PSYCH_PLAYGROUND_SECRETS", raising=False)
+    monkeypatch.delenv("PSYCH_PLAYGROUND_MCP_SERVERS", raising=False)
+    monkeypatch.delenv("PSYCH_PLAYGROUND_API_KEY", raising=False)
+
+    from app.main import app
+
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://backend"
+        ) as http_client,
+        app.router.lifespan_context(app),
+    ):
+        await sign_up(http_client, "owner@example.com")
+        yield http_client
 
 
 PASSWORD = "correct horse battery staple"
@@ -328,6 +370,10 @@ async def _backend(
         monkeypatch.setenv("PSYCH_PLAYGROUND_BASE_URL", provider)
         monkeypatch.setenv("PSYCH_PLAYGROUND_API_KEY", "stub-key")
     monkeypatch.setenv("PSYCH_PLAYGROUND_MODEL", "stub-model")
+    # Off here as in `anonymous`: these tests count what an account holds, and
+    # a seeded signup would have them counting the catalogue. `seeded_client`
+    # is the one fixture that turns it on.
+    monkeypatch.setenv("PSYCH_PLAYGROUND_SEED_CATALOGUE", "0")
     monkeypatch.setenv("PSYCH_PLAYGROUND_STATE_FILE", str(tmp_path / "state.json"))
     monkeypatch.setenv("PSYCH_PLAYGROUND_INDEX_FILE", str(tmp_path / "index.json"))
     monkeypatch.setenv("PSYCH_PLAYGROUND_MEMORY_FILE", str(tmp_path / "memory.json"))
@@ -415,7 +461,7 @@ async def publish_agent(client: httpx.AsyncClient, **overrides: Any) -> str:
         "name": "support",
         "instructions": "Help the customer with their order.",
         "model": "stub-model",
-        "tools": ["lookup_order"],
+        "tools": ["current_time"],
     }
     body.update(overrides)
     response = await client.post("/api/agents", json=body)
@@ -445,3 +491,43 @@ async def wait_for(
             return last
         await asyncio.sleep(0.05)
     raise AssertionError(f"the Run never reached a resting state: {last}")
+
+
+@pytest_asyncio.fixture
+async def seeded_first_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[httpx.AsyncClient]:
+    """`docker compose up` exactly: no provider in the environment, seeding on,
+    one account created.
+
+    The scenario the product claim is about, and the one `seeded_client` cannot
+    cover: there, the first account inherits an env-configured provider through
+    `adopt_legacy` and the seeder deliberately leaves the active one alone.
+    Here there is nothing to inherit, so the seeder's own activation is what
+    decides whether a fresh install has a model selected at all.
+    """
+    for name in (
+        "PSYCH_PLAYGROUND_BASE_URL",
+        "PSYCH_PLAYGROUND_API_KEY",
+        "PSYCH_PLAYGROUND_CF_ACCOUNT_ID",
+        "PSYCH_PLAYGROUND_POSTGRES_DSN",
+        "PSYCH_PLAYGROUND_SECRETS",
+        "PSYCH_PLAYGROUND_MCP_SERVERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PSYCH_PLAYGROUND_MODEL", "stub-model")
+    monkeypatch.setenv("PSYCH_PLAYGROUND_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setenv("PSYCH_PLAYGROUND_INDEX_FILE", str(tmp_path / "index.json"))
+    monkeypatch.setenv("PSYCH_PLAYGROUND_MEMORY_FILE", str(tmp_path / "memory.json"))
+    monkeypatch.setenv("PSYCH_PLAYGROUND_SEED_CATALOGUE", "1")
+
+    from app.main import app
+
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://backend"
+        ) as client,
+        app.router.lifespan_context(app),
+    ):
+        await sign_up(client, "owner@example.com")
+        yield client

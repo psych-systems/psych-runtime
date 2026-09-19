@@ -33,7 +33,7 @@ AGENT = {
     "name": "support",
     "instructions": "Help the customer with their order.",
     "model": "test-model",
-    "tools": ["lookup_order"],
+    "tools": ["current_time"],
 }
 
 
@@ -2406,7 +2406,7 @@ class TestSubagents:
             purpose="Price part 88-B across our suppliers.",
             task="Find the list price of part 88-B from every supplier we use.",
             deliverable="A list of supplier and price.",
-            tools=("lookup_order",),
+            tools=("current_time",),
             model="test-model",
             delegation_depth=1,
         )
@@ -2481,7 +2481,7 @@ class TestSubagents:
         assert node["parent_run_id"] == parent
         assert node["state"] == "done"
         assert node["terminal_state"] == "completed"
-        assert node["tools"] == ["lookup_order"]
+        assert node["tools"] == ["current_time"]
         assert node["purpose"].startswith("Price part 88-B")
         assert node["latest"] == "Acme at 12.40."
         assert node["input_tokens"] == 100

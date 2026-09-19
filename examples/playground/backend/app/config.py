@@ -138,6 +138,20 @@ class Settings:
     ``Secure`` cookie is silently dropped over plain HTTP, which presents as
     "sign-in succeeds and then I am signed out". Set
     ``PSYCH_PLAYGROUND_COOKIE_SECURE=1`` behind TLS, where it should be on."""
+    seed_catalogue: bool
+    """Whether creating an account fills its workspace from ``app.catalogue``:
+    the provider list, the connectors, a specialist agent per connector, the
+    ``psych`` orchestrator and the use-case workflows.
+
+    On by default, because it is the product: somebody who runs the container
+    and signs up should have things to press before they have read anything.
+    ``PSYCH_PLAYGROUND_SEED_CATALOGUE=0`` turns it off, for an operator who
+    wants an empty workspace and for this project's own tests, most of which
+    count what an account holds and would otherwise be counting the catalogue.
+
+    Only the *signup* side effect is gated. ``GET /api/catalogue`` and
+    ``POST /api/catalogue/seed`` are explicit requests and always answer, so an
+    account made with this off can still be seeded on purpose."""
 
 
 def _load_secrets() -> dict[str, str]:
@@ -251,4 +265,6 @@ def load_settings() -> Settings:
         allowed_origins=load_allowed_origins(),
         cookie_secure=os.environ.get("PSYCH_PLAYGROUND_COOKIE_SECURE", "")
         not in ("", "0", "false"),
+        seed_catalogue=os.environ.get("PSYCH_PLAYGROUND_SEED_CATALOGUE", "1")
+        not in ("0", "false", "no"),
     )

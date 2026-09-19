@@ -50,37 +50,6 @@ import type {
  *  form accepts is one the publish accepts. */
 export const NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
 
-export interface Starter {
-  name: string;
-  label: string;
-  description: string;
-  instructions: string;
-}
-
-export const STARTERS: readonly Starter[] = [
-  {
-    name: "general-assistant",
-    label: "General assistant",
-    description: "Handles everyday questions and coordinates work across available systems.",
-    instructions:
-      "You are the workspace's general assistant. Understand the goal before acting, use available tools and agents when they improve the result, state assumptions plainly, and finish with a clear answer or next action.",
-  },
-  {
-    name: "research-analyst",
-    label: "Research analyst",
-    description: "Investigates questions and turns evidence into practical recommendations.",
-    instructions:
-      "Investigate the question using the sources and tools available to you. Separate verified facts from assumptions, reconcile conflicting evidence, and finish with a concise recommendation supported by what you found.",
-  },
-  {
-    name: "operations-coordinator",
-    label: "Operations coordinator",
-    description: "Plans multi-step work and keeps execution moving to completion.",
-    instructions:
-      "Turn the requested outcome into a short plan, complete each step with the available tools, surface blockers early, and report what changed, what was verified, and what still needs attention.",
-  },
-] as const;
-
 function choiceToMcpServer(choice: ConnectionChoice, preset: McpServerPreset): McpServerIn {
   return {
     name: preset.name,

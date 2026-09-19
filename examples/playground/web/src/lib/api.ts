@@ -27,6 +27,9 @@ import type {
   AgentVersionSummary,
   AnswerView,
   ConfigResponse,
+  CatalogueKind,
+  CatalogueResponse,
+  CatalogueSeedResponse,
   CreateAgentRequest,
   CreateAgentResponse,
   DispatchRequest,
@@ -1139,4 +1142,29 @@ export async function retrySubagent(
       method: "POST",
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue
+// ---------------------------------------------------------------------------
+
+/**
+ * What the console offers out of the box, and how much of it is already real.
+ *
+ * One read for four lists: providers waiting on a key, connectors waiting on a
+ * sign-in, and the agents and workflows that exist once they are seeded. Each
+ * entry says whether the real thing exists yet, so a page never has to guess
+ * by matching names itself.
+ */
+export function getCatalogue(signal?: AbortSignal): Promise<CatalogueResponse> {
+  return request<CatalogueResponse>("/api/catalogue", { signal });
+}
+
+/** Create whatever the catalogue offers and the account does not have yet.
+ *  Adds only what is missing, so running it twice is not two of anything. */
+export function seedCatalogue(kinds?: CatalogueKind[]): Promise<CatalogueSeedResponse> {
+  return request<CatalogueSeedResponse>("/api/catalogue/seed", {
+    method: "POST",
+    body: json(kinds ? { kinds } : {}),
+  });
 }

@@ -44,9 +44,15 @@ spec = (
     .tool_step("create", "create_account", arguments_from={"email": ref("input.email")})
     .branch(
         "tier",
-        ("paid", when("input.plan", "ne", "free"),
-         psych_runtime.ToolStep(name="bill", tool="charge",
-                                arguments_from={"account": ref("steps.create.output.result")})),
+        (
+            "paid",
+            when("input.plan", "ne", "free"),
+            psych_runtime.ToolStep(
+                name="bill",
+                tool="charge",
+                arguments_from={"account": ref("steps.create.output.result")},
+            ),
+        ),
         otherwise=psych_runtime.MapStep(name="free", output={"charged": lit(False)}),
     )
     .agent_step("welcome", greeter, input={"message": ref("input.email")})
@@ -136,8 +142,13 @@ the step with kind `denied`, which is never retried.
 ## Retries and timeouts
 
 ```python
-psych_runtime.RetryPolicy(max_attempts=4, backoff_seconds=2, multiplier=2, max_backoff_seconds=60,
-                          retry_on=("http_500", "timeout"))
+psych_runtime.RetryPolicy(
+    max_attempts=4,
+    backoff_seconds=2,
+    multiplier=2,
+    max_backoff_seconds=60,
+    retry_on=("http_500", "timeout"),
+)
 ```
 
 `max_attempts` counts the first try. A failed attempt is recorded as
@@ -155,11 +166,11 @@ started with kind `budget_exhausted`.
 
 ```python
 view = await psych_runtime.workflow_view(store, run_id, scope=scope)
-for step in view.steps:            # StepView, in Spec order, children inside
-    step.status                    # pending running waiting completed failed retrying skipped replayed
+for step in view.steps:  # StepView, in Spec order, children inside
+    step.status  # pending running waiting completed failed retrying skipped replayed
     step.attempts, step.input, step.output, step.failure, step.started_at, step.completed_at
-    step.children                  # branches, arms, iterations, items, a nested workflow's steps
-view.waiting                       # WaitingStep: the step the Run is parked on, and why
+    step.children  # branches, arms, iterations, items, a nested workflow's steps
+view.waiting  # WaitingStep: the step the Run is parked on, and why
 view.state, view.output, view.step_starts, view.completed, view.failed
 ```
 
@@ -185,7 +196,9 @@ Version hash does not change.
 ## Replay: rerun from a step, without rewriting history
 
 ```python
-again = await psych_runtime.replay(store, run_id, from_step="bill", input={"plan": "pro"}, scope=scope)
+again = await psych_runtime.replay(
+    store, run_id, from_step="bill", input={"plan": "pro"}, scope=scope
+)
 ```
 
 Admits a **new** Run that copies every step the source Run settled before

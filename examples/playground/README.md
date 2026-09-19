@@ -18,9 +18,13 @@ docker compose up --build        # from a clone of this repository
 ```
 
 Then http://localhost:3000. Nothing else to install and nothing to configure:
-sign up, and the Settings page is where a model provider goes. The console
-treats having no provider as a designed state rather than an error, so it works
-before you have one.
+sign up, and the workspace is already filled. Model providers are listed under
+Settings waiting on a key (paste one and it is in use); GitHub, Notion, Jira,
+Linear, Slack, Sentry, Stripe and the rest are listed under Connections with a
+Connect button that signs you in; each has its own specialist agent, and a
+general **Psych** agent delegates to them and can create agents and workflows
+for you. The console treats having no provider as a designed state rather than
+an error, so it works before you have one.
 
 Runs are held in memory by default and do not survive a restart, and the
 console says so. For a real database:

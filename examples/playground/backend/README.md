@@ -123,6 +123,8 @@ that does not know when that moment is.
 | `PSYCH_PLAYGROUND_COOKIE_SECURE` | off | Marks the session cookie `Secure`. Off by default because the default deployment is plain HTTP on loopback, where a `Secure` cookie is silently dropped and sign-in presents as instantly signing out. Set it behind TLS. |
 | `PSYCH_PLAYGROUND_STATE_FILE` | `.playground-state.json` next to this README | Where settings changed through `/api/settings/*` persist -- providers (with their API keys), MCP presets, and secrets. Holds real credentials in plaintext; the default path is gitignored. See "Settings persist to a JSON file" below. |
 | `PSYCH_PLAYGROUND_INDEX_FILE` | `.playground-index.json` next to this README | Where the agents, their Version histories and the runs-dispatched list persist, so `GET /api/agents` and `GET /api/runs` survive a restart. No credentials in it. Reconciled against the `Store` at boot; see the last section. |
+| `PSYCH_PLAYGROUND_OAUTH_CALLBACK_URL` | `http://<host>:<port>/api/oauth/callback` | Where a connector's sign-in sends the browser back. The Docker image sets it to the console's address, because the backend binds loopback there and only the console's port is published. Set it to the console's public address when it is served elsewhere. |
+| `PSYCH_PLAYGROUND_SEED_CATALOGUE` | `1` | Fill a new account from the catalogue on signup (providers, connectors, agents, workflows). `0` leaves new accounts empty; `GET /api/catalogue` and `POST /api/catalogue/seed` answer either way. |
 
 ## MCP behind client-credentials OAuth
 
@@ -172,26 +174,75 @@ while the pool key saw no difference -- it really was the same credential as
 far as it could tell. Resolving by name alone is the "pool by URL" mistake
 DESIGN.md warns about, one layer down.
 
-`authorization_code` is not supported here: it needs a redirect listener
-Psych does not run (DESIGN.md §1), and wiring one up is out of scope for a
-local playground. Use `client_credentials`, the default.
+`authorization_code` is supported, and is what every catalogue connector
+seeds with. Psych does not run a redirect listener (DESIGN.md §1), so this
+backend supplies one: `/api/oauth/callback`, whose address is handed to the
+Spec and to the settings page's own connection test as `redirect_uris`, and
+`GET /api/oauth/pending` lists the authorizations waiting for a browser. The
+preset's *default* is still `client_credentials`, for a machine-to-machine
+server where nobody is at a keyboard.
+
+## The out-of-the-box catalogue
+
+Creating an account fills its workspace from `app/catalogue.py`, so there is
+something to press before anything has been read:
+
+- **Providers.** Eleven OpenAI-compatible backends -- OpenAI, Anthropic,
+  Cloudflare Workers AI, Gemini, Groq, Mistral, OpenRouter, Together, xAI,
+  DeepSeek and a local Ollama -- each with a base URL, a suggested default
+  model and a link to where a key comes from. No key is ever seeded: that is
+  the one thing only the person can supply. Cloudflare's base URL carries an
+  `{account_id}` placeholder, filled from `PSYCH_PLAYGROUND_CF_ACCOUNT_ID`
+  when it is set and left visible when it is not.
+- **Connectors.** Twenty-five remote MCP servers, every one of them run by
+  the vendor whose data it exposes -- GitHub, Notion, Atlassian, Linear,
+  Slack, Sentry, Stripe, Vercel, Cloudflare, Supabase, Neon, Netlify, Prisma,
+  PayPal, Asana, Airtable, Canva, Webflow, Intercom, Square, Box, PostHog,
+  Hugging Face, Zapier and HubSpot. No proxy, no community re-host, and no
+  OAuth client secret in this image: the person signs in to GitHub at GitHub.
+  Google Workspace is absent because Google runs no first-party Workspace MCP
+  server, and shipping a third party's would mean shipping somebody else's
+  endpoint.
+- **Agents.** One specialist per connector, plus `psych`, which delegates to
+  all of them. Connectors seed `optional`, so every specialist publishes and
+  runs before anybody has finished an OAuth flow; it says it cannot reach its
+  system rather than failing.
+- **Workflows.** `github-activity-report`, `jira-sprint-digest`,
+  `inbox-and-issues-triage`, `release-notes` and `incident-summary`, each with
+  a human approval step before anything leaves the building.
+
+`GET /api/catalogue` answers with all four lists and this account's status on
+each entry (`configured`, `state`, `agent_id`, `workflow_id`).
+`POST /api/catalogue/seed` `{"kinds": [...]}` adds whatever is missing and is
+idempotent; `PSYCH_PLAYGROUND_SEED_CATALOGUE=0` turns off the signup side
+effect without disabling either route.
 
 ## Tools available to every agent
 
-Three code tools are registered at boot (`app/tools.py`) and any agent can
-name them in its `tools` list:
+Code tools are registered at boot (`app/tools.py`) and any agent can name them
+in its `tools` list. Two do what a model cannot do for itself:
 
-- `lookup_order(order_id)` -- read-only, always succeeds.
-- `issue_refund(order_id, cents)` -- annotated `destructive`. Point an
-  agent's `approval_selectors` at `@destructive` (the default) to see a Run
-  suspend for a human decision before this runs.
-- `check_inventory(sku)` -- always raises, to demonstrate the failure-streak
-  guard and the failure-guidance text a model actually sees when a tool is
-  down.
+- `current_time()` -- read-only. A model has no clock, so "since last Tuesday"
+  is unanswerable without one.
+- `calculate(expression)` -- read-only. Arithmetic over `+ - * / // % **` and
+  parentheses, evaluated through an allow-list over the parsed AST rather than
+  `eval`. A malformed expression raises, which is also how to watch the
+  failure-streak guard (§10.6) and the failure-guidance text a model is shown.
 
-Two more show what a tool actually is -- a plain Python function, nothing
+The rest show what a tool actually is -- a plain Python function, nothing
 Psych-specific about its body -- by using that to reach back into this
 backend:
+
+- `list_agents()`, `create_agent(name, instructions, description?, connectors?,
+  tools?)` and `update_agent(agent_id, ...)` -- the Agents page, offered to the
+  agent. They publish through the same `app.agent_publish.publish_agent` the
+  route uses, so an agent built in a conversation is the agent the page would
+  have built. `update_agent` is annotated `destructive`: it moves a live
+  agent's pointer at a new Version and there is no undo. Point an agent's
+  `approval_selectors` at `@destructive` (the default) to see a Run suspend for
+  a human decision before it runs.
+- `run_workflow(workflow_id, input?)` -- dispatches a published workflow
+  through the same path `POST /api/runs` uses and returns the run id.
 
 - `create_workflow(name, steps, description?)` -- publishes a `WorkflowSpec`
   out of tool steps the model composes, so "set up a check for order A1"
@@ -353,10 +404,11 @@ was running rather than from the top -- the property DESIGN.md §5 chooses
 memoisation over deterministic replay to get.
 
 `create_workflow` (`app/tools.py`) is a tool like any other, registered the
-same way as `lookup_order`, and it exists to show that publishing one is not
-special: an agent asked to "set up a check for order A1" can call it and
-build the pipeline itself, and it shows up under Workflows for a person to
-run again, or edit first.
+same way as `current_time`, and it exists to show that publishing one is not
+special: an agent asked to "set up the weekly report" can call it and build
+the pipeline itself -- tool steps, agent steps by id, and the composite kinds
+alike -- and it shows up under Workflows for a person to run again, or edit
+first.
 
 ## Branching, and forking, which are not the same thing
 
@@ -617,7 +669,7 @@ that is not suspended are `400`.
   "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
   "temperature": 0.2,               // optional
   "model_options": {"top_p": 0.9, "fallbacks": ["backup-model"]},  // optional, ModelRef's rest
-  "tools": ["lookup_order", "issue_refund"],
+  "tools": ["current_time", "calculate"],
   "http_tools": [],                 // optional, HttpTool entries: {name, description, url, method, input_schema, headers, credential, timeout_seconds, interruptible}
   "mcp": [],                        // McpServer entries, see above
   "subagents": [],                  // optional, the delegation roster: {name, description, agent_id}
@@ -639,7 +691,7 @@ AGENT=$(curl -s -X POST http://127.0.0.1:8080/api/agents -H 'Content-Type: appli
   "name": "support",
   "instructions": "Help the customer with their order. Be brief.",
   "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-  "tools": ["lookup_order", "issue_refund", "check_inventory"],
+  "tools": ["current_time", "calculate", "list_agents", "update_agent"],
   "approval_selectors": ["@destructive"]
 }' | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent_id"])')
 

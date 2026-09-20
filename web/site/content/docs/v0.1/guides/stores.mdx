@@ -35,6 +35,17 @@ store = DynamoDBStore(
 `PostgresStore` takes **exactly one** of `dsn` or `pool`. Passing your own pool
 is the right move in an application that already has one.
 
+`MySQLStore` sets `READ COMMITTED` as the pool's `init_command`, so every
+connection the pool opens lazily has it; a pool you pass in must do the same or
+`claim()` and `expired_leases()` take gap locks under REPEATABLE READ and turn
+independent Workers into a queue. The MySQL schema has no `CHECK` on `state`
+on purpose: some servers parse and ignore one, so the adapter and the reducer
+are what refuse a state outside the enum.
+
+`DynamoDBStore.create_run` with an idempotency key writes the key and the
+header in one `TransactWriteItems`, so a crash between the two cannot strand a
+key whose Run has no header. Everything else is one conditional write per item.
+
 Install the extra you need: `psych-runtime[postgres]`,
 `psych-runtime[mysql]`, `psych-runtime[dynamodb]`, or `psych-runtime[all]`.
 
@@ -141,3 +152,6 @@ where to prove it.
   model call loses its lease; too long and a dead Worker's Runs sit idle.
 - **In development this repository ships `scripts/dev-services.sh`,** which runs
   the three databases as ordinary processes where there is no container runtime.
+- **`FilesystemBlobStore` writes are atomic.** Content and its metadata sidecar
+  each land through a temporary file and a rename, content first, so a reader
+  on a shared filesystem never sees a partial result. See `psych-blobs`.

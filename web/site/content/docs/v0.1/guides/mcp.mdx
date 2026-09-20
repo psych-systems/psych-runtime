@@ -123,6 +123,13 @@ depending on which model an agent named.
 
 Discovery narrows exactly as an ordinary call does. It is a door, not a bypass.
 
+Approvals go through the door too. A `call_tool` invocation is gated on the
+**target** tool's own name and annotations, exactly as if its catalogue had
+been preloaded: a `@destructive` selector that suspends `github__delete_repo`
+when preloaded suspends the same call made through `call_tool`, and a `Policy`
+is asked about `github__delete_repo`, never about `call_tool`. A target the Run
+cannot resolve is graded destructive, so the wrapper fails closed.
+
 ## Unreachable servers
 
 By default an unreachable server **fails the Run**. Set `optional=True` to omit
@@ -131,6 +138,29 @@ its tools and tell the model they are unavailable instead.
 Defaulting `optional` to `True` would produce an agent that confidently tells a
 customer it cannot issue refunds today. Being wrong loudly beats being wrong
 quietly, so the default is the strict one.
+
+`McpServerUnreachable.reason` is always a sentence worth showing: a transport
+error with no text of its own (an `asyncio.TimeoutError`, a bare `OSError`)
+reads "the connection timed out" or names the exception type, and the message
+carries no trailing colon when there is nothing to put after it. A console can
+put `str(error)` in the row of the connection that failed as it is.
+
+## A catalogue too large to accept
+
+A Streamable HTTP server writes each response as one server-sent event, and an
+event has a size ceiling, so the ceiling applies to `tools/list` — which for a
+server generated from an OpenAPI description can run to several megabytes.
+
+Exceeding it raises `McpResponseTooLarge`, **not** `McpServerUnreachable`: the
+server answered correctly and in full, and this client declined to buffer the
+reply. The distinction is the point. Were it unreachable, `optional=True` would
+drop a healthy server and the agent would run without its tools with nobody
+told why.
+
+Raise the ceiling with `psych_runtime.set_max_sse_event_bytes`. It is process-wide,
+because it belongs to the HTTP client every connection shares. Leave it
+bounded: an MCP server is a third party, and a reply nothing bounds can exhaust
+the process reading it.
 
 ## Transports
 
@@ -201,3 +231,10 @@ waits — the model is told to make that call itself.
 - **Unannotated MCP tools are treated as `write` for approvals,** and a
   partially annotated one reads `destructiveHint`'s own default of true. See
   `psych-approvals`.
+- **A static tool may not wear a server's prefix.** A `CodeTool` named
+  `github__search_issues` beside a server named `github` is refused at
+  publish; otherwise the two collide at run time once the server exposes
+  `search_issues`.
+- **The bounded SSE event source is installed on every connection,** not only
+  at import, so an SDK module imported lazily cannot keep the SDK's 1 MB
+  default.

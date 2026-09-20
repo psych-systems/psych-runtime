@@ -238,6 +238,35 @@ DESIGN.md §10.4's rule is unchanged and gets harder: a token obtained for tenan
 A must never be sent on tenant B's call, and now there is a background refresh
 that could get that wrong asynchronously.
 
+## How large one response may be
+
+A Streamable HTTP server answers a JSON-RPC request by writing the whole result
+as one server-sent event. The size of a response and the size of a single event
+are therefore the same number, and the HTTP client under the SDK caps one event
+at a megabyte by default. `tools/list` is the response that reaches it first: a
+server generated from an OpenAPI description can offer several hundred tools,
+each with a full JSON Schema, and two megabytes is ordinary.
+
+Psych sets its own ceiling instead (`tools/sse_events`). Three things made that
+worth doing carefully rather than simply removing the limit:
+
+- **It must stay bounded.** An MCP server is a third party. A response with no
+  ceiling is one that can exhaust the memory of the process reading it, which
+  is the same class of hole as an unbounded stored result.
+- **Reaching it must be legible.** The SDK reads its stream inside a bare
+  `except Exception` and reports every failure there as a stream that ended
+  without a response. That text names neither the size nor the ceiling, and
+  reads as a network fault, so the breach is reported as `SseEventTooLarge` —
+  a `BaseException` specifically so that handler cannot swallow it — and
+  translated at Psych's boundary into `McpResponseTooLarge`.
+- **It is not an unreachable server.** The server answered, correctly and in
+  full. Classifying this as unreachable would let `optional=True` drop a
+  healthy server and run the agent without its tools, silently.
+
+The ceiling is process-wide rather than per-agent: it belongs to the HTTP
+client shared by every connection in the process, and the SDK's call path
+offers no point where a per-connection value could be threaded through.
+
 ## Sources
 
 - https://modelcontextprotocol.io/specification/2026-07-28/changelog

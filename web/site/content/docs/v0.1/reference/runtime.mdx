@@ -171,6 +171,32 @@ Tenancy rides on ``scope``: a name is resolved only against connections
 keyed to the calling Scope, so tenant A's Run cannot reach tenant B's
 server even if both grant a tool of the same name.
 
+### `DEFAULT_MAX_SSE_EVENT_BYTES`
+
+*value*
+
+The default process-wide maximum size of one MCP server-sent event, in bytes.
+
+### `max_sse_event_bytes`
+
+*function*
+
+```python
+def max_sse_event_bytes() -> 'int'
+```
+
+The ceiling currently applied to every new event stream.
+
+### `set_max_sse_event_bytes`
+
+*function*
+
+```python
+def set_max_sse_event_bytes(limit: 'int') -> 'None'
+```
+
+Set the process-wide ceiling. Applies to streams opened afterwards.
+
 ### `A2APool`
 
 *class*

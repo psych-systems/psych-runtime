@@ -7,6 +7,316 @@ description: "Written at commit time rather than reconstructed at release. Every
 Written at commit time rather than reconstructed later. The public API is `0.x`
 and breaking changes are expected until the design survives a second consumer.
 
+## 0.1.4
+
+### Added
+
+- **Workflows with structure.** `WorkflowSpec.steps` may now hold nine more
+  step kinds beside `tool`, `agent` and `workflow`: `parallel`, `branch`
+  (data conditions, `first` or `all`, an `otherwise` arm), `foreach` (with
+  `concurrency`), `loop` (`until` or `while`, bounded by `max_iterations`),
+  `map`, `set_state`, `sleep`, `wait` (an event delivered by `resume()`) and
+  `human` (a question with no model in the loop). Every step takes `when`,
+  `retry`, `timeout_seconds`, `on_failure` and `output_schema`; the workflow
+  takes `input_schema`, `initial_state`, `output` and a default `retry`.
+  Steps read each other by reference (`ValuePath`: `input.`, `steps.<name>.output.`,
+  `state.`, `item`, `index`, `iteration`) and never by template. Composite
+  steps are steps in the log, so the tree is reconstructable without the Spec
+  and a finished parallel branch survives a crash in its sibling.
+- **Steps that wait hold no Worker.** A `sleep`, a retry backoff, a `wait`, a
+  `human` step and a tool step the `Policy` asks a person about all suspend
+  the Run with the step named on the record. Two new `SuspendReason` values:
+  `timer` (parked with a wake time, claimed again when it passes) and
+  `breakpoint`. `RunStatus` gains `pending_wait` and `suspended_step_id`;
+  `PendingApproval` and `PendingQuestion` carry `step_id` and allow
+  `call_id=None`.
+- **`psych_runtime.workflow_view()`**: the Run as a tree of `StepView`s with
+  status, attempts, input, output, failure, timing and children, plus the
+  step it is waiting on. **`psych_runtime.replay()`** starts a new Run from a
+  chosen step, copying the source's earlier results into its own log.
+  **`dispatch(breakpoints=, step_mode=)`** pauses a workflow before named
+  steps, or every step, and a resume payload toggles stepping.
+- **Retries** record each attempt as its own row (`will_retry`, `retry_at`),
+  back off by parking the Run, and never retry a denial or a composite whose
+  child already settled. `Limits.max_steps` now bounds a workflow's step
+  starts, iterations included.
+- The builder gained one method per step kind and `ref()`, `lit()`, `when()`,
+  `all_of()`, `any_of()`. `StepReport` and `SuspensionReport` carry the new
+  step fields. `WorkflowRequired` names a workflow-only operation asked of an
+  agent Run.
+- **The playground authors and runs the whole of it.** The workflow builder
+  edits every step kind (a Build tab, a Shape tab for input schema, state,
+  output and retries, and a JSON tab), the workflow page draws the definition
+  as a graph and lists the workflow's runs with a state filter, and a run's
+  new Workflow view shows the live step tree with a detail panel per step,
+  the waiting step's controls (approve or deny with the exact arguments,
+  answer, deliver an event checked against its schema, wake a timer,
+  continue or step through a breakpoint), and a replay dialog. New routes:
+  `GET /api/runs/{id}/workflow`, `POST /api/runs/{id}/replay`,
+  `GET /api/workflows/{id}/runs`, `POST /api/runs/{id}/events`; dispatch
+  takes structured `input`, `breakpoints` and `step_mode`. A workflow tool
+  step is gated by the account's approval selectors, as a model's call is.
+
+- **The console's authoring and settings pages were rewritten for people
+  who are not engineers.** Every explanatory paragraph now lives behind a
+  "?" beside the thing it explains (hover for one line, click to pin), and
+  settings read as tables of labelled rows with toggles rather than stacks
+  of cards. A new agent publishes in two clicks: essentials on top, then
+  what it can use, how it behaves and, behind "Show advanced", limits and
+  model options. Everything that works out of the box is on by
+  default (questions, plans, components, sub-agents, summarising, approvals for
+  risky actions, code execution when a sandbox is available, every registered
+  tool and connection); code execution asks for the isolation the default
+  profile actually provides. Settings gained a sticky section navigation and
+  tables for providers, secrets, skills and prices; Connections and
+  Capabilities became tables with actions in the row.
+
+- **The playground is useful before anything is configured.** Creating an
+  account fills it from a catalogue (`app/catalogue.py`): thirteen model
+  providers (OpenAI, Anthropic, Azure OpenAI, AWS Bedrock, Cloudflare Workers
+  AI, Google Gemini, Groq, Mistral, OpenRouter, Together AI, xAI, DeepSeek and
+  a local Ollama) with their address, a "Get a key" link and the models each
+  one serves today with its list price per million tokens beside every id,
+  in the provider dialog and in every model picker on the agent form (no
+  key is ever seeded; the first key saved takes over as the provider in
+  use). Those list prices also cost a Run on a model the library's bundled
+  snapshot does not know, under the account's own Prices page. `GET
+  /api/models` now carries a price per model and falls back to the
+  catalogue's list when the provider will not list its own, twenty-five vendor-run remote MCP connectors (GitHub, Notion,
+  Atlassian, Linear, Slack, Sentry, Stripe, Vercel, Cloudflare, Supabase,
+  PostHog, ...) each connected by one click and a sign-in or a token, one
+  specialist agent per connector, a **Psych** agent that holds every
+  specialist as a sub-agent and can spawn more, and five use-case
+  workflows (a GitHub activity report, a Jira sprint digest, inbox-and-issues
+  triage, release notes, an incident summary). Psych carries the host tools
+  `list_agents`, `create_agent`, `update_agent`, `list_workflows`,
+  `create_workflow` and `run_workflow`, so a conversation can build what the
+  catalogue lacks; each write is approved in the console before it takes
+  effect. `GET /api/catalogue` reports every entry with this account's status
+  and `POST /api/catalogue/seed` adds what is missing, idempotently; a "Get
+  started" card ticks off the three steps between a new account and a working
+  conversation. The console's demo tools (`lookup_order`, `issue_refund`,
+  `check_inventory`) and the three agent form templates are gone; a seeded
+  provider without a key reads "Needs a key" and asks for exactly that, and
+  a provider whose address carries a placeholder (Cloudflare's account id)
+  asks for it in the same dialog.
+
+### Changed
+
+- A workflow Run that fails now settles with the failing step's failure on
+  `run_settled`, so `status().failure_kind` says what failed instead of `None`.
+- An `AgentStep` with a mapped `input` delivers `input.message` to the nested
+  agent as the user message at that step, in both the model's conversation
+  and `thread()`.
+
+### Fixed
+
+- `McpServerUnreachable` no longer ends in a bare colon when the transport
+  error carried no text: an `asyncio.TimeoutError` now reads "the connection
+  timed out", and a reason-less failure names the exception type. The
+  console showed "is unreachable: " for a connector that took too long.
+- The Capabilities page could show placeholders forever on a machine without
+  the databases: the four-stores scenario's availability probe sat in a
+  connect that never returned. Every probe is now bounded and they run
+  together, and a scenario whose check does not answer is listed as
+  unavailable with that reason.
+- A Windows sandbox run whose task was cancelled mid-program terminated the
+  job but never reaped the child, which surfaced at garbage collection as a
+  still-running subprocess with an unclosed transport. Cancellation now waits
+  for the child and drains its pipes before propagating.
+- On a phone, page titles sat under the floating sidebar button.
+
+### Security
+
+- **A deferred MCP server's tools bypassed approval.** Once a server's
+  catalogue is deferred out of the prompt (automatically, above
+  `DEFAULT_CATALOGUE_BUDGET_CHARS`), the model reaches its tools through the
+  `call_tool` wrapper, and the approval gate classified the call by the
+  wrapper's own hard-coded `write` annotation. A `@destructive` selector that
+  suspended a preloaded tool let the very same tool run, with no approval
+  record, once the catalogue grew. The gate now resolves the target the call
+  names and decides on its own name and annotations, exactly as a preloaded
+  catalogue would have been judged; a target the Run cannot resolve is graded
+  destructive so the wrapper fails closed. The `Policy` port is asked about
+  the target's qualified name too, so name-keyed rules match through the
+  wrapper.
+
+- **`resume`, `send` and `interrupt` take a `Scope`.** Every read entry point
+  already refused a Run belonging to another tenant; the three writes took a
+  bare `run_id`, so anyone holding one could approve another tenant's
+  destructive call, steer their conversation, or stop their Run. All three now
+  accept `scope=` and refuse a mismatch with `AccessDenied`, the way
+  `psych_runtime.records` does. The parameter is optional so existing callers
+  keep working; a consumer serving end users should pass it.
+
+- **The container sandbox's IPC socket now demands a per-execution token.**
+  The socket has to be connectable by a uid that is not the worker's, and
+  `/tmp` itself can be listed, so another local account that found it could
+  connect first and answer as the program. The bootstrap presents a random
+  token as its first line; the listener drops any connection that does not,
+  and refuses a second one.
+
+- **Response bodies from remote parties are bounded.** `HttpTransport.request`
+  reads incrementally and refuses a body past 16 MiB (`max_bytes=` per call,
+  `ResponseTooLarge` when exceeded), which covers Agent Cards, A2A replies and
+  OAuth discovery documents. The model adapter reads at most 64 KiB of an
+  error page and stops a server-sent-event stream past 256 MiB.
+
+- **OAuth refuses plain `http://` to anything but loopback.** The resource URI,
+  the metadata URL a 401 challenge names, and every endpoint an authorization
+  server document advertises must be `https://`, as OAuth 2.1 requires; a
+  misconfigured server no longer receives tokens and client credentials in
+  clear. Loopback stays allowed for development servers and test stubs.
+
+- **An A2A `task_id` is forwarded only when this Run received it.**
+  Connections are pooled per tenant and principal, not per Run, so a
+  prompt-injected Run could continue any task the same tenant ever opened with
+  a peer. The runtime hands the client the task ids its own log shows, and
+  anything else is refused before the peer is asked.
+
+- **The Windows sandbox never grades `filesystem` as enforced.** The backend
+  has no filesystem containment, and an unreadable canary (an antivirus lock,
+  an ACL quirk) is not evidence of any. The subprocess backend likewise leaves
+  `process_count` unverified when the privilege drop itself is unverified.
+
+- **The playground refuses internal addresses by default.** A fresh account's
+  empty allow-list allowed everything, including `169.254.169.254` and the
+  other services on the compose network. Public hosts and loopback (a local
+  model) stay open; link-local, private and cloud-metadata addresses need an
+  explicit, wildcard-free entry. The `fastapi` scaffold, whose `caller()`
+  trusts `X-Tenant`/`X-User` headers, refuses to start unless
+  `PSYCH_DEV_HEADER_AUTH=1` says this is local development. `docker-compose.yml`
+  no longer ships a Postgres password; set `PSYCH_POSTGRES_PASSWORD` (see
+  `.env.example`). The playground compares session tokens in constant time.
+
+### Fixed
+
+- **A repeated tool-call id no longer abandons the Run.** A provider or proxy
+  that emits two tool calls with one id produced a log the reducer rightly
+  refuses as corrupt, and the Worker gave up on the Run with no terminal
+  record. The second call is now recorded under a fresh id and failed with
+  `duplicate_call_id`, which the model reads like any other failure, and the
+  Run settles normally.
+
+- **Two settlement paths never told the parent.** An attempt that raised past
+  every handler, and a suspension that expired at `resume()`, both wrote
+  `run_settled` without notifying the parent, so a parent suspended on its
+  children waited out `children_expires_seconds` for news that already existed.
+  Every terminal write now goes through `notify_parent`.
+
+- **The reducer checks the turn and scope on every record.** `ModelCallStarted`,
+  `ModelCallFinished`, `ModelCallFailed` and `ToolCallStarted` carry a `turn`
+  that was never compared with the open turn, so a model call could start in
+  turn 1 and finish in turn 2 and the report either raised a raw `KeyError` or
+  attributed the call to the wrong step. A record under another tenant's
+  `Scope` was accepted the same way. Both are `CorruptLog` now.
+
+- **A workflow step keeps its nested agent's failure kind.** `StepFailed`
+  exists to carry a nested agent's real failure, and the only catcher was a
+  generic `except Exception` that recorded `kind="StepFailed"` and the outer
+  traceback. The runner catches it by type and records the failure it carries.
+
+- **The thread view shows a finished background child.** `build_conversation`
+  gave the model a user message when a child finished; `message_views` dropped
+  the record, so a chat screen showed an assistant reply reacting to a message
+  the person could not see.
+
+- **Static tool names are validated as strictly as the provider accepts.** A
+  `CodeTool` or `HttpTool` name is now capped at 64 characters of
+  `[A-Za-z0-9_-]`, the same constraint MCP-minted names are sanitised to, so a
+  name the model would reject fails at publish rather than at the first turn.
+  A static tool wearing the prefix an MCP server or A2A peer of the same Spec
+  would mint (`github__search_issues` beside a server named `github`) is
+  refused at publish too, instead of `AccessDenied` at every turn.
+
+- **An `HttpTool` URL may not template its host.** `{name}` placeholders are
+  substituted anywhere in the URL, so `https://{region}.api.example.com/...`
+  let the model choose where the resolved credential was sent. Placeholders
+  in the scheme or authority are refused at publish.
+
+- **MySQL isolation level applies to every pooled connection.** `SET SESSION
+  ... READ COMMITTED` ran on the one connection acquired at pool creation;
+  every connection the pool opened lazily afterwards kept REPEATABLE READ and
+  its gap locks. It is now the pool's `init_command`.
+
+- **DynamoDB `create_run` cannot strand an idempotency key.** The key was
+  claimed and the header written as two conditional puts; a crash between
+  them left a key whose `run_id` had no header, and every later call with that
+  key raised `RunNotFound` forever. The pair is now one `TransactWriteItems`.
+
+- **Filesystem blob writes are atomic.** Content and metadata each land via a
+  temporary file and a rename, content first, so a concurrent reader on a
+  shared filesystem never sees a partial result or content without metadata.
+
+- **Smaller things.** `subscribe()` logs a task that dies instead of losing the
+  exception at garbage collection. The bounded SSE event source is installed
+  on every MCP connection, not only at import, so a lazily imported SDK module
+  cannot keep the 1 MB default. HTTP 409 is no longer retried: gateways use it
+  for idempotency conflicts, where a retry double-submits. The backoff
+  exponent is clamped. Dynamic Client Registration's
+  `token_endpoint_auth_method` is configurable rather than always `none`, and
+  a public client discards any secret the server returns. The MySQL schema
+  says why it has no `state` CHECK constraint.
+
+### Fixed
+
+- **A program that called a tool broke the model call after it.** A `run_code`
+  program can call tools of its own, and each of those calls is journalled with
+  a `parent_call_id` naming the program's own call. The conversation the model
+  sees is projected from that log, and it replayed every finished call as a
+  tool result — including the program's, whose ids no assistant message ever
+  issued. The next request therefore carried an answer to a question the model
+  never asked, which providers reject outright: a single `call_tool` in a
+  program was enough to fail the following turn with a complaint about an
+  unrecognised call id.
+
+  The projection now leaves a program's own calls out. Nothing is lost: what
+  the program did with each result already reaches the model inside the
+  enclosing `run_code` result, and the nested pair stays in the log and in the
+  report, where `parent_call_id` is what makes the call tree readable.
+
+- **A mistyped tool name came back as an argument error.** When a program calls
+  a name it was not offered, the sandbox raises a diagnostic listing what is
+  available. With a large bound catalogue that list outgrew the cap on a
+  failure message, so building the report about the first failure raised a
+  second error — and the consumer described *that* one, reporting a schema
+  mismatch for arguments that were never wrong.
+
+  Two changes, either of which would have prevented it. The list of available
+  names is now bounded where it is built and says how many names it left out,
+  so catalogue size cannot decide whether the diagnostic exists. And the caps
+  on `ToolFailure` and `SandboxFailure` now truncate rather than refuse: they
+  bound what the model is handed, which is a reason to cut over-long text, not
+  a reason to fail while describing a failure that already happened.
+
+## 0.1.3
+
+### Fixed
+
+- **A server offering a large tool catalogue was reported as unreachable.** A
+  Streamable HTTP server answers each JSON-RPC request by writing the whole
+  result as a single server-sent event, and the HTTP client under the MCP SDK
+  refuses any one event over a megabyte. A `tools/list` from a server with a
+  few hundred tools and full JSON Schemas passes that easily, so the limit was
+  in practice a cap on how many tools a server could offer.
+
+  It was also invisible. The SDK reads its event stream inside a bare
+  `except Exception`, which discarded the real cause and synthesised
+  `SSE stream ended without a response`; Psych relayed that as
+  `McpServerUnreachable`. Every layer underneath — DNS, TLS, OAuth discovery,
+  token minting, the handshake itself — reported success, so the failure
+  pointed at the network, the credentials, or the server, none of which were
+  involved.
+
+  The ceiling is now Psych's rather than the client's default, set by
+  `psych_runtime.set_max_sse_event_bytes` and large enough for
+  a real catalogue. It is still a ceiling: an MCP server is a third party, and
+  a reply nothing bounds is one that can exhaust the process reading it.
+  Reaching it now raises `McpResponseTooLarge`, which names the ceiling and
+  says the server answered correctly. That type is deliberately not
+  `McpServerUnreachable`, so a server marked `optional` is no longer silently
+  dropped for sending a reply that is merely large.
+
 ## 0.1.2
 
 ### Added

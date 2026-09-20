@@ -61,6 +61,13 @@ a write. Reading it as a write would let someone who narrowed their selectors to
 Beyond the selectors, `always` and `never` name individual tools. `never` is
 checked last, so an explicit exemption beats a selector. Use it sparingly.
 
+**A deferred MCP tool is judged as itself, not as `call_tool`.** When a
+server's catalogue is deferred out of the prompt (`psych-mcp`), the model
+reaches its tools through the `call_tool` wrapper. The gate resolves the tool
+the call names and applies the selectors, `always`, `never` and your `Policy`
+to that tool's qualified name (`github__delete_repo`) and annotations. A
+target the Run cannot resolve is treated as destructive.
+
 ## The Policy port
 
 Selectors decide *what class* needs review. `Policy` decides *whether this
@@ -118,7 +125,12 @@ next fold cheap; use `status()` unless you are extending the runtime.
 
 `SuspensionPolicy.approval_expires_seconds` defaults to 24 hours. A decision
 arriving after that raises `SuspensionExpired`, and the Run is settled
-`ABANDONED` **first**, so a stale approval never executes.
+`ABANDONED` **first**, so a stale approval never executes. The settlement
+carries a `suspension_expired` failure, and a parent waiting on that Run as a
+child is notified like any other ending.
+
+Pass `scope=` to `resume()` when serving end users; a Run belonging to another
+tenant is refused with `AccessDenied` before anything is decided.
 
 ## Approvals and code execution
 
@@ -149,5 +161,10 @@ turn's resolved tool set, which is where every origin's annotations live.
 - **`interruptible=False` and approvals are unrelated.** One is about aborting
   mid-call; the other is about permission to start.
 - **A denied call is not a failed Run.** The model is told and continues.
+- **A workflow `tool` step is gated too.** `Decision.ask()` suspends the Run on
+  that step (`status.pending_approval` with `call_id=None` and `step_id` set,
+  carrying the tool and its resolved arguments); `resume(approved=True)` runs
+  it, `approved=False` fails the step with kind `denied`, which is never
+  retried. See `psych-workflows`.
 - **The failure-streak guard does not count a call a policy refused before
   execution,** nor one the user cancelled. It counts genuine tool failures.
